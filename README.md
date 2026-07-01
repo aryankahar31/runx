@@ -1,41 +1,65 @@
-# 🚀 runx
+<div align="center">
 
-> Universal project launcher with portable runtimes.
+# 🚀 Runx
 
-**runx** lets you run projects without installing language runtimes globally.
+### Universal Project Launcher with Portable Runtimes
 
-It automatically downloads the exact runtime versions your project requires, caches them locally, and executes commands in an isolated environment.
+Run projects with the exact runtime versions they require — **without installing Node.js, Python, or other runtimes globally.**
 
-No global Node.js. No global Python. No version managers.
+[![CI](https://github.com/aryankahar31/runx/actions/workflows/ci.yml/badge.svg)](https://github.com/aryankahar31/runx/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/aryankahar31/runx)](https://github.com/aryankahar31/runx/releases)
+[![License](https://img.shields.io/github/license/aryankahar31/runx)](LICENSE)
+[![Rust](https://img.shields.io/badge/Built%20With-Rust-orange)](https://www.rust-lang.org/)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)](https://github.com/aryankahar31/runx)
 
----
+**One command. Any runtime. Any project.**
 
-## ✨ Features
+⭐ Star the repository if you find it useful.
 
-- 📦 Zero global runtime installation
-- ⚡ Automatic runtime downloads
-- 🔒 Isolated project execution
-- 🚀 Fast runtime cache
-- 🖥️ Cross-platform (Linux, macOS, Windows)
-- 🔧 Configuration via `runx.toml`
-- 🦀 Written in Rust
-- 🎯 Reproducible development environments
+</div>
 
 ---
 
-# Why runx?
+# Why Runx?
 
-Managing runtimes across projects is painful.
+Modern development often requires multiple runtime versions.
 
-Different projects require different versions of:
+One project needs:
 
-- Node.js
-- Python
-- (More runtimes coming soon)
+- Node.js 20
+- Python 3.11
 
-Instead of installing version managers or changing your global environment, **runx** downloads exactly what the project needs and runs everything in an isolated environment.
+Another needs:
 
-Your system remains clean.
+- Node.js 18
+- Python 3.10
+
+Installing and managing these globally quickly becomes difficult.
+
+**Runx solves this problem.**
+
+Runx automatically downloads the exact runtime versions required by a project, stores them in a local cache, and runs commands inside an isolated environment.
+
+No global installations.
+
+No PATH pollution.
+
+No version managers.
+
+---
+
+# ✨ Features
+
+- 🚀 Zero global runtime installation
+- 📦 Automatic runtime downloads
+- 💾 Intelligent runtime cache
+- 🔒 Isolated execution environment
+- ⚡ Fast startup after first download
+- 🖥 Cross-platform (Linux, macOS, Windows)
+- ⚙ Configuration using `runx.toml`
+- 🦀 Built with Rust
+- 🔄 Deterministic project environments
+- 🔧 GitHub Releases & CI/CD
 
 ---
 
@@ -47,31 +71,45 @@ Your system remains clean.
 curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh | sh
 ```
 
-## Windows (PowerShell)
+---
+
+## Windows PowerShell
 
 ```powershell
 iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 | iex
 ```
 
-After installation, ensure the following directory is available in your PATH.
+---
 
-Linux/macOS
+Verify installation
 
-```text
-~/.runx/bin
+```bash
+runx --version
 ```
 
-Windows
+Expected output
 
-```text
-%USERPROFILE%\.runx\bin
+```
+runx 0.1.0
 ```
 
 ---
 
 # Quick Start
 
-Create a project configuration.
+Initialize a project
+
+```bash
+runx init
+```
+
+This creates
+
+```text
+runx.toml
+```
+
+Configure your project
 
 ```toml
 [runtimes]
@@ -84,65 +122,69 @@ build = "npm run build"
 test = "npm test"
 ```
 
-Initialize a new project:
-
-```bash
-runx init
-```
-
-Run a command:
+Run your application
 
 ```bash
 runx dev
 ```
-
-First execution:
-
-```
-Installing node 20.11.0
-Downloading...
-Extracting...
-Running `node --version`
-v20.11.0
-```
-
-Second execution:
-
-```
-Using cached node 20.11.0
-Running `node --version`
-v20.11.0
-```
-
-No additional downloads.
 
 ---
 
 # Example
 
-Project structure
+Project
 
 ```
 my-project/
 │
-├── runx.toml
 ├── package.json
+├── runx.toml
 └── src/
 ```
 
-Run:
+package.json
+
+```json
+{
+  "scripts": {
+    "dev": "node index.js"
+  }
+}
+```
+
+index.js
+
+```javascript
+console.log("Hello from Runx!");
+```
+
+Run
 
 ```bash
 runx dev
 ```
 
-runx automatically:
+Output
 
-1. Reads `runx.toml`
-2. Resolves required runtimes
-3. Downloads missing runtimes
-4. Uses cached versions when available
-5. Launches the command with an isolated PATH
+```
+Installing node 20.11.0
+Downloading...
+Extracting...
+
+Running npm run dev
+
+Hello from Runx!
+```
+
+Second run
+
+```
+Using cached node 20.11.0
+
+Running npm run dev
+
+Hello from Runx!
+```
 
 ---
 
@@ -151,66 +193,78 @@ runx automatically:
 Downloaded runtimes are stored in
 
 ```
-~/.runx/runtimes/<runtime>/<version>/
+~/.runx/runtimes/
 ```
 
 Example
 
 ```
-~/.runx/runtimes/node/20.11.0/
-~/.runx/runtimes/python/3.11.7/
+~/.runx/runtimes/
+
+node/
+└──20.11.0/
+
+python/
+└──3.11.7/
 ```
 
-Cached runtimes are automatically reused.
+Runx automatically reuses cached runtimes.
+
+No repeated downloads.
 
 ---
 
-# Supported Runtimes (MVP)
+# Supported Runtimes
 
 | Runtime | Status |
 |----------|--------|
 | Node.js | ✅ |
 | Python | ✅ |
+| Bun | 🚧 Planned |
+| Deno | 🚧 Planned |
+| Go | 🚧 Planned |
+| Java | 🚧 Planned |
+| .NET | 🚧 Planned |
 
 ---
 
-# Commands
+# CLI Commands
 
-```
+Initialize configuration
+
+```bash
 runx init
 ```
 
-Create a starter `runx.toml`.
+Run project command
 
-```
+```bash
 runx dev
 ```
 
-Execute the `dev` command.
+Build project
 
-```
+```bash
 runx build
 ```
 
-Execute the `build` command.
+Show version
 
-```
+```bash
 runx --version
 ```
 
-Show installed version.
+Display help
 
-```
+```bash
 runx --help
 ```
-
-Display CLI help.
 
 ---
 
 # Build From Source
 
-Clone the repository.
+Clone
 
 ```bash
 git clone https://github.com/aryankahar31/runx.git
@@ -224,7 +278,7 @@ Build
 cargo build --release
 ```
 
-Binary location
+Binary
 
 Linux/macOS
 
@@ -243,60 +297,112 @@ target\release\runx.exe
 # Architecture
 
 ```
-runx
- │
- ├── Parse runx.toml
- │
- ├── Resolve runtime versions
- │
- ├── Check local cache
- │
- ├── Download runtime (if missing)
- │
- ├── Extract portable runtime
- │
- ├── Cache runtime
- │
- └── Launch command with isolated PATH
+                    runx
+                      │
+          ┌───────────┴───────────┐
+          │                       │
+          ▼                       ▼
+    Parse runx.toml        Resolve runtimes
+          │
+          ▼
+     Check local cache
+          │
+     ┌────┴────┐
+     │         │
+ Cache Hit   Cache Miss
+     │         │
+     │     Download Runtime
+     │         │
+     │     Extract Archive
+     │         │
+     └────┬────┘
+          │
+          ▼
+  Build isolated PATH
+          │
+          ▼
+ Execute project command
 ```
+
+---
+
+# How It Works
+
+1. Read `runx.toml`
+2. Resolve runtime versions
+3. Check local cache
+4. Download missing runtime
+5. Extract portable runtime
+6. Build isolated PATH
+7. Execute command
 
 ---
 
 # Isolation
 
-runx **never** modifies:
+Runx never modifies
 
 - Global PATH
-- System runtimes
 - Shell startup files
+- System-installed runtimes
 - User environment
 
-Instead, it creates an isolated execution environment for each command.
+Instead, every command runs inside an isolated environment using only the configured runtimes.
+
+---
+
+# Comparison
+
+| Feature | Runx | nvm | Volta | pyenv | asdf |
+|----------|------|------|--------|--------|------|
+| Node.js | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Python | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Multiple runtimes | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Runtime cache | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Project launcher | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Cross-platform | ✅ | ⚠️ | ✅ | ⚠️ | ✅ |
 
 ---
 
 # Roadmap
 
-### Version 0.x
+## v0.1
 
 - ✅ Node.js
 - ✅ Python
 - ✅ Runtime cache
-- ✅ Cross-platform installers
 - ✅ GitHub Releases
-- ✅ GitHub Actions CI
+- ✅ Cross-platform installers
+- ✅ GitHub Actions CI/CD
 
-### Planned
+---
 
-- Bun
-- Deno
-- Java
-- Go
-- .NET
-- Plugin system
-- Runtime registry
-- Self update
-- VS Code extension
+## v0.2
+
+- 🚧 Bun
+- 🚧 Deno
+- 🚧 Go
+- 🚧 Java
+
+---
+
+## v0.3
+
+- 🚧 Runtime registry
+- 🚧 Plugin system
+- 🚧 Cache management
+- 🚧 Self update
+
+---
+
+## v1.0
+
+- 🚧 Stable API
+- 🚧 VS Code Extension
+- 🚧 Homebrew
+- 🚧 Scoop
+- 🚧 Winget
+- 🚧 Chocolatey
 
 ---
 
@@ -309,21 +415,54 @@ Please ensure:
 - Runtime installers remain portable
 - Downloads are deterministic
 - Existing tests continue to pass
-- New runtime behavior includes tests
+- New features include tests
+- Documentation is updated
+
+Clone the project
+
+```bash
+git clone https://github.com/aryankahar31/runx.git
+
+cd runx
+```
+
+Run tests
+
+```bash
+cargo test
+```
+
+Build
+
+```bash
+cargo build --release
+```
 
 ---
 
 # License
 
-MIT License
+This project is licensed under the MIT License.
+
+See the `LICENSE` file for details.
 
 ---
 
 <div align="center">
 
-**Built with ❤️ in Rust**
+## 🦀 Built with Rust
 
-⭐ Star the repository if you find runx useful.
+Portable runtimes.
+
+Deterministic environments.
+
+Zero global installations.
+
+---
+
+⭐ **If Runx helped you, consider giving the repository a star!**
+
+**GitHub**
 
 https://github.com/aryankahar31/runx
 
