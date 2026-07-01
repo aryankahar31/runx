@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  verify-ci:
+    name: Verify CI passed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CI workflow result for tagged commit
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const headSha = context.sha;
+            const workflowId = 'ci.yml';
+            const {owner, repo} = context.repo;
+
+            const runs = await github.paginate(
+              github.rest.actions.listWorkflowRuns,
+              {
+                owner,
+                repo,
+                workflow_id: workflowId,
+                head_sha: headSha,
+                event: 'push',
+                per_page: 100,
+              },
+            );
+
+            const successfulRun = runs.find((run) => run.conclusion === 'success');
+            if (!successfulRun) {
+              core.setFailed(
+                `No successful CI push run found for ${headSha}. Push the commit to main and wait for CI to pass before tagging.`,
+              );
+              return;
+            }
+
+            core.info(`Found successful CI run: ${successfulRun.html_url}`);
+
+  build:
+    name: Build ${{ matrix.artifact }}
+    needs: verify-ci
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: runx-linux-x64.tar.gz
+            binary: runx
+            archive: tar
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: runx-macos-x64.tar.gz
+            binary: runx
+            archive: tar
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: runx-macos-arm64.tar.gz
+            binary: runx
+            archive: tar
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: runx-windows-x64.zip
+            binary: runx.exe
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package tar.gz asset
+        if: matrix.archive == 'tar'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist package
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" package/runx
+          tar -czf "dist/${{ matrix.artifact }}" -C package runx
+
+      - name: Package zip asset
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist, package | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\${{ matrix.binary }}" "package\runx.exe"
+          Compress-Archive -Path "package\runx.exe" -DestinationPath "dist\${{ matrix.artifact }}" -Force
+
+      - name: Upload packaged asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packaged assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

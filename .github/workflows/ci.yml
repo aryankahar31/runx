@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Test
+        run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Smoke test runx on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          project_dir="$(mktemp -d)"
+          home_dir="$(mktemp -d)"
+          cat > "$project_dir/runx.toml" <<'EOF'
+          [runtimes]
+          node = "20.11.0"
+
+          [run]
+          dev = "node --version"
+          EOF
+
+          output="$(cd "$project_dir" && HOME="$home_dir" "$GITHUB_WORKSPACE/target/release/runx" dev)"
+          printf '%s\n' "$output"
+          grep -F "v20.11.0" <<< "$output"
+
+      - name: Smoke test runx on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $projectDir = Join-Path $env:RUNNER_TEMP ([System.Guid]::NewGuid().ToString())
+          $homeDir = Join-Path $env:RUNNER_TEMP ([System.Guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $projectDir, $homeDir | Out-Null
+
+          @"
+          [runtimes]
+          node = "20.11.0"
+
+          [run]
+          dev = "node --version"
+          "@ | Set-Content -Path (Join-Path $projectDir "runx.toml") -NoNewline
+
+          $env:HOME = $homeDir
+          $env:USERPROFILE = $homeDir
+          Push-Location $projectDir
+          try {
+              $output = & "$env:GITHUB_WORKSPACE\target\release\runx.exe" dev
+              $output | Write-Output
+              if (($output -join "`n") -notmatch "v20\.11\.0") {
+                  throw "Smoke test output did not contain v20.11.0"
+              }
+          }
+          finally {
+              Pop-Location
+          }
