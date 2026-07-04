@@ -7,10 +7,10 @@
 Run projects with the exact runtime versions they require — **without installing Node.js, Python, or other runtimes globally.**
 
 [![CI](https://github.com/aryankahar31/runx/actions/workflows/ci.yml/badge.svg)](https://github.com/aryankahar31/runx/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/aryankahar31/runx)](https://github.com/aryankahar31/runx/releases)
-[![License](https://img.shields.io/github/license/aryankahar31/runx)](LICENSE)
-[![Rust](https://img.shields.io/badge/Built%20With-Rust-orange)](https://www.rust-lang.org/)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)](https://github.com/aryankahar31/runx)
+[![Latest Release](https://img.shields.io/github/v/release/aryankahar31/runx?label=Release)](https://github.com/aryankahar31/runx/releases)
+[![License: MIT](https://img.shields.io/github/license/aryankahar31/runx)](LICENSE)
+[![Rust](https://img.shields.io/badge/Built%20with-Rust-orange?logo=rust)](https://www.rust-lang.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)](https://github.com/aryankahar31/runx)
 
 **One command. Any runtime. Any project.**
 
