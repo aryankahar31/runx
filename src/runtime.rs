@@ -140,16 +140,25 @@ fn find_python_asset(version: &str, platform: &str) -> Result<GithubAsset> {
 }
 
 fn fetch_python_release_page(url: &str) -> Result<Vec<GithubRelease>> {
-    let mut last_error = None;
+    let mut last_error: Option<anyhow::Error> = None;
     for attempt in 1..=3 {
         match ureq::get(url).set("User-Agent", "runx/0.1.0").call() {
             Ok(response) => {
-                return response
+                match response
                     .into_json()
-                    .with_context(|| "Failed to decode python-build-standalone release metadata");
+                    .with_context(|| "Failed to decode python-build-standalone release metadata")
+                {
+                    Ok(releases) => return Ok(releases),
+                    Err(err) => {
+                        last_error = Some(err);
+                        if attempt < 3 {
+                            thread::sleep(Duration::from_secs(attempt));
+                        }
+                    }
+                }
             }
             Err(err) => {
-                last_error = Some(err);
+                last_error = Some(err.into());
                 if attempt < 3 {
                     thread::sleep(Duration::from_secs(attempt));
                 }
@@ -186,5 +195,77 @@ fn python_bin_dirs() -> Vec<PathBuf> {
         vec![PathBuf::from("."), PathBuf::from("Scripts")]
     } else {
         vec![PathBuf::from("bin")]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fetch_python_release_page;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn retries_on_decode_failure_before_succeeding() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        listener
+            .set_nonblocking(true)
+            .expect("configure nonblocking listener");
+        let addr = listener.local_addr().expect("listener address");
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let request_count_for_server = Arc::clone(&request_count);
+
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut served = 0usize;
+
+            while served < 2 && Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        served += 1;
+                        request_count_for_server.fetch_add(1, Ordering::SeqCst);
+
+                        let mut request = [0u8; 1024];
+                        let _ = stream.read(&mut request);
+
+                        let body = if served == 1 {
+                            r#"[{"assets":[{"name":"cpython-3.11.7+"#
+                        } else {
+                            r#"[{"assets":[{"name":"cpython-3.11.7+x86_64-unknown-linux-gnu-install_only.tar.gz","browser_download_url":"https://example.invalid/python.tar.gz"}]}]"#
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        stream
+                            .write_all(response.as_bytes())
+                            .expect("write test response");
+                        stream.flush().expect("flush test response");
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(err) => panic!("listener accept failed: {err}"),
+                }
+            }
+
+            assert_eq!(served, 2, "expected two requests to reach the test server");
+        });
+
+        let url = format!("http://{addr}/releases");
+        let releases = fetch_python_release_page(&url).expect("request should retry and succeed");
+
+        server.join().expect("server thread should exit cleanly");
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].assets.len(), 1);
     }
 }
