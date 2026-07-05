@@ -49,6 +49,92 @@ No version managers.
 
 ---
 
+# 🔍 Zero-Config Mode
+
+Runx works **without a `runx.toml`** if standard version files are already
+present in your project.
+
+## How it works
+
+When you run `runx dev` and no `runx.toml` is found, runx automatically
+scans the project directory for well-known ecosystem files and infers the
+runtime versions from them.
+
+If a `runx.toml` *does* exist it is **always used exclusively** — explicit
+configuration always wins over auto-detection, with no merging.
+
+## Detected files and priority order
+
+### Node.js (first match wins)
+
+| Priority | File | Notes |
+|----------|------|-------|
+| 1 | `.nvmrc` | Plain text, leading `v` stripped |
+| 2 | `.node-version` | Plain text, leading `v` stripped |
+| 3 | `package.json` → `engines.node` | JSON, range resolved (see below) |
+
+### Python (first match wins)
+
+| Priority | File | Notes |
+|----------|------|-------|
+| 1 | `.python-version` | Plain text, leading `v` stripped |
+| 2 | `pyproject.toml` → `[project].requires-python` | TOML, range resolved (see below) |
+
+## Semver range resolution
+
+When a version file contains a range (e.g. `>=3.11`, `^20`, `~20.11`)
+rather than an exact version, runx resolves it to the **minimum version
+that satisfies the constraint**:
+
+| Input | Resolved to |
+|-------|-------------|
+| `>=3.11` | `3.11.0` |
+| `^20` | `20.0.0` |
+| `~20.11` | `20.11.0` |
+| `>=20.11.0` | `20.11.0` |
+| `20.11.0` | `20.11.0` (exact, no change) |
+
+This is a documented simplification. Runx always prints which version was
+chosen and from which file so there are no silent surprises.
+
+## Run-command inference
+
+For the inferred `dev` command runx checks whether `package.json` contains
+a `"dev"` script and runs `npm run dev` if so.  No other commands are
+guessed.  If a dev command cannot be inferred, runx prints a clear error
+and suggests running `runx init`.
+
+## Example output
+
+With only a `.nvmrc` and a `package.json` that has a `dev` script:
+
+```
+No runx.toml found — detected from project files:
+  node 20.11.0 (from .nvmrc)
+Installing node 20.11.0
+...
+Running `npm run dev`
+```
+
+On subsequent runs (runtime already cached):
+
+```
+No runx.toml found — detected from project files:
+  node 20.11.0 (from .nvmrc)
+Using cached node 20.11.0 at /home/user/.runx/runtimes/node/20.11.0
+Running `npm run dev`
+```
+
+## Opt-in-by-absence guarantee
+
+- If `runx.toml` exists → it is the sole source of truth. Auto-detection
+  is never consulted, and the file is never modified.
+- Auto-detection is the fallback *only* when no `runx.toml` is present.
+- Auto-detection **never writes to disk**. To persist a detected
+  configuration, run `runx init` which creates a starter `runx.toml`.
+
+---
+
 # ✨ Features
 
 - 🚀 Zero global runtime installation
@@ -421,6 +507,7 @@ Instead, every command runs inside an isolated environment using only the config
 
 ## v0.2
 
+- ✅ Zero-config auto-detection (Node.js + Python from `.nvmrc`, `.node-version`, `package.json`, `.python-version`, `pyproject.toml`)
 - 🚧 Bun
 - 🚧 Deno
 - 🚧 Go

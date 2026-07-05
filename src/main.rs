@@ -1,10 +1,10 @@
-mod cache;
-mod config;
-mod downloader;
-mod error;
-mod executor;
-mod extractor;
-mod runtime;
+// The library crate (lib.rs) owns all modules.  The binary just imports them.
+use runx::cache;
+use runx::config;
+use runx::downloader;
+use runx::executor;
+use runx::extractor;
+use runx::runtime;
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
@@ -58,21 +58,33 @@ fn init_config() -> Result<()> {
 
 fn run_command(command_key: &str) -> Result<()> {
     let cwd = env::current_dir().context("Failed to determine current directory")?;
-    let config = config::RunxConfig::load_from_dir(&cwd)?;
+
+    // Load config from runx.toml, or fall back to auto-detection.
+    let resolved = config::load_or_detect(&cwd)?;
+
+    // Print the transparency banner when auto-detection was used.
+    if !resolved.detection_lines.is_empty() {
+        println!("No runx.toml found — detected from project files:");
+        for line in &resolved.detection_lines {
+            println!("{line}");
+        }
+    }
+
+    let config = resolved.inner;
     let command = config.command(command_key)?.to_string();
 
     let mut cached = Vec::new();
     for (tool, version) in &config.runtimes {
         let spec = runtime::resolve_runtime(tool, version)
             .with_context(|| format!("Failed to resolve runtime {tool} {version}"))?;
-        if let Some(runtime) = cache::cached_runtime(&spec)? {
+        if let Some(rt) = cache::cached_runtime(&spec)? {
             println!(
                 "Using cached {} {} at {}",
                 spec.tool,
                 spec.version,
-                runtime.root.display()
+                rt.root.display()
             );
-            cached.push(runtime);
+            cached.push(rt);
             continue;
         }
 
@@ -82,8 +94,8 @@ fn run_command(command_key: &str) -> Result<()> {
         let extraction = extractor::extract_archive(&archive, &root, spec.archive_kind);
         downloader::remove_temp_file(&archive);
         extraction?;
-        let runtime = cache::finalize_cached_runtime(&root, &spec)?;
-        cached.push(runtime);
+        let rt = cache::finalize_cached_runtime(&root, &spec)?;
+        cached.push(rt);
     }
 
     let status = executor::execute(&command, &cached, &cwd)?;
