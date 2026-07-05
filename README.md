@@ -183,7 +183,7 @@ runx --version
 Expected output
 
 ```
-runx 0.1.1
+runx 0.2.0
 ```
 
 ---
@@ -480,14 +480,16 @@ Instead, every command runs inside an isolated environment using only the config
 
 # Comparison
 
-| Feature | Runx | nvm | Volta | pyenv | asdf |
-|----------|------|------|--------|--------|------|
-| Node.js | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Python | ✅ | ❌ | ❌ | ✅ | ✅ |
-| Multiple runtimes | ✅ | ❌ | ❌ | ❌ | ✅ |
-| Runtime cache | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Project launcher | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Cross-platform | ✅ | ⚠️ | ✅ | ⚠️ | ✅ |
+| Feature | Runx | nvm | Volta | pyenv | asdf | mise |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Node.js | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| Python | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Multiple runtimes | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ |
+| Runtime cache | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Project launcher | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Cross-platform | ✅ | ⚠️ | ✅ | ⚠️ | ✅ | ✅ |
+| Zero-config detection from existing files | ✅ | ⚠️ (only `.nvmrc`) | ⚠️ (only `volta` field) | ⚠️ (only `.python-version`) | ❌ (requires `.tool-versions`) | ⚠️ (supports `.nvmrc`/`.python-version`, not `package.json` engines or `pyproject.toml`) |
+| Shell integration required | ❌ (none) | ✅ (required) | ❌ (none) | ✅ (required) | ✅ (required) | ⚠️ (optional; needed for ambient switching) |
 
 ---
 
