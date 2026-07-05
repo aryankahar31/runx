@@ -29,8 +29,8 @@ fn zero_config_from_package_json_only() {
     )
     .unwrap();
 
-    let resolved = config::load_or_detect(dir.path())
-        .expect("should auto-detect from package.json");
+    let resolved =
+        config::load_or_detect(dir.path()).expect("should auto-detect from package.json");
 
     assert_eq!(
         resolved.inner.runtimes.get("node").map(String::as_str),
@@ -60,8 +60,7 @@ fn nvmrc_beats_package_json_engines_in_zero_config() {
     )
     .unwrap();
 
-    let resolved = config::load_or_detect(dir.path())
-        .expect("should auto-detect from .nvmrc");
+    let resolved = config::load_or_detect(dir.path()).expect("should auto-detect from .nvmrc");
 
     assert_eq!(
         resolved.inner.runtimes["node"], "18.20.3",
@@ -87,8 +86,7 @@ fn explicit_toml_always_wins_over_detection() {
     )
     .unwrap();
 
-    let resolved = config::load_or_detect(dir.path())
-        .expect("should load runx.toml without error");
+    let resolved = config::load_or_detect(dir.path()).expect("should load runx.toml without error");
 
     assert_eq!(
         resolved.inner.runtimes["node"], "16.20.0",
@@ -111,8 +109,8 @@ fn range_in_package_json_engines_is_resolved() {
     )
     .unwrap();
 
-    let resolved = config::load_or_detect(dir.path())
-        .expect("should auto-detect and resolve range");
+    let resolved =
+        config::load_or_detect(dir.path()).expect("should auto-detect and resolve range");
 
     assert_eq!(
         resolved.inner.runtimes["node"], "20.0.0",
@@ -184,4 +182,3 @@ fn integration_runs_binary_and_prints_banner() {
         "stdout should contain installing/cached log, got:\n{stdout}"
     );
 }
-

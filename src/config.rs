@@ -184,7 +184,7 @@ build = "node --version"
 
 #[cfg(test)]
 mod tests {
-    use super::{RunxConfig, load_or_detect, CONFIG_FILE};
+    use super::{load_or_detect, RunxConfig, CONFIG_FILE};
     use std::fs;
     use tempfile::TempDir;
 

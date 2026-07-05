@@ -139,10 +139,7 @@ fn detect_python_from_pyproject(dir: &Path) -> Option<DetectedRuntime> {
 fn infer_dev_command(dir: &Path) -> Option<String> {
     let raw = fs::read_to_string(dir.join("package.json")).ok()?;
     let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let has_dev = json
-        .get("scripts")
-        .and_then(|s| s.get("dev"))
-        .is_some();
+    let has_dev = json.get("scripts").and_then(|s| s.get("dev")).is_some();
     if has_dev {
         Some("npm run dev".to_string())
     } else {
@@ -388,7 +385,10 @@ mod tests {
 
         let result = detect_runtimes(dir.path());
         let node = result.node.expect("should detect node");
-        assert_eq!(node.version, "20.11.0", ".nvmrc must win over .node-version");
+        assert_eq!(
+            node.version, "20.11.0",
+            ".nvmrc must win over .node-version"
+        );
         assert_eq!(node.source, ".nvmrc");
     }
 
@@ -453,10 +453,7 @@ mod tests {
         .unwrap();
 
         let result = detect_runtimes(dir.path());
-        assert_eq!(
-            result.inferred_dev_command.as_deref(),
-            Some("npm run dev")
-        );
+        assert_eq!(result.inferred_dev_command.as_deref(), Some("npm run dev"));
     }
 
     #[test]
@@ -540,7 +537,8 @@ mod tests {
         // UTF-16 LE BOM (FF FE) followed by "20.11.0\n"
         let data: &[u8] = &[
             0xFF, 0xFE, // BOM
-            b'2', 0x00, b'0', 0x00, b'.', 0x00, b'1', 0x00, b'1', 0x00, b'.', 0x00, b'0', 0x00, b'\n', 0x00,
+            b'2', 0x00, b'0', 0x00, b'.', 0x00, b'1', 0x00, b'1', 0x00, b'.', 0x00, b'0', 0x00,
+            b'\n', 0x00,
         ];
         fs::write(&path, data).unwrap();
         let result = detect_runtimes(dir.path());
@@ -563,4 +561,3 @@ mod tests {
         assert_eq!(node.version, "18.20.0");
     }
 }
-
