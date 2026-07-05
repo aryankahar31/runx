@@ -142,7 +142,14 @@ fn create_alias(target: &Path, alias: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
+/// Create the Python alias on Windows using a hard link, falling back to a full
+/// copy only if hard-linking fails (e.g. cross-device or permission issues).
+/// Hard links avoid wasting disk space and never go stale relative to the
+/// original executable.
 fn create_alias(target: &Path, alias: &Path) -> Result<()> {
-    fs::copy(target, alias)?;
-    Ok(())
+    if std::fs::hard_link(target, alias).is_ok() {
+        return Ok(());
+    }
+    // Fallback for cross-device or permission issues.
+    fs::copy(target, alias).map(|_| ()).map_err(Into::into)
 }

@@ -2,7 +2,11 @@ use crate::detect;
 use crate::error::UserError;
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 pub const CONFIG_FILE: &str = "runx.toml";
 
@@ -70,6 +74,7 @@ impl RunxConfig {
             if tool.trim().is_empty() || version.trim().is_empty() {
                 return Err(UserError::new("Runtime names and versions cannot be empty.").into());
             }
+            validate_version_format(tool, version)?;
         }
 
         for (name, command) in &self.run {
@@ -79,6 +84,61 @@ impl RunxConfig {
         }
 
         Ok(())
+    }
+}
+
+/// Validate that a runtime version string is in `MAJOR.MINOR.PATCH` form, where
+/// each part is a non-negative integer (e.g. `20.11.0`).
+///
+/// This rejects loose specifiers like `latest` or `lts/iron` that would
+/// otherwise pass the emptiness check and later produce a confusing 404.
+fn validate_version_format(tool: &str, version: &str) -> Result<()> {
+    let parts: Vec<&str> = version.splitn(4, '.').collect();
+    let valid = parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+    if !valid {
+        return Err(UserError::new(format!(
+            "Invalid version `{version}` for runtime `{tool}`.\n\
+             Expected MAJOR.MINOR.PATCH with numeric parts (e.g. 20.11.0).\n\
+             Hint: use `runx init` to see example versions."
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// Walk up the directory tree from `start`, returning the first directory that
+/// looks like a project root.
+///
+/// A directory qualifies if it contains a `runx.toml`, or any standard
+/// ecosystem version file (`.nvmrc`, `.node-version`, `.python-version`,
+/// `package.json`, `pyproject.toml`). Returns `None` if the filesystem root is
+/// reached without a match. This mirrors how cargo/npm/git locate their config.
+pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
+    let mut current = start;
+    loop {
+        if current.join(CONFIG_FILE).exists() {
+            return Some(current.to_path_buf());
+        }
+        // Also treat any directory containing detectable version files as a project root.
+        let has_version_file = [
+            ".nvmrc",
+            ".node-version",
+            ".python-version",
+            "package.json",
+            "pyproject.toml",
+        ]
+        .iter()
+        .any(|f| current.join(f).exists());
+        if has_version_file {
+            return Some(current.to_path_buf());
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => return None,
+        }
     }
 }
 

@@ -40,25 +40,25 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
+/// Build a PATH that prepends runtime bin directories to the existing system
+/// PATH. Runtime dirs come first so cached versions take priority, while all
+/// system tools (git, make, curl, Homebrew, etc.) remain accessible.
 fn isolated_path(runtimes: &[CachedRuntime]) -> Result<OsString> {
     let mut paths: Vec<PathBuf> = Vec::new();
+
+    // Runtime bin dirs first — take priority over system installs.
     for runtime in runtimes {
         for dir in &runtime.bin_dirs {
             paths.push(dir.clone());
         }
     }
-    paths.extend(minimal_safe_path());
-    env::join_paths(paths).context("Failed to build isolated PATH")
-}
 
-fn minimal_safe_path() -> Vec<PathBuf> {
-    if cfg!(windows) {
-        vec![
-            PathBuf::from(r"C:\Windows\System32"),
-            PathBuf::from(r"C:\Windows"),
-            PathBuf::from(r"C:\Windows\System32\Wbem"),
-        ]
-    } else {
-        vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")]
+    // Append existing system PATH so git, make, curl, etc. still work.
+    if let Some(system_path) = env::var_os("PATH") {
+        for entry in env::split_paths(&system_path) {
+            paths.push(entry);
+        }
     }
+
+    env::join_paths(paths).context("Failed to build isolated PATH")
 }
