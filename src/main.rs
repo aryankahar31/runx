@@ -17,7 +17,8 @@ use std::{env, fs, process};
     about = "Universal project launcher with portable runtimes"
 )]
 struct Cli {
-    /// Command key from [run] in runx.toml, or `init`
+    /// Command key from [run] in runx.toml, or `init`.
+    /// If runx.toml is missing, runx auto-detects from standard project files (.nvmrc, .node-version, package.json, pyproject.toml, etc.).
     command: Option<String>,
 }
 
