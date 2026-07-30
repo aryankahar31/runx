@@ -10,10 +10,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-/// Compile-time User-Agent string derived from the crate version, so it never
-/// goes stale as the crate is bumped.
-const USER_AGENT: &str = concat!("runx/", env!("CARGO_PKG_VERSION"));
-
 /// Number of seconds a cached Python release lookup remains valid (24 hours).
 const PYTHON_CACHE_TTL_SECS: u64 = 86_400;
 
@@ -289,7 +285,7 @@ fn now_secs() -> u64 {
 fn fetch_python_release_page(url: &str) -> Result<Vec<GithubRelease>> {
     let mut last_error: Option<anyhow::Error> = None;
     for attempt in 1..=3 {
-        match ureq::get(url).set("User-Agent", USER_AGENT).call() {
+        match crate::http::get(url).call() {
             Ok(response) => {
                 match response
                     .into_json()

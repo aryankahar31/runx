@@ -8,5 +8,6 @@ pub mod downloader;
 pub mod error;
 pub mod executor;
 pub mod extractor;
+pub mod http;
 pub mod runtime;
 pub mod version;

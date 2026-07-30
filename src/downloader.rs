@@ -9,10 +9,6 @@ use std::{
 };
 use tempfile::NamedTempFile;
 
-/// Compile-time User-Agent string derived from the crate version, so it never
-/// goes stale as the crate is bumped.
-const USER_AGENT: &str = concat!("runx/", env!("CARGO_PKG_VERSION"));
-
 /// Download `url` to a temporary file, verify its SHA-256 against the checksum
 /// document published at `checksum_url`, and return the verified temp file.
 ///
@@ -22,8 +18,7 @@ const USER_AGENT: &str = concat!("runx/", env!("CARGO_PKG_VERSION"));
 /// verification is never handed back for extraction.
 pub fn download_to_temp(url: &str, checksum_url: &str) -> Result<NamedTempFile> {
     println!("Downloading {url}");
-    let response = ureq::get(url)
-        .set("User-Agent", USER_AGENT)
+    let response = crate::http::get(url)
         .call()
         .with_context(|| format!("Failed to download {url}"))?;
 
@@ -73,8 +68,7 @@ fn verify_checksum(url: &str, checksum_url: &str, temp: &NamedTempFile) -> Resul
 /// Fetch a checksum document (Node `SHASUMS256.txt` or a python
 /// `.sha256` sidecar) into memory rather than to disk.
 fn fetch_checksum_document(checksum_url: &str) -> Result<String> {
-    ureq::get(checksum_url)
-        .set("User-Agent", USER_AGENT)
+    crate::http::get(checksum_url)
         .call()
         .with_context(|| format!("Failed to download checksum from {checksum_url}"))?
         .into_string()
