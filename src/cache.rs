@@ -159,7 +159,12 @@ pub fn staging_dir(home: &Path, spec: &RuntimeSpec) -> Result<PathBuf> {
 /// executable never replaces a working install. The previous implementation
 /// deleted the destination before extracting, which meant a failed download
 /// destroyed the existing cache and left a partial tree behind at the real path.
-pub fn commit_runtime(home: &Path, staging: &Path, spec: &RuntimeSpec) -> Result<CachedRuntime> {
+pub fn commit_runtime(
+    home: &Path,
+    staging: &Path,
+    spec: &RuntimeSpec,
+    sha256: Option<String>,
+) -> Result<CachedRuntime> {
     normalize_runtime(staging, spec)?;
 
     let exe = expected_executable(staging, spec);
@@ -172,7 +177,7 @@ pub fn commit_runtime(home: &Path, staging: &Path, spec: &RuntimeSpec) -> Result
         );
     }
 
-    write_receipt(staging, spec, None)?;
+    write_receipt(staging, spec, sha256)?;
 
     let final_root = runtime_root_in(home, &spec.tool, &spec.version);
     if let Some(parent) = final_root.parent() {
@@ -375,7 +380,7 @@ mod tests {
         let staging = staging_dir(home.path(), &spec).expect("staging dir");
         populate(&staging, &spec);
 
-        let cached = commit_runtime(home.path(), &staging, &spec).expect("commit");
+        let cached = commit_runtime(home.path(), &staging, &spec, None).expect("commit");
 
         assert_eq!(cached.root, runtime_root_in(home.path(), "node", "20.11.0"));
         assert!(cached.root.is_dir(), "runtime should exist at final path");
@@ -396,7 +401,7 @@ mod tests {
         fs::write(staging.join("lib/partial.so"), b"x").unwrap();
 
         assert!(
-            commit_runtime(home.path(), &staging, &spec).is_err(),
+            commit_runtime(home.path(), &staging, &spec, None).is_err(),
             "commit must fail when the executable is missing"
         );
         assert!(
@@ -420,12 +425,12 @@ mod tests {
 
         let first = staging_dir(home.path(), &spec).expect("staging dir");
         populate(&first, &spec);
-        commit_runtime(home.path(), &first, &spec).expect("first install");
+        commit_runtime(home.path(), &first, &spec, None).expect("first install");
 
         // A second install that fails verification.
         let second = staging_dir(home.path(), &spec).expect("second staging dir");
         fs::write(second.join("junk"), b"x").unwrap();
-        assert!(commit_runtime(home.path(), &second, &spec).is_err());
+        assert!(commit_runtime(home.path(), &second, &spec, None).is_err());
 
         assert!(
             cached_runtime_in(home.path(), &spec).unwrap().is_some(),
@@ -440,12 +445,12 @@ mod tests {
 
         let first = staging_dir(home.path(), &spec).expect("staging");
         populate(&first, &spec);
-        commit_runtime(home.path(), &first, &spec).expect("first install");
+        commit_runtime(home.path(), &first, &spec, None).expect("first install");
 
         let second = staging_dir(home.path(), &spec).expect("staging");
         populate(&second, &spec);
         fs::write(second.join("marker.txt"), b"second").unwrap();
-        let cached = commit_runtime(home.path(), &second, &spec).expect("second install");
+        let cached = commit_runtime(home.path(), &second, &spec, None).expect("second install");
 
         assert!(
             cached.root.join("marker.txt").is_file(),
@@ -478,7 +483,7 @@ mod tests {
                     let spec = spec();
                     let staging = staging_dir(&home_path, &spec).expect("staging");
                     populate(&staging, &spec);
-                    commit_runtime(&home_path, &staging, &spec).map(|rt| rt.root)
+                    commit_runtime(&home_path, &staging, &spec, None).map(|rt| rt.root)
                 })
             })
             .collect();

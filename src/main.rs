@@ -215,15 +215,19 @@ fn run_command(command_key: &str) -> Result<()> {
             let home = home.clone();
             std::thread::spawn(move || -> Result<cache::CachedRuntime> {
                 println!("Installing {} {}", spec.tool, spec.version);
-                let temp = downloader::download_to_temp(&spec.url, &spec.checksum_url)?;
+                let download = downloader::download_to_temp(&spec.url, &spec.checksum_url)?;
                 let staging = cache::staging_dir(&home, &spec)?;
 
-                let result = extractor::extract_archive(temp.path(), &staging, spec.archive_kind)
-                    .and_then(|()| cache::commit_runtime(&home, &staging, &spec));
+                // Record the digest that was actually verified, so `runx.lock`
+                // reflects the installed bytes rather than a second fetch.
+                let sha256 = download.sha256.clone();
+                let result =
+                    extractor::extract_archive(download.path(), &staging, spec.archive_kind)
+                        .and_then(|()| cache::commit_runtime(&home, &staging, &spec, Some(sha256)));
 
-                // Dropping the NamedTempFile deletes the archive even on the
+                // Dropping the download deletes the temp archive even on the
                 // error path, so a failed install leaks nothing.
-                drop(temp);
+                drop(download);
 
                 if result.is_err() {
                     cache::discard_staging(&staging);

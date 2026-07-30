@@ -9,14 +9,31 @@ use std::{
 };
 use tempfile::NamedTempFile;
 
-/// Download `url` to a temporary file, verify its SHA-256 against the checksum
-/// document published at `checksum_url`, and return the verified temp file.
+/// A verified download: the archive plus the digest that was checked.
 ///
-/// The returned [`NamedTempFile`] auto-deletes on drop (including on panic or
-/// early return), so the caller should extract from `temp.path()` and then drop
-/// it. The checksum is verified *before* returning — a file that fails
-/// verification is never handed back for extraction.
-pub fn download_to_temp(url: &str, checksum_url: &str) -> Result<NamedTempFile> {
+/// The digest is returned rather than discarded so `runx.lock` can record what
+/// was actually installed, instead of re-hashing the file or trusting a second
+/// fetch of the checksum document.
+pub struct Download {
+    pub temp: NamedTempFile,
+    pub sha256: String,
+}
+
+impl Download {
+    /// Path of the downloaded archive.
+    pub fn path(&self) -> &Path {
+        self.temp.path()
+    }
+}
+
+/// Download `url` to a temporary file, verify its SHA-256 against the checksum
+/// document published at `checksum_url`, and return the verified archive.
+///
+/// The inner [`NamedTempFile`] auto-deletes on drop (including on panic or
+/// early return), so the caller should extract from `path()` and then drop it.
+/// The checksum is verified *before* returning — a file that fails verification
+/// is never handed back for extraction.
+pub fn download_to_temp(url: &str, checksum_url: &str) -> Result<Download> {
     println!("Downloading {url}");
     let response = crate::http::get(url)
         .call()
@@ -41,16 +58,18 @@ pub fn download_to_temp(url: &str, checksum_url: &str) -> Result<NamedTempFile> 
     copy_with_progress(&mut reader, temp.as_file_mut(), &progress)?;
     progress.finish_and_clear();
 
-    verify_checksum(url, checksum_url, &temp)?;
+    let sha256 = verify_checksum(url, checksum_url, &temp)?;
 
     // Do NOT call `.keep()` — returning the NamedTempFile lets it auto-delete on
     // drop, so a killed process never leaks the file on disk.
-    Ok(temp)
+    Ok(Download { temp, sha256 })
 }
 
 /// Verify the SHA-256 of `temp` against the expected hash published at
-/// `checksum_url`. Returns an error on mismatch without extracting anything.
-fn verify_checksum(url: &str, checksum_url: &str, temp: &NamedTempFile) -> Result<()> {
+/// `checksum_url`, returning the verified digest.
+///
+/// Returns an error on mismatch without extracting anything.
+fn verify_checksum(url: &str, checksum_url: &str, temp: &NamedTempFile) -> Result<String> {
     let filename = url.rsplit('/').next().unwrap_or(url);
     let document = fetch_checksum_document(checksum_url)?;
     let expected = extract_expected_hash(&document, filename).ok_or_else(|| {
@@ -62,7 +81,7 @@ fn verify_checksum(url: &str, checksum_url: &str, temp: &NamedTempFile) -> Resul
         anyhow::bail!("SHA-256 mismatch for {filename}: expected {expected}, got {actual}");
     }
     println!("✓ Checksum verified");
-    Ok(())
+    Ok(actual)
 }
 
 /// Fetch a checksum document (Node `SHASUMS256.txt` or a python
