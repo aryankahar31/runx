@@ -5,11 +5,16 @@ use runx::downloader;
 use runx::error;
 use runx::executor;
 use runx::extractor;
+use runx::lock;
 use runx::runtime;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::{env, fs, process};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process,
+};
 
 /// Subcommand names that cannot be used as `[run]` keys, because clap resolves
 /// them to built-in commands first.
@@ -18,7 +23,15 @@ use std::{env, fs, process};
 /// via the explicit `runx run <key>` form, and [`warn_about_shadowed_keys`]
 /// points that out rather than leaving the user to guess why `runx cache`
 /// stopped running their script.
-const RESERVED_COMMANDS: &[&str] = &["init", "run", "cache", "doctor", "completions", "self"];
+const RESERVED_COMMANDS: &[&str] = &[
+    "init",
+    "run",
+    "lock",
+    "cache",
+    "doctor",
+    "completions",
+    "self",
+];
 
 #[derive(Debug, Parser)]
 #[command(
@@ -48,7 +61,14 @@ enum Command {
     Run {
         /// The command key to run.
         key: String,
+
+        /// Fail instead of resolving anything runx.lock does not already pin.
+        #[arg(long)]
+        locked: bool,
     },
+
+    /// Write runx.lock, pinning the exact runtimes this project resolves to.
+    Lock,
 
     /// Any other word is treated as a [run] command key, so `runx dev` works.
     #[command(external_subcommand)]
@@ -67,7 +87,8 @@ fn run() -> Result<()> {
 
     match cli.command {
         Some(Command::Init) => init_config(),
-        Some(Command::Run { key }) => run_command(&key),
+        Some(Command::Run { key, locked }) => run_command(&key, locked),
+        Some(Command::Lock) => lock_command(),
         Some(Command::External(args)) => dispatch_external(args),
         None => print_help(),
     }
@@ -104,7 +125,7 @@ fn dispatch_external(args: Vec<String>) -> Result<()> {
         .into());
     }
 
-    run_command(&key)
+    run_command(&key, false)
 }
 
 fn init_config() -> Result<()> {
@@ -148,7 +169,19 @@ fn warn_about_shadowed_keys(config: &config::RunxConfig) {
     }
 }
 
-fn run_command(command_key: &str) -> Result<()> {
+/// A runtime that is present in the cache and ready to use.
+struct Provisioned {
+    spec: runtime::RuntimeSpec,
+    cached: cache::CachedRuntime,
+    /// The requirement in `runx.toml` (or detected) that produced this version.
+    requirement: String,
+}
+
+/// Locate the project root and load its configuration.
+///
+/// Shared by `run` and `lock` so both agree on which directory is the project
+/// and how auto-detection is reported.
+fn load_project() -> Result<(PathBuf, config::RunxConfig)> {
     let cwd = env::current_dir().context("Failed to determine current directory")?;
 
     // Walk up parent directories to find the project root.
@@ -171,49 +204,73 @@ fn run_command(command_key: &str) -> Result<()> {
         }
     }
 
-    let config = resolved.inner;
-    warn_about_shadowed_keys(&config);
-    let command = config.command(command_key)?.to_string();
+    Ok((project_dir, resolved.inner))
+}
 
-    // 1. Resolve all specs first (fast, no network for pinned versions).
-    let specs: Vec<runtime::RuntimeSpec> = config
-        .runtimes
-        .iter()
-        .map(|(tool, version)| {
-            runtime::resolve_runtime(tool, version)
-                .with_context(|| format!("Failed to resolve runtime {tool} {version}"))
-        })
-        .collect::<Result<_>>()?;
+/// Ensure every runtime the config asks for is installed, and return them.
+///
+/// Consults `runx.lock` first: a pinned version for an unchanged requirement is
+/// used verbatim. Missing runtimes are downloaded in parallel, each into its own
+/// staging directory, and renamed into place only after verification — so an
+/// interrupted install can never leave a partial tree that looks cached, and a
+/// failed install never destroys a runtime that already worked.
+fn provision(
+    project_dir: &Path,
+    config: &config::RunxConfig,
+    locked: bool,
+) -> Result<Vec<Provisioned>> {
+    let lockfile = lock::Lockfile::load(project_dir)?;
+    let plan = lock::plan(&config.runtimes, lockfile.as_ref(), locked)?;
 
-    // 2. Split into cached vs needs-download.
-    let mut cached: Vec<cache::CachedRuntime> = Vec::new();
-    let mut to_download: Vec<runtime::RuntimeSpec> = Vec::new();
-    for spec in specs {
-        if let Some(rt) = cache::cached_runtime(&spec)? {
-            println!(
-                "Using cached {} {} at {}",
-                spec.tool,
-                spec.version,
-                rt.root.display()
-            );
-            cached.push(rt);
-        } else {
-            to_download.push(spec);
+    for entry in &plan {
+        if let Some(note) = &entry.note {
+            eprintln!("Note: {note}");
         }
     }
 
-    // 3. Download all missing runtimes in parallel threads.
-    //
-    // Each install extracts into its own staging directory and is only renamed
-    // into place once verified, so an interrupted or failed install can never
-    // leave a half-extracted tree that the next run mistakes for a valid cache
-    // entry — and never destroys a runtime that already worked.
+    // Resolve specs first — fast, and no network for concrete versions.
+    let mut specs: Vec<(runtime::RuntimeSpec, String)> = Vec::new();
+    for entry in &plan {
+        let requirement = config
+            .runtimes
+            .get(&entry.tool)
+            .cloned()
+            .unwrap_or_else(|| entry.version.clone());
+
+        let spec = runtime::resolve_runtime(&entry.tool, &entry.version).with_context(|| {
+            format!("Failed to resolve runtime {} {}", entry.tool, entry.version)
+        })?;
+        specs.push((spec, requirement));
+    }
+
+    // Split into already-cached and needs-download.
+    let mut provisioned: Vec<Provisioned> = Vec::new();
+    let mut to_download: Vec<(runtime::RuntimeSpec, String)> = Vec::new();
+    for (spec, requirement) in specs {
+        match cache::cached_runtime(&spec)? {
+            Some(cached) => {
+                println!(
+                    "Using cached {} {} at {}",
+                    spec.tool,
+                    spec.version,
+                    cached.root.display()
+                );
+                provisioned.push(Provisioned {
+                    spec,
+                    cached,
+                    requirement,
+                });
+            }
+            None => to_download.push((spec, requirement)),
+        }
+    }
+
     let home = cache::runx_home()?;
     let handles: Vec<_> = to_download
         .into_iter()
-        .map(|spec| {
+        .map(|(spec, requirement)| {
             let home = home.clone();
-            std::thread::spawn(move || -> Result<cache::CachedRuntime> {
+            std::thread::spawn(move || -> Result<Provisioned> {
                 println!("Installing {} {}", spec.tool, spec.version);
                 let download = downloader::download_to_temp(&spec.url, &spec.checksum_url)?;
                 let staging = cache::staging_dir(&home, &spec)?;
@@ -229,21 +286,91 @@ fn run_command(command_key: &str) -> Result<()> {
                 // error path, so a failed install leaks nothing.
                 drop(download);
 
-                if result.is_err() {
-                    cache::discard_staging(&staging);
+                match result {
+                    Ok(cached) => Ok(Provisioned {
+                        spec,
+                        cached,
+                        requirement,
+                    }),
+                    Err(err) => {
+                        cache::discard_staging(&staging);
+                        Err(err)
+                    }
                 }
-                result
             })
         })
         .collect();
 
     for handle in handles {
-        let rt = handle
+        let entry = handle
             .join()
             .map_err(|_| anyhow::anyhow!("A runtime install thread panicked"))??;
-        cached.push(rt);
+        provisioned.push(entry);
     }
 
-    let status = executor::execute(&command, &cached, &project_dir)?;
+    Ok(provisioned)
+}
+
+fn run_command(command_key: &str, locked: bool) -> Result<()> {
+    let (project_dir, config) = load_project()?;
+    warn_about_shadowed_keys(&config);
+
+    // Resolve the command before installing anything, so a typo fails fast
+    // rather than after a long download.
+    let command = config.command(command_key)?.to_string();
+
+    let provisioned = provision(&project_dir, &config, locked)?;
+    let runtimes: Vec<cache::CachedRuntime> =
+        provisioned.into_iter().map(|entry| entry.cached).collect();
+
+    let status = executor::execute(&command, &runtimes, &project_dir)?;
     process::exit(status.code().unwrap_or(1));
+}
+
+/// Write `runx.lock` pinning what this project currently resolves to.
+///
+/// Runtimes are installed as part of locking. A digest can only be recorded if
+/// it was actually verified, so locking without installing would mean writing
+/// hashes runx never checked.
+fn lock_command() -> Result<()> {
+    let (project_dir, config) = load_project()?;
+
+    if config.runtimes.is_empty() {
+        return Err(
+            error::UserError::new("Nothing to lock: this project declares no [runtimes].").into(),
+        );
+    }
+
+    let provisioned = provision(&project_dir, &config, false)?;
+
+    // Preserve entries for other platforms recorded by teammates.
+    let mut lockfile = lock::Lockfile::load(&project_dir)?.unwrap_or_else(lock::Lockfile::new);
+    lockfile.version = lock::SCHEMA_VERSION;
+
+    for entry in &provisioned {
+        // The digest comes from the install receipt, so it reflects the bytes on
+        // disk. A runtime adopted from a pre-receipt install has none; the
+        // version is still pinned.
+        let sha256 = cache::read_receipt(&entry.cached.root).and_then(|receipt| receipt.sha256);
+
+        lockfile.record(
+            &entry.spec.tool,
+            &entry.requirement,
+            &entry.spec.version,
+            &entry.spec.url,
+            sha256.as_deref(),
+        );
+
+        match &sha256 {
+            Some(_) => println!("Locked {} {}", entry.spec.tool, entry.spec.version),
+            None => println!(
+                "Locked {} {} (version only — no recorded checksum for this install)",
+                entry.spec.tool, entry.spec.version
+            ),
+        }
+    }
+
+    lockfile.save(&project_dir)?;
+    println!("Wrote {}", lock::lock_path(&project_dir).display());
+    Ok(())
 }
