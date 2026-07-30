@@ -38,6 +38,16 @@ pub struct RuntimeSpec {
 }
 
 pub fn resolve_runtime(tool: &str, version: &str) -> Result<RuntimeSpec> {
+    // Single security chokepoint. Every install path — explicit `runx.toml` and
+    // auto-detection alike — reaches the filesystem and network through here,
+    // so the version string is validated once, at the point where it is about
+    // to be interpolated into `~/.runx/runtimes/<tool>/<version>` (which gets
+    // `remove_dir_all`'d on reinstall) and into the release download URL.
+    //
+    // Validating in the callers instead would leave every future caller free to
+    // reintroduce the traversal.
+    crate::version::validate_concrete(tool, version).map_err(UserError::new)?;
+
     match normalized_tool(tool).as_str() {
         "node" => resolve_node(version),
         "python" => resolve_python(version),

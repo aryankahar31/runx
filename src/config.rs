@@ -44,11 +44,32 @@ impl RunxConfig {
 
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        Self::from_str(&raw).with_context(|| format!("Failed to parse {}", path.display()))
+        Self::parse_toml(&raw).with_context(|| format!("Failed to parse {}", path.display()))
     }
 
-    pub fn from_str(raw: &str) -> Result<Self> {
+    /// Parse and validate a `runx.toml` document.
+    ///
+    /// Named `parse_toml` rather than `from_str` so it is not mistaken for
+    /// `std::str::FromStr::from_str` (clippy::should_implement_trait).
+    pub fn parse_toml(raw: &str) -> Result<Self> {
         let config: Self = toml::from_str(raw)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Build a config from already-separated parts, applying the same
+    /// validation as [`Self::parse_toml`].
+    ///
+    /// Auto-detection previously built `RunxConfig` with a struct literal,
+    /// which skipped [`Self::validate`] entirely — that is how a `.nvmrc`
+    /// containing `../../../etc` reached the cache path and download URL while
+    /// the identical value in `runx.toml` was correctly rejected. Every
+    /// construction path must go through validation.
+    pub fn from_parts(
+        runtimes: BTreeMap<String, String>,
+        run: BTreeMap<String, String>,
+    ) -> Result<Self> {
+        let config = Self { runtimes, run };
         config.validate()?;
         Ok(config)
     }
@@ -87,26 +108,15 @@ impl RunxConfig {
     }
 }
 
-/// Validate that a runtime version string is in `MAJOR.MINOR.PATCH` form, where
-/// each part is a non-negative integer (e.g. `20.11.0`).
+/// Validate that a runtime version string is a concrete `MAJOR.MINOR.PATCH`.
 ///
-/// This rejects loose specifiers like `latest` or `lts/iron` that would
-/// otherwise pass the emptiness check and later produce a confusing 404.
+/// Delegates to [`crate::version::validate_concrete`] so that `runx.toml` and
+/// auto-detected versions are held to exactly the same rules. Keeping a second
+/// hand-rolled check here is how the two paths drifted apart in the first
+/// place: this one rejected `lts/iron`, while auto-detection accepted it.
 fn validate_version_format(tool: &str, version: &str) -> Result<()> {
-    let parts: Vec<&str> = version.splitn(4, '.').collect();
-    let valid = parts.len() == 3
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
-    if !valid {
-        return Err(UserError::new(format!(
-            "Invalid version `{version}` for runtime `{tool}`.\n\
-             Expected MAJOR.MINOR.PATCH with numeric parts (e.g. 20.11.0).\n\
-             Hint: use `runx init` to see example versions."
-        ))
-        .into());
-    }
-    Ok(())
+    crate::version::validate_concrete(tool, version)
+        .map_err(|message| UserError::new(message).into())
 }
 
 /// Walk up the directory tree from `start`, returning the first directory that
@@ -170,35 +180,44 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
     // ── Branch 2: auto-detection ──────────────────────────────────────────────
     let detected = detect::detect_runtimes(dir);
 
-    // Collect transparency lines and print notes for range-collapsed versions
+    // Transparency lines for everything that resolved, plus a note whenever a
+    // range was collapsed so the user sees which concrete version was picked.
     let mut detection_lines: Vec<String> = vec![];
-    if let Some(ref node) = detected.node {
-        if node.range_collapsed {
+    for (tool, slot) in [("node", &detected.node), ("python", &detected.python)] {
+        let Some(runtime) = slot.as_ref().and_then(detect::Detected::resolved) else {
+            continue;
+        };
+        if runtime.range_collapsed {
             eprintln!(
-                "  Note: node range in {} resolved to {} (minimum satisfying version)",
-                node.source, node.version
-            );
-        }
-        detection_lines.push(format!("  node {} (from {})", node.version, node.source));
-    }
-    if let Some(ref python) = detected.python {
-        if python.range_collapsed {
-            eprintln!(
-                "  Note: python range in {} resolved to {} (minimum satisfying version)",
-                python.source, python.version
+                "  Note: {tool} range `{}` in {} resolved to {} (lowest satisfying version)",
+                runtime.requirement, runtime.source, runtime.version
             );
         }
         detection_lines.push(format!(
-            "  python {} (from {})",
-            python.version, python.source
+            "  {tool} {} (from {})",
+            runtime.version, runtime.source
         ));
     }
 
-    // Build the runtimes map
     let runtimes = detect::detected_runtimes_map(&detected);
 
     if runtimes.is_empty() {
-        // Nothing was detected at all
+        // Distinguish "no version files at all" from "version files present but
+        // unusable". Reporting the latter as "nothing detected" sends users
+        // looking for a missing file that is actually right there.
+        let unresolvable = detected.unresolvable();
+        if !unresolvable.is_empty() {
+            return Err(UserError::new(format!(
+                "No runx.toml found in {dir}, and the version requirements that were \
+                 found could not be resolved to a concrete version:\n{hints}\n\
+                 Hint: pin an exact version (e.g. `20.11.0`), or run `runx init` to \
+                 create a runx.toml.",
+                dir = dir.display(),
+                hints = unresolvable.join("\n")
+            ))
+            .into());
+        }
+
         return Err(UserError::new(format!(
             "No runx.toml found in {dir} and no standard version files were detected.\n\
              Hint: run `runx init` to create a starter config, or add a .nvmrc / package.json.",
@@ -207,13 +226,8 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
         .into());
     }
 
-    // Determine the run command
-    let run = if let Some(cmd) = detected.inferred_dev_command {
-        let mut m = BTreeMap::new();
-        m.insert("dev".to_string(), cmd);
-        m
-    } else {
-        // We found runtimes but cannot infer a dev command
+    // Determine the run command.
+    let Some(dev_command) = detected.inferred_dev_command else {
         return Err(UserError::new(format!(
             "No runx.toml found in {dir}.\n\
              Detected runtimes from project files but could not infer a run command \
@@ -225,7 +239,11 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
         .into());
     };
 
-    let config = RunxConfig { runtimes, run };
+    let run = BTreeMap::from([("dev".to_string(), dev_command)]);
+
+    // Route through `from_parts` so detected versions face the same validation
+    // as `runx.toml` ones. A struct literal here would reopen the traversal.
+    let config = RunxConfig::from_parts(runtimes, run)?;
     Ok(ResolvedConfig {
         inner: config,
         detection_lines,
@@ -264,10 +282,71 @@ dev = "npm run dev"
 build = "npm run build"
 "#;
 
-        let config = RunxConfig::from_str(raw).expect("sample config should parse");
+        let config = RunxConfig::parse_toml(raw).expect("sample config should parse");
         assert_eq!(config.runtimes["node"], "20.11.0");
         assert_eq!(config.runtimes["python"], "3.11.7");
         assert_eq!(config.command("dev").expect("dev command"), "npm run dev");
+    }
+
+    /// Backward compatibility: every runtime/version form that v0.2 accepted in
+    /// a `runx.toml` must still parse.
+    #[test]
+    fn existing_toml_files_remain_valid() {
+        let raw = r#"
+[runtimes]
+node = "20.11.0"
+python = "3.11.7"
+
+[run]
+dev = "npm run dev"
+build = "npm run build"
+test = "npm test"
+"#;
+        let config = RunxConfig::parse_toml(raw).expect("v0.2 config must still parse");
+        assert_eq!(config.runtimes.len(), 2);
+        assert_eq!(config.run.len(), 3);
+    }
+
+    /// A `[runtimes]`-free config is valid — commands may need no runtime.
+    #[test]
+    fn runtimes_section_is_optional() {
+        let config = RunxConfig::parse_toml("[run]\ndev = \"echo hi\"\n").expect("should parse");
+        assert!(config.runtimes.is_empty());
+    }
+
+    /// The traversal payload proved reachable via auto-detection must be
+    /// rejected when it arrives through `runx.toml` too.
+    #[test]
+    fn rejects_traversal_and_alias_versions_in_toml() {
+        for bad in [
+            "../../../../tmp/pwned",
+            "lts/iron",
+            "latest",
+            "20",
+            "v20.11.0",
+            "20.11.0 && echo hi",
+        ] {
+            let raw = format!("[runtimes]\nnode = \"{bad}\"\n\n[run]\ndev = \"true\"\n");
+            assert!(
+                RunxConfig::parse_toml(&raw).is_err(),
+                "version {bad:?} must be rejected"
+            );
+        }
+    }
+
+    /// Regression for the validation bypass: `from_parts` is the only way to
+    /// build a config outside TOML parsing, and it must validate.
+    #[test]
+    fn from_parts_validates_versions() {
+        use std::collections::BTreeMap;
+
+        let runtimes = BTreeMap::from([("node".to_string(), "../../../evil".to_string())]);
+        let run = BTreeMap::from([("dev".to_string(), "true".to_string())]);
+
+        assert!(
+            RunxConfig::from_parts(runtimes, run).is_err(),
+            "from_parts must reject a traversal payload, not just parse_toml"
+        );
     }
 
     /// An existing runx.toml must always win over auto-detection sources.
