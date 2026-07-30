@@ -111,20 +111,33 @@ fn run_command(command_key: &str) -> Result<()> {
         }
     }
 
-    // 3. Download all missing runtimes in parallel threads (Bug 7).
+    // 3. Download all missing runtimes in parallel threads.
+    //
+    // Each install extracts into its own staging directory and is only renamed
+    // into place once verified, so an interrupted or failed install can never
+    // leave a half-extracted tree that the next run mistakes for a valid cache
+    // entry — and never destroys a runtime that already worked.
+    let home = cache::runx_home()?;
     let handles: Vec<_> = to_download
         .into_iter()
         .map(|spec| {
+            let home = home.clone();
             std::thread::spawn(move || -> Result<cache::CachedRuntime> {
                 println!("Installing {} {}", spec.tool, spec.version);
                 let temp = downloader::download_to_temp(&spec.url, &spec.checksum_url)?;
-                let root = cache::prepare_runtime_dir(&spec)?;
-                let extraction = extractor::extract_archive(temp.path(), &root, spec.archive_kind);
-                // Bug 6: dropping the NamedTempFile auto-deletes it, even if
-                // extraction fails.
+                let staging = cache::staging_dir(&home, &spec)?;
+
+                let result = extractor::extract_archive(temp.path(), &staging, spec.archive_kind)
+                    .and_then(|()| cache::commit_runtime(&home, &staging, &spec));
+
+                // Dropping the NamedTempFile deletes the archive even on the
+                // error path, so a failed install leaks nothing.
                 drop(temp);
-                extraction?;
-                cache::finalize_cached_runtime(&root, &spec)
+
+                if result.is_err() {
+                    cache::discard_staging(&staging);
+                }
+                result
             })
         })
         .collect();
