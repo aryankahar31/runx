@@ -81,26 +81,68 @@ fn fetch_checksum_document(checksum_url: &str) -> Result<String> {
         .with_context(|| format!("Failed to read checksum body from {checksum_url}"))
 }
 
+/// A SHA-256 digest is exactly 64 hex characters.
+const SHA256_HEX_LEN: usize = 64;
+
+/// True if `token` looks like a SHA-256 hex digest.
+fn is_sha256_hex(token: &str) -> bool {
+    token.len() == SHA256_HEX_LEN && token.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Extract the expected hex hash for `filename` from a checksum document.
 ///
-/// Supports both Node's `SHASUMS256.txt` (many `hash  filename` lines) and
-/// python-build-standalone `.sha256` sidecars (a single hash, optionally
-/// followed by a filename).
+/// Two formats are supported:
+///
+/// * A manifest of `hash  filename` lines (Node's `SHASUMS256.txt`). The
+///   filename must match **exactly**; `hash *filename` (coreutils binary-mode
+///   marker) is also accepted.
+/// * A sidecar containing a single bare digest (python-build-standalone's
+///   `.sha256` files).
+///
+/// Returns `None` rather than falling back to an unrelated hash. The previous
+/// implementation matched with `line.contains(filename)` and, on failure, took
+/// the first token of the first line — so a manifest that did not list our
+/// archive at all still yielded *some* hash, and a substring match could pick
+/// the digest of a different artifact whose name merely contained ours (e.g.
+/// `...tar.gz` also matching the `...tar.gz.asc` line). Both produce a
+/// confusing "SHA-256 mismatch" for what is really a lookup failure.
 fn extract_expected_hash(document: &str, filename: &str) -> Option<String> {
-    // Node style: locate the line that names this exact archive.
+    let mut saw_manifest_line = false;
+
     for line in document.lines() {
-        if line.contains(filename) {
-            if let Some(token) = line.split_whitespace().next() {
-                return Some(token.to_string());
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let mut tokens = line.split_whitespace();
+        let Some(hash) = tokens.next() else {
+            continue;
+        };
+
+        match tokens.next() {
+            // `hash  name` — a manifest entry.
+            Some(name) => {
+                saw_manifest_line = true;
+                // Strip the coreutils binary-mode marker, then compare the
+                // final path component so a manifest listing `./node-...` or
+                // `dist/node-...` still matches.
+                let name = name.trim_start_matches('*');
+                let basename = name.rsplit(['/', '\\']).next().unwrap_or(name);
+                if basename == filename && is_sha256_hex(hash) {
+                    return Some(hash.to_ascii_lowercase());
+                }
+            }
+            // A lone token: only usable as a bare sidecar digest.
+            None => {
+                if !saw_manifest_line && is_sha256_hex(hash) {
+                    return Some(hash.to_ascii_lowercase());
+                }
             }
         }
     }
-    // Python sidecar style: first token of the first non-empty line.
-    document
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .and_then(|line| line.split_whitespace().next())
-        .map(|token| token.to_string())
+
+    None
 }
 
 /// Compute the lowercase hex SHA-256 digest of the file at `path`.
@@ -149,4 +191,115 @@ fn copy_with_progress(
         progress.inc(bytes as u64);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_expected_hash, is_sha256_hex};
+
+    const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn finds_hash_in_node_style_manifest() {
+        let document = format!(
+            "{HASH_A}  node-v20.11.0-linux-x64.tar.xz\n\
+             {HASH_B}  node-v20.11.0-darwin-arm64.tar.gz\n"
+        );
+        assert_eq!(
+            extract_expected_hash(&document, "node-v20.11.0-darwin-arm64.tar.gz").as_deref(),
+            Some(HASH_B)
+        );
+    }
+
+    /// A manifest that does not list our archive must yield `None`, not the
+    /// first hash it happens to contain. Returning an unrelated hash turns a
+    /// lookup failure into a bogus "SHA-256 mismatch".
+    #[test]
+    fn missing_entry_returns_none_instead_of_an_unrelated_hash() {
+        let document = format!("{HASH_A}  some-other-file.tar.gz\n");
+        assert_eq!(
+            extract_expected_hash(&document, "node-v20.11.0-linux-x64.tar.xz"),
+            None
+        );
+    }
+
+    /// The old matcher used `line.contains(filename)`, so the digest of a
+    /// signature or a longer sibling name could be picked for the archive.
+    #[test]
+    fn does_not_match_on_substring_of_a_longer_filename() {
+        let document = format!(
+            "{HASH_A}  node-v20.11.0-linux-x64.tar.xz.asc\n\
+             {HASH_B}  node-v20.11.0-linux-x64.tar.xz\n"
+        );
+        assert_eq!(
+            extract_expected_hash(&document, "node-v20.11.0-linux-x64.tar.xz").as_deref(),
+            Some(HASH_B),
+            "must match the archive line, not the .asc line"
+        );
+    }
+
+    #[test]
+    fn reads_bare_sidecar_digest() {
+        assert_eq!(
+            extract_expected_hash(&format!("{HASH_A}\n"), "cpython-3.11.7.tar.gz").as_deref(),
+            Some(HASH_A)
+        );
+    }
+
+    #[test]
+    fn accepts_binary_mode_marker_and_path_prefixes() {
+        let starred = format!("{HASH_A} *runx-linux-x64.tar.gz\n");
+        assert_eq!(
+            extract_expected_hash(&starred, "runx-linux-x64.tar.gz").as_deref(),
+            Some(HASH_A)
+        );
+
+        let prefixed = format!("{HASH_A}  ./dist/runx-linux-x64.tar.gz\n");
+        assert_eq!(
+            extract_expected_hash(&prefixed, "runx-linux-x64.tar.gz").as_deref(),
+            Some(HASH_A)
+        );
+    }
+
+    #[test]
+    fn normalises_uppercase_digests() {
+        let document = format!("{}  file.tar.gz\n", HASH_A.to_uppercase());
+        assert_eq!(
+            extract_expected_hash(&document, "file.tar.gz").as_deref(),
+            Some(HASH_A)
+        );
+    }
+
+    #[test]
+    fn ignores_comments_and_blank_lines() {
+        let document = format!("# checksums\n\n{HASH_A}  file.tar.gz\n");
+        assert_eq!(
+            extract_expected_hash(&document, "file.tar.gz").as_deref(),
+            Some(HASH_A)
+        );
+    }
+
+    /// An HTML error page served instead of a manifest must not be mistaken for
+    /// a digest.
+    #[test]
+    fn rejects_non_digest_documents() {
+        assert_eq!(
+            extract_expected_hash("<html>404</html>", "file.tar.gz"),
+            None
+        );
+        assert_eq!(
+            extract_expected_hash("not-a-hash  file.tar.gz", "file.tar.gz"),
+            None
+        );
+        assert_eq!(extract_expected_hash("", "file.tar.gz"), None);
+    }
+
+    #[test]
+    fn recognises_only_well_formed_digests() {
+        assert!(is_sha256_hex(HASH_A));
+        assert!(!is_sha256_hex("abc"));
+        assert!(!is_sha256_hex(&format!("{HASH_A}a")));
+        assert!(!is_sha256_hex(&"z".repeat(64)));
+    }
 }
