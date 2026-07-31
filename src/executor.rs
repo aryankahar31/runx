@@ -12,6 +12,10 @@ pub fn execute(
     runtimes: &[CachedRuntime],
     project_dir: &Path,
 ) -> Result<ExitStatus> {
+    // RUNX_TIMINGS=1 mirrors mise's MISE_TIMINGS=1: an opt-in breakdown of the
+    // pre-child work, so shell-overhead claims are measurable, not asserted.
+    let timings = env::var_os("RUNX_TIMINGS").is_some();
+    let start = std::time::Instant::now();
     let path = isolated_path(runtimes)?;
     println!("Running `{command}`");
 
@@ -23,9 +27,17 @@ pub fn execute(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
+    // `spawn` + `wait` instead of `status` so the timing covers only runx's own
+    // work up to the child starting, not the child's execution time.
+    let mut child = child
+        .spawn()
+        .with_context(|| format!("Failed to start command `{command}`"))?;
+    if timings {
+        eprintln!("runx timing: path+spawn: {:?}", start.elapsed());
+    }
     child
-        .status()
-        .with_context(|| format!("Failed to start command `{command}`"))
+        .wait()
+        .with_context(|| format!("Failed to wait for command `{command}`"))
 }
 
 fn shell_command(command: &str) -> Command {

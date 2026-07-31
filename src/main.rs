@@ -9,6 +9,7 @@ use runx::lock;
 use runx::registry;
 use runx::runtime;
 use runx::self_update;
+use runx::version;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -418,14 +419,21 @@ fn provision(
 }
 
 fn run_command(command_key: &str, locked: bool) -> Result<()> {
+    // RUNX_TIMINGS=1 mirrors mise's MISE_TIMINGS=1: opt-in per-phase timings
+    // printed to stderr, used by benchmarks/shell-overhead.sh.
+    let timings = env::var_os("RUNX_TIMINGS").is_some();
+    let t0 = std::time::Instant::now();
+
     let (project_dir, config) = load_project()?;
     warn_about_shadowed_keys(&config);
 
     // Resolve the command before installing anything, so a typo fails fast
     // rather than after a long download.
     let command = config.command(command_key)?.to_string();
+    let t1 = std::time::Instant::now();
 
     let provisioned = provision(&project_dir, &config, locked)?;
+    let t2 = std::time::Instant::now();
 
     // Record use before running, so `runx cache prune` measures real activity.
     // Without this, age falls back to the install date and a runtime used every
@@ -436,6 +444,11 @@ fn run_command(command_key: &str, locked: bool) -> Result<()> {
 
     let runtimes: Vec<cache::CachedRuntime> =
         provisioned.into_iter().map(|entry| entry.cached).collect();
+
+    if timings {
+        eprintln!("runx timing: config: {:?}", t1.duration_since(t0));
+        eprintln!("runx timing: cache: {:?}", t2.duration_since(t1));
+    }
 
     let status = executor::execute(&command, &runtimes, &project_dir)?;
     process::exit(status.code().unwrap_or(1));
@@ -744,6 +757,15 @@ fn doctor_command() -> Result<()> {
         ));
     }
 
+    // Show the exact PATH runx would prepend for the current project, if run
+    // from one — the direct answer to "why is the wrong version running".
+    if let Ok(cwd) = env::current_dir() {
+        if let Some(project_dir) = config::find_project_dir(&cwd) {
+            let resolved = config::load_or_detect(&project_dir)?;
+            print_resolved_paths(&project_dir, &resolved.inner)?;
+        }
+    }
+
     for note in &notes {
         println!("  ~ {note}");
     }
@@ -765,6 +787,41 @@ fn doctor_command() -> Result<()> {
         if broken.len() == 1 { "" } else { "s" }
     ))
     .into())
+}
+
+/// Print the exact PATH runx would prepend for the current project's runtimes.
+///
+/// Only runtimes that are already cached are shown: doctor is diagnostic and
+/// never triggers a download or a release-list lookup, so ranges without a
+/// lockfile pin are skipped rather than resolved over the network.
+fn print_resolved_paths(project_dir: &Path, config: &config::RunxConfig) -> Result<()> {
+    let lockfile = lock::Lockfile::load(project_dir)?;
+    let plan = lock::plan(&config.runtimes, lockfile.as_ref(), false)?;
+
+    for entry in &plan {
+        let requirement = config
+            .runtimes
+            .get(&entry.tool)
+            .cloned()
+            .unwrap_or_else(|| entry.version.clone());
+        let version = if entry.from_lock {
+            entry.version.clone()
+        } else {
+            requirement
+        };
+        if version::validate_concrete(&entry.tool, &version).is_err() {
+            continue;
+        }
+        let Ok(spec) = runtime::resolve_runtime(&entry.tool, &version) else {
+            continue;
+        };
+        if let Some(cached) = cache::cached_runtime(&spec)? {
+            if let Some(bin) = cached.bin_dirs.first() {
+                println!("Resolved PATH for `{}`: {}", entry.tool, bin.display());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Directory entries sorted by name, so doctor output is stable across runs.

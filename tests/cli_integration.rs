@@ -627,6 +627,57 @@ fn doctor_healthy_cache_exits_zero() {
     assert!(stdout.contains("everything looks healthy"), "{stdout}");
 }
 
+/// Doctor must show the exact PATH it would prepend for the current project's
+/// runtimes, answering "why is the wrong version running" directly.
+#[test]
+fn doctor_shows_resolved_path_for_project_runtimes() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_runtime(&home, "node", "20.11.0", true);
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"20.11.0\"\n\n[run]\nbench = \"echo x\"\n",
+    )
+    .expect("write runx.toml");
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    let expected = format!(
+        "Resolved PATH for `node`: {}",
+        home.join("runtimes").join("node/20.11.0/bin").display()
+    );
+    assert!(stdout.contains(&expected), "stdout:\n{stdout}");
+}
+
+/// A runtime the project asks for but that is not cached is not fabricated:
+/// doctor is diagnostic and must not resolve ranges or hint at downloads.
+#[test]
+fn doctor_skips_resolved_path_for_missing_runtimes() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_runtime(&home, "node", "20.11.0", true);
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"20.11.0\"\npython = \"3.11.7\"\n\n[run]\nbench = \"echo x\"\n",
+    )
+    .expect("write runx.toml");
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = stdout_of(&output);
+    assert!(stdout.contains("Resolved PATH for `node`"), "{stdout}");
+    assert!(
+        !stdout.contains("Resolved PATH for `python`"),
+        "an uncached runtime must not be reported as resolved:\n{stdout}"
+    );
+}
+
 /// runtimes installed before the completion marker existed have a working
 /// executable but no receipt; doctor must not scream at them, since they are
 /// adopted automatically on next use.

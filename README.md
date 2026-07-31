@@ -686,6 +686,44 @@ directory hooks.
 
 ---
 
+# Why runx has near-zero shell overhead
+
+mise, asdf and nvm hook into your shell. `mise activate` runs a hook on
+**every prompt render** — every command you type pays its cost, forever, for
+the life of the session. asdf's shims pay on every command lookup instead.
+runx does none of that: there is no activation line, no shim directory, no
+directory hook. **Nothing happens until you type `runx <key>`, and the
+overhead is paid once per invocation — not per prompt.**
+
+Measured on macOS 26.5 (Apple silicon, zsh 5.9, hyperfine 1.20, `--warmup 3
+--runs 20`; full method in [`benchmarks/README.md`](benchmarks/README.md)):
+
+| Measurement | Mean |
+| :-- | --: |
+| zsh startup, no hooks (baseline) | 20.8 ms |
+| zsh startup + `mise activate` (per prompt) | *not measured here — mise not installed; mise's own discussion #6279 reports ~80–97 ms first-prompt lag* |
+| `runx <key>` total, warm cache | 5.7 ms |
+| — runx pre-child work (`RUNX_TIMINGS=1`): config | 0.06 ms |
+| — cache lookup | 0.02 ms |
+| — PATH build + spawn | 0.13 ms |
+
+runx's entire contribution before your command starts is **~0.2 ms, once**.
+A hook-based tool adds tens of milliseconds **to every prompt, always**. Even
+a complete `runx <key>` run — process spawn, config read, PATH construction,
+child start — is faster than rendering one bare prompt.
+
+There is a second, related difference: shim-based tools (asdf, and mise's
+shim mode) have had real bugs in the Windows/WSL boundary, where shim files
+were misinterpreted as executable scripts under `/mnt/c/...` path semantics.
+That is a known class of shim-related fragility that runx's architecture
+avoids **by construction** — runx creates no shims of any kind.
+
+These are directional numbers on one machine, not a universal guarantee; the
+structural claim — *no shell hook, so no per-prompt cost* — does not depend
+on any particular measurement.
+
+---
+
 # Roadmap
 
 ## v0.1
