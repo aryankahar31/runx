@@ -24,6 +24,7 @@ use serde::Deserialize;
 use std::{
     collections::BTreeSet,
     fs,
+    io::Read,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -250,7 +251,15 @@ pub fn resolve_requirement(tool: &str, requirement: &str, mode: Resolution) -> R
     }
 
     let platform = crate::runtime::registry_platform(tool)?;
-    let available = available_versions(tool, &platform).ok();
+    // Python's release metadata is heavy (~15MB per page of release assets),
+    // so its fetch is requirement-aware and stops at the first page that can
+    // satisfy the range (see `python_available_versions`). The other tools'
+    // indexes are small enough to fetch wholesale.
+    let available = if tool == "python" {
+        python_available_versions(requirement, &platform).ok()
+    } else {
+        available_versions(tool, &platform).ok()
+    };
     choose_version(requirement, mode, available.as_deref())
 }
 
@@ -272,14 +281,135 @@ pub fn available_versions(tool: &str, platform: &str) -> Result<Vec<Version>> {
 
     let versions = match tool {
         "node" => fetch_node_versions()?,
-        "python" => fetch_python_versions(platform)?,
         "bun" => fetch_bun_versions()?,
         "go" => fetch_go_versions()?,
+        // Python resolution is requirement-aware and short-circuits on the
+        // first satisfying page; going through this generic path would pull
+        // the full ~150MB index even for a trivial range.
+        "python" => anyhow::bail!("python resolution is requirement-aware; not supported here"),
         other => anyhow::bail!("No release index available for runtime `{other}`"),
     };
 
     write_cache(&path, &versions);
     Ok(versions)
+}
+
+/// Python's release index for a *specific requirement*, fetched lazily.
+///
+/// Each page of python-build-standalone release metadata is ~15MB (every
+/// release carries assets for a dozen platform/build combinations), so a full
+/// ten-page scan is ~150MB. Pages are newest-first and python-build-standalone
+/// ships the newest patch of every maintained line in each release, so the
+/// first page containing any satisfying version already contains the newest
+/// satisfying version — scanning stops there and the rest of the index is
+/// never downloaded. Ranges only satisfiable by older releases fall through to
+/// the full scan, and only a full scan is written to the disk cache (a partial
+/// list would poison later resolutions of old ranges).
+///
+/// ponytail: correctness of the short-circuit rests on the vendor's documented
+/// release practice (every release ships every maintained line at its newest
+/// patch). If that ever changes, the worst case is a satisfying-but-not-newest
+/// resolution for ranges that page 1 can satisfy — never a wrong answer for a
+/// range it cannot.
+pub fn python_available_versions(requirement: &str, platform: &str) -> Result<Vec<Version>> {
+    let path = index_cache_path("python", platform)?;
+    if let Some(versions) = read_cache(&path, now_secs()) {
+        return Ok(versions);
+    }
+
+    let req = crate::version::Req::parse(requirement)
+        .ok_or_else(|| anyhow::anyhow!("`{requirement}` is not a recognised version or range"))?;
+
+    let base =
+        "https://api.github.com/repos/astral-sh/python-build-standalone/releases?per_page=10&page="
+            .to_string();
+    let (versions, complete) = fetch_python_versions_from(&base, platform, &req)?;
+    if complete {
+        write_cache(&path, &versions);
+    }
+    Ok(versions)
+}
+
+/// Fetch pages from `base_url` (which must end in `page=`) until the
+/// requirement is satisfiable or the index is exhausted.
+///
+/// Returns the versions found plus whether the scan covered every page (a
+/// short-circuited scan returns `false` and must not be cached).
+fn fetch_python_versions_from(
+    base_url: &str,
+    platform: &str,
+    req: &crate::version::Req,
+) -> Result<(Vec<Version>, bool)> {
+    let mut found: Vec<Version> = Vec::new();
+
+    for page in 1..=PYTHON_PAGES {
+        let url = format!("{base_url}{page}");
+        let body = fetch_with_retry(&url)
+            .with_context(|| format!("Failed to fetch python-build-standalone releases: {url}"))?;
+
+        let releases: Vec<PythonRelease> = serde_json::from_str(&body)
+            .context("Failed to decode python-build-standalone release metadata")?;
+
+        found.extend(collect_python_versions(&releases, platform));
+
+        // Newest-first pages under the vendor's every-line-per-release
+        // practice: the first page with a satisfying version has the newest
+        // satisfying version, so the remaining pages are unnecessary.
+        if found.iter().any(|version| req.matches(version)) {
+            return Ok((sorted_unique(found.into_iter()), false));
+        }
+        if releases.is_empty() {
+            break;
+        }
+    }
+
+    Ok((sorted_unique(found.into_iter()), true))
+}
+
+/// GET `url` and return the body, retrying transient failures like
+/// [`crate::downloader`] does: up to [`crate::http::MAX_ATTEMPTS`] attempts
+/// with exponential backoff, only for errors that are retryable.
+fn fetch_with_retry(url: &str) -> Result<String> {
+    let mut last_error: Option<anyhow::Error> = None;
+
+    for attempt in 0..crate::http::MAX_ATTEMPTS {
+        if attempt > 0 {
+            let delay = crate::http::backoff_delay(attempt - 1);
+            eprintln!(
+                "  Fetching {url} failed; retrying in {:.1}s (attempt {}/{})",
+                delay.as_secs_f64(),
+                attempt + 1,
+                crate::http::MAX_ATTEMPTS
+            );
+            std::thread::sleep(delay);
+        }
+
+        match crate::http::get(url).call() {
+            Ok(response) => {
+                // `into_reader` rather than `into_string`: ureq 2.x caps
+                // `into_string` at a hardcoded 10 MiB, and a single
+                // python-build-standalone page (ten releases with every asset)
+                // is ~18 MiB — the fetch could never succeed otherwise.
+                let mut body = String::new();
+                match response.into_reader().read_to_string(&mut body) {
+                    Ok(_) => return Ok(body),
+                    Err(err) => {
+                        // A body cut short mid-transfer is worth another attempt.
+                        last_error = Some(err.into());
+                    }
+                }
+            }
+            Err(err) => {
+                let retryable = crate::http::is_retryable(&err);
+                last_error = Some(err.into());
+                if !retryable {
+                    break;
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Request to {url} failed")))
 }
 
 /// Path of the cached index for `tool`.
@@ -318,31 +448,6 @@ fn parse_node_index(body: &str) -> Vec<Version> {
             .iter()
             .filter_map(|release| Version::parse(release.version.trim_start_matches(['v', 'V']))),
     )
-}
-
-fn fetch_python_versions(platform: &str) -> Result<Vec<Version>> {
-    let mut found: Vec<Version> = Vec::new();
-
-    for page in 1..=PYTHON_PAGES {
-        let url = format!(
-            "https://api.github.com/repos/astral-sh/python-build-standalone/releases?per_page=10&page={page}"
-        );
-        let body = crate::http::get(&url)
-            .call()
-            .with_context(|| format!("Failed to fetch python-build-standalone releases: {url}"))?
-            .into_string()
-            .context("Failed to read python-build-standalone release metadata")?;
-
-        let releases: Vec<PythonRelease> = serde_json::from_str(&body)
-            .context("Failed to decode python-build-standalone release metadata")?;
-        if releases.is_empty() {
-            break;
-        }
-
-        found.extend(collect_python_versions(&releases, platform));
-    }
-
-    Ok(sorted_unique(found.into_iter()))
 }
 
 /// Pull versions out of python-build-standalone asset names.
@@ -498,6 +603,11 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
 
     fn v(raw: &str) -> Version {
         Version::parse(raw).expect("valid version")
@@ -597,6 +707,164 @@ mod tests {
             collect_python_versions(&releases, "x86_64-unknown-linux-gnu").into_iter(),
         );
         assert_eq!(versions, vec![v("3.11.7")]);
+    }
+
+    // ── Requirement-aware python index fetch ─────────────────────────────────
+
+    /// Serve `respond` (called with the request index) to each accepted
+    /// connection, closing after every response so each request opens a fresh
+    /// connection. Returns the base URL and a counter of accepted connections.
+    fn scripted_server(
+        respond: impl Fn(usize) -> (u16, &'static str) + Send + 'static,
+    ) -> (String, Arc<AtomicUsize>) {
+        use std::io::Write;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("addr");
+        let seen = Arc::new(AtomicUsize::new(0));
+        let seen_for_thread = Arc::clone(&seen);
+        thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let (status, body) = respond(seen_for_thread.fetch_add(1, Ordering::SeqCst));
+                let head = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(body.as_bytes());
+            }
+        });
+        (format!("http://{addr}/"), seen)
+    }
+
+    fn page(versions: &[&str]) -> &'static str {
+        Box::leak(
+            format!(
+                "[{}]",
+                versions
+                    .iter()
+                    .map(|version| {
+                        format!(
+                            "{{\"assets\":[{{\"name\":\"cpython-{version}+2024-aarch64-apple-darwin-install_only.tar.gz\"}}]}}"
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    /// The whole point of the lazy fetch: a range page 1 can satisfy must not
+    /// download the remaining ~135MB of the index.
+    #[test]
+    fn python_fetch_stops_at_the_first_satisfying_page() {
+        let pages = [page(&["3.14.2"]), page(&["3.13.9", "3.12.5"])];
+        let (base, seen) = scripted_server(move |i| (200, pages[i]));
+        let req = crate::version::Req::parse(">=3.14").expect("valid range");
+
+        let (found, complete) =
+            fetch_python_versions_from(&base, "aarch64-apple-darwin", &req).expect("fetch");
+
+        assert_eq!(found, vec![v("3.14.2")]);
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            1,
+            "a satisfying page 1 must skip the rest of the index"
+        );
+        assert!(
+            !complete,
+            "a short-circuited scan must not be cached as complete"
+        );
+    }
+
+    /// Ranges only older pages can satisfy must keep scanning, and the result
+    /// must keep every version found so far, not just the satisfying ones.
+    #[test]
+    fn python_fetch_scans_further_pages_when_needed() {
+        let pages = [
+            page(&["3.14.2", "3.13.9"]),
+            page(&["3.12.5"]),
+            page(&["3.11.7"]),
+            page(&["3.10.3"]),
+            page(&["3.9.9"]),
+        ];
+        let (base, seen) = scripted_server(move |i| (200, pages[i]));
+        let req = crate::version::Req::parse("<3.10").expect("valid range");
+
+        let (found, complete) =
+            fetch_python_versions_from(&base, "aarch64-apple-darwin", &req).expect("fetch");
+
+        assert_eq!(
+            found,
+            vec![
+                v("3.9.9"),
+                v("3.10.3"),
+                v("3.11.7"),
+                v("3.12.5"),
+                v("3.13.9"),
+                v("3.14.2")
+            ]
+        );
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            5,
+            "scan stopped at the first satisfying page"
+        );
+        assert!(!complete);
+    }
+
+    /// Regression test for the Phase-2 finding: a transient failure mid-scan
+    /// must be retried (with backoff) rather than aborting the whole lookup.
+    #[test]
+    fn python_page_fetch_retries_transient_failures() {
+        let (base, seen) = scripted_server(|i| {
+            if i == 0 {
+                (500, "boom")
+            } else {
+                (200, page(&["3.14.2"]))
+            }
+        });
+        let req = crate::version::Req::parse(">=3.14").expect("valid range");
+
+        let (found, complete) =
+            fetch_python_versions_from(&base, "aarch64-apple-darwin", &req).expect("fetch");
+
+        assert_eq!(found, vec![v("3.14.2")]);
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            2,
+            "a 500 on the first page must be retried"
+        );
+        assert!(!complete);
+    }
+
+    /// Regression test for the 10 MiB ceiling in `ureq::Response::into_string`
+    /// (a hardcoded constant, not configurable in ureq 2.x): a python page is
+    /// ~18 MiB in production, so the body must be read unbounded. The fixture
+    /// is padded past the old limit; before the `into_reader` fix this test
+    /// failed with "response too big for into_string".
+    #[test]
+    fn python_fetch_handles_pages_bigger_than_ten_mebibytes() {
+        let padded_asset = format!(
+            "{{\"name\":\"cpython-3.14.2+{}-aarch64-apple-darwin-install_only.tar.gz\"}}",
+            "j".repeat(11 * 1024 * 1024)
+        );
+        let body: &'static str = Box::leak(
+            format!(
+                "[{{\"assets\":[{{\"name\":\"cpython-3.14.2+2024-aarch64-apple-darwin-install_only.tar.gz\"}},{padded_asset}]}}]"
+            )
+            .into_boxed_str(),
+        );
+        let (base, _seen) = scripted_server(move |_| (200, body));
+        let req = crate::version::Req::parse(">=3.14").expect("valid range");
+
+        let (found, _complete) =
+            fetch_python_versions_from(&base, "aarch64-apple-darwin", &req).expect("fetch");
+
+        assert_eq!(found, vec![v("3.14.2")]);
     }
 
     // ── Bun index parsing ────────────────────────────────────────────────────

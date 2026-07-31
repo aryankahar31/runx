@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     env, fs,
+    io::Read,
     path::{Path, PathBuf},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -369,11 +370,28 @@ struct GithubAsset {
     browser_download_url: String,
 }
 
-/// A resolved Python archive together with the URL of its `.sha256` sidecar.
+/// A resolved Python archive together with the URL of its checksum document.
 #[derive(Debug, Clone)]
 struct PythonAsset {
     url: String,
     checksum_url: String,
+}
+
+/// The checksum document URL for `archive_name` within `release`: the
+/// per-archive `.sha256` sidecar when published, else the combined
+/// `SHA256SUMS` manifest newer releases ship instead.
+fn checksum_url_for(release: &GithubRelease, archive_name: &str) -> Option<String> {
+    release
+        .assets
+        .iter()
+        .find(|asset| asset.name == format!("{archive_name}.sha256"))
+        .or_else(|| {
+            release
+                .assets
+                .iter()
+                .find(|asset| asset.name == "SHA256SUMS")
+        })
+        .map(|asset| asset.browser_download_url.clone())
 }
 
 /// On-disk cache entry for a resolved Python asset.
@@ -424,19 +442,17 @@ fn find_python_asset(version: &str, platform: &str) -> Result<PythonAsset> {
                 continue;
             };
 
-            // Locate the `.sha256` sidecar for the archive in the same release.
-            let sidecar_name = format!("{}.sha256", archive.name);
-            let checksum_url = release
-                .assets
-                .iter()
-                .find(|asset| asset.name == sidecar_name)
-                .map(|asset| asset.browser_download_url.clone())
-                .ok_or_else(|| {
-                    UserError::new(format!(
-                        "Found Python {version} archive for {platform} but no matching \
-                         `{sidecar_name}` checksum sidecar in the release."
-                    ))
-                })?;
+            // Locate the checksum document for the archive in the same release.
+            // Historically every archive had a `.sha256` sidecar; newer
+            // releases dropped those for a single combined `SHA256SUMS`
+            // manifest, which the checksum verifier already parses.
+            let checksum_url = checksum_url_for(&release, &archive.name).ok_or_else(|| {
+                let sidecar_name = format!("{}.sha256", archive.name);
+                UserError::new(format!(
+                    "Found Python {version} archive for {platform} but neither the \
+                     `{sidecar_name}` sidecar nor a `SHA256SUMS` manifest in the release."
+                ))
+            })?;
 
             let asset = PythonAsset {
                 url: archive.browser_download_url.clone(),
@@ -522,17 +538,23 @@ fn fetch_python_release_page(url: &str) -> Result<Vec<GithubRelease>> {
     for attempt in 1..=3 {
         match crate::http::get(url).call() {
             Ok(response) => {
-                // Read the body with into_string, not into_json: ureq's
-                // into_json panics if the body read fails mid-transfer (see
-                // ureq's own "TODO: This expect can actually panic" in
-                // response.rs), and a server that closes early is exactly the
-                // transient failure the retry loop exists for.
-                let parse = response
-                    .into_string()
-                    .with_context(|| "Failed to read python-build-standalone release metadata")
-                    .and_then(|raw| {
-                        serde_json::from_str(&raw).context("Failed to decode release metadata")
-                    });
+                // Read the body via into_reader, not into_string: ureq's
+                // into_string caps the body at a hardcoded 10 MiB (each page
+                // here is ~18 MiB), panics through into_json on a body that
+                // fails mid-transfer (see ureq's own "TODO: This expect can
+                // actually panic" in response.rs), and a server that closes
+                // early is exactly the transient failure the retry loop exists
+                // for.
+                let parse = (|| -> Result<Vec<GithubRelease>> {
+                    let mut raw = String::new();
+                    response
+                        .into_reader()
+                        .read_to_string(&mut raw)
+                        .with_context(|| {
+                            "Failed to read python-build-standalone release metadata"
+                        })?;
+                    serde_json::from_str(&raw).context("Failed to decode release metadata")
+                })();
                 match parse {
                     Ok(releases) => return Ok(releases),
                     Err(err) => {
@@ -706,6 +728,79 @@ mod tests {
             .cached_at_secs = now_secs() - GO_CACHE_TTL_SECS - 1;
         fs::write(&path, serde_json::to_string(&cache).unwrap()).unwrap();
         assert!(read_go_cache(&path, "1.26.5", "darwin-arm64").is_none());
+    }
+
+    // ── Python checksum lookup ────────────────────────────────────────────────
+
+    fn release(assets: &[(&str, &str)]) -> GithubRelease {
+        GithubRelease {
+            assets: assets
+                .iter()
+                .map(|(name, url)| GithubAsset {
+                    name: name.to_string(),
+                    browser_download_url: url.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn prefers_the_per_archive_sidecar_over_the_combined_manifest() {
+        let rel = release(&[
+            (
+                "cpython-3.14.6+20260728-aarch64-apple-darwin-install_only.tar.gz",
+                "https://example.invalid/a.tar.gz",
+            ),
+            (
+                "cpython-3.14.6+20260728-aarch64-apple-darwin-install_only.tar.gz.sha256",
+                "https://example.invalid/a.sha256",
+            ),
+            ("SHA256SUMS", "https://example.invalid/SHA256SUMS"),
+        ]);
+
+        assert_eq!(
+            checksum_url_for(
+                &rel,
+                "cpython-3.14.6+20260728-aarch64-apple-darwin-install_only.tar.gz"
+            )
+            .as_deref(),
+            Some("https://example.invalid/a.sha256")
+        );
+    }
+
+    /// Newer python-build-standalone releases dropped the sidecars; the
+    /// combined manifest must be picked up instead, or installs of current
+    /// releases fail with "no matching checksum".
+    #[test]
+    fn falls_back_to_the_combined_sha256sums_manifest() {
+        let rel = release(&[
+            (
+                "cpython-3.14.6+20260728-aarch64-apple-darwin-install_only.tar.gz",
+                "https://example.invalid/a.tar.gz",
+            ),
+            ("SHA256SUMS", "https://example.invalid/SHA256SUMS"),
+        ]);
+
+        assert_eq!(
+            checksum_url_for(
+                &rel,
+                "cpython-3.14.6+20260728-aarch64-apple-darwin-install_only.tar.gz"
+            )
+            .as_deref(),
+            Some("https://example.invalid/SHA256SUMS")
+        );
+
+        let bare = release(&[(
+            "cpython-3.14.6+20260728-aarch64-apple-darwin-install_only.tar.gz",
+            "https://example.invalid/a.tar.gz",
+        )]);
+        assert_eq!(
+            checksum_url_for(
+                &bare,
+                "cpython-3.14.6+20260728-aarch64-apple-darwin-install_only.tar.gz"
+            ),
+            None
+        );
     }
 
     #[test]

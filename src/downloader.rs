@@ -228,13 +228,15 @@ fn verify_checksum(
     expected_sha256: Option<&str>,
     temp: &NamedTempFile,
 ) -> Result<String> {
-    let filename = url.rsplit('/').next().unwrap_or(url);
+    // GitHub encodes `+` (and other characters) in asset URLs, but the
+    // checksum manifests list the raw filenames, so decode before matching.
+    let filename = percent_decode(url.rsplit('/').next().unwrap_or(url));
 
     let expected = match expected_sha256 {
         Some(expected) => expected.to_ascii_lowercase(),
         None => {
             let document = fetch_checksum_document(checksum_url)?;
-            extract_expected_hash(&document, filename).ok_or_else(|| {
+            extract_expected_hash(&document, &filename).ok_or_else(|| {
                 anyhow::anyhow!("Could not find a SHA-256 hash for {filename} in {checksum_url}")
             })?
         }
@@ -320,6 +322,30 @@ fn extract_expected_hash(document: &str, filename: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Percent-decode a URL path component (`%2B` -> `+`, ...). Needed because
+/// GitHub's asset URLs are percent-encoded while its checksum manifests list
+/// raw filenames; a plain `replace("%2B", "+")` would miss the other encodings.
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                decoded.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 /// Compute the lowercase hex SHA-256 digest of the file at `path`.
@@ -446,6 +472,33 @@ mod tests {
     fn reads_bare_sidecar_digest() {
         assert_eq!(
             extract_expected_hash(&format!("{HASH_A}\n"), "cpython-3.11.7.tar.gz").as_deref(),
+            Some(HASH_A)
+        );
+    }
+
+    /// GitHub encodes `+` as `%2B` in asset URLs, but the checksum manifests
+    /// list raw names; the verifier decodes before matching, so the manifest
+    /// lookup must succeed for the encoded name.
+    #[test]
+    fn decoded_filename_matches_the_manifest_entry() {
+        assert_eq!(
+            percent_decode("cpython-3.14.6%2B20260728-aarch64-apple-darwin-install_only.tar.gz"),
+            "cpython-3.14.6+20260728-aarch64-apple-darwin-install_only.tar.gz"
+        );
+        assert_eq!(percent_decode("plain-name.tar.gz"), "plain-name.tar.gz");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("a%20b"), "a b");
+
+        let document =
+            format!("{HASH_A}  cpython-3.14.6+20260728-aarch64-apple-darwin-install_only.tar.gz\n");
+        assert_eq!(
+            extract_expected_hash(
+                &document,
+                &percent_decode(
+                    "cpython-3.14.6%2B20260728-aarch64-apple-darwin-install_only.tar.gz"
+                )
+            )
+            .as_deref(),
             Some(HASH_A)
         );
     }
