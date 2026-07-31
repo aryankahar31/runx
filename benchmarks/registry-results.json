@@ -1,0 +1,6 @@
+{
+  "node": {"status": "pass", "vendor_latest": "26.5.1", "runx_resolved": "26.5.1"},
+  "go": {"status": "pass", "vendor_latest": "1.26.5", "runx_resolved": "1.26.5"},
+  "bun": {"status": "pass", "vendor_latest": "1.3.14", "runx_resolved": "1.3.14"},
+  "python": {"status": "fail", "vendor_latest": "3.14.6", "runx_resolved": ""}
+}

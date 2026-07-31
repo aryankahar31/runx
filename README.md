@@ -728,6 +728,52 @@ on any particular measurement.
 
 ---
 
+# Registry freshness: no third-party sync
+
+runx resolves version ranges **directly against each vendor's own release
+index** — `nodejs.org/dist/index.json` for Node, the
+`astral-sh/python-build-standalone` GitHub releases for Python, GitHub
+releases for Bun, and `go.dev/dl` for Go. Results are cached locally for at
+most 6 hours (`INDEX_TTL_SECS` in `src/registry.rs`); after that, the next
+range resolution refetches from the vendor. There is no sync service, mirror,
+or intermediate registry in the path.
+
+That is the structural difference from mise's version registry, which
+depends on a third-party sync pipeline: per
+[mise's own discussion #7468](https://github.com/jdx/mise/discussions/7468),
+its index refreshes roughly every 15 minutes but is rate-limited, so
+`mise latest <tool>` can report a version that is **days behind** the actual
+latest upstream release. runx's worst case is its own 6-hour cache window —
+bounded and self-healing, not unbounded by someone else's rate limit.
+
+**Falsifiable and continuously checked:** `benchmarks/registry-freshness.sh`
+fetches the latest version from each vendor's canonical source with plain
+`curl`, then has runx resolve a fresh `*` range in an isolated cache, and
+compares the two. A weekly CI run
+([`registry-freshness` workflow](.github/workflows/registry-freshness.yml))
+keeps the claim verified over time;
+![registry-freshness status](https://github.com/aryankahar31/runx/actions/workflows/registry-freshness.yml/badge.svg)
+
+Latest verified run (`benchmarks/registry-results.json`):
+
+| Runtime | Vendor latest | runx resolved | Status |
+| :-- | :-- | :-- | :--: |
+| node | 26.5.1 | 26.5.1 | ✅ |
+| go | 1.26.5 | 1.26.5 | ✅ |
+| bun | 1.3.14 | 1.3.14 | ✅ |
+| python | 3.14.6 | *not verified on this network* | ⚠️ |
+
+Honest caveats: the python index is heavy (10 pages of
+python-build-standalone releases, ~15 MB each) and failed to complete on a
+slow network during the initial verification — the weekly CI run exercises it
+on GitHub's own network, which is the environment runx users in CI hit. The
+6-hour cache means a release published within the last 6 hours may not yet
+appear in runx's resolution; rerun after the window for a clean check. The
+unauthenticated GitHub API (60 requests/hour/IP) is the practical ceiling for
+the python and bun lookups; a weekly run uses a fraction of it.
+
+---
+
 # Roadmap
 
 ## v0.1

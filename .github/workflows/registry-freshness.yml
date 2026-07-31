@@ -1,0 +1,21 @@
+name: registry-freshness
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - name: Verify runx resolves against vendor indexes
+        run: bash benchmarks/registry-freshness.sh target/release/runx
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: registry-freshness-results
+          path: benchmarks/registry-results.json
