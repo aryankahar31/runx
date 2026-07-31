@@ -298,7 +298,15 @@ mod tests {
         assert!(!is_newer("0.2.0", "0.3.0").expect("older is not newer"));
         assert!(is_newer("0.10.0", "0.9.0").expect("numeric, not lexical"));
         assert!(is_newer("v0.3.0", "0.2.0").expect("leading v is cosmetic"));
-        assert!(is_newer("0.3.0", "0.2.0").expect("comparable"));
+    }
+
+    /// The name the extracted runx executable has on this platform.
+    fn exe_name() -> &'static str {
+        if cfg!(windows) {
+            "runx.exe"
+        } else {
+            "runx"
+        }
     }
 
     #[test]
@@ -311,12 +319,16 @@ mod tests {
     fn finds_the_binary_under_a_wrapping_directory() {
         let dir = tempfile::tempdir().expect("temp dir");
         fs::create_dir_all(dir.path().join("runx-darwin-arm64/bin")).unwrap();
-        fs::write(dir.path().join("runx-darwin-arm64/bin/runx"), b"bin").unwrap();
+        fs::write(
+            dir.path().join("runx-darwin-arm64/bin").join(exe_name()),
+            b"bin",
+        )
+        .unwrap();
 
         let found = find_binary(dir.path()).expect("binary found");
         assert_eq!(
             found.file_name().unwrap().to_str(),
-            Some("runx"),
+            Some(exe_name()),
             "the runx executable itself"
         );
     }
@@ -325,14 +337,14 @@ mod tests {
     #[test]
     fn binary_search_does_not_follow_symlinks() {
         let dir = tempfile::tempdir().expect("temp dir");
-        fs::write(dir.path().join("runx"), b"real").unwrap();
+        fs::write(dir.path().join(exe_name()), b"real").unwrap();
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
         }
         assert_eq!(
             find_binary(dir.path()).expect("found").file_name().unwrap(),
-            "runx",
+            exe_name(),
             "must find the real file and not hang on the symlink"
         );
     }

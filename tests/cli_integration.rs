@@ -636,6 +636,32 @@ fn doctor_accepts_a_legacy_runtime_without_a_receipt() {
     let home = dir.path().join("home");
     plant_runtime(&home, "python", "3.11.7", false);
 
+    // Python resolution normally consults the GitHub API to learn the asset
+    // URLs. Plant a fresh release cache so this test stays offline, exactly
+    // like the node tests: doctor only inspects the cache layout.
+    let cache_file = home.join("python-release-cache.json");
+    let platforms = [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
+    ];
+    let entries = platforms
+        .iter()
+        .map(|platform| {
+            format!(
+                r#""{platform}": {{"url": "https://example.invalid/cpython.tgz",
+                    "checksum_url": "https://example.invalid/cpython.tgz.sha256",
+                    "cached_at_secs": 0}}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    fs::write(cache_file, format!(r#"{{"3.11.7": {{{entries}}}}}"#))
+        .expect("write python release cache");
+
     let output = runx_with_home(dir.path(), &home, &["doctor"]);
     assert_eq!(
         output.status.code(),
