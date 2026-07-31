@@ -74,7 +74,13 @@ pub fn update() -> Result<()> {
     let download = crate::downloader::download_to_temp(&archive_url, &checksum_url, None)?;
 
     let extract_dir = tempfile::tempdir().context("Failed to create a temporary directory")?;
-    crate::extractor::extract_archive(download.path(), extract_dir.path(), archive_kind(token))?;
+    // The release archives put the binary at the root; the runtime extractor
+    // would strip (and drop) root-level entries, so keep the top level here.
+    crate::extractor::extract_archive_keep_top_level(
+        download.path(),
+        extract_dir.path(),
+        archive_kind(token),
+    )?;
     drop(download);
 
     let new_binary = find_binary(extract_dir.path())

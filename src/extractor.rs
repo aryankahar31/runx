@@ -37,23 +37,45 @@ use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 pub fn extract_archive(archive: &Path, destination: &Path, kind: ArchiveKind) -> Result<()> {
+    extract_archive_with(archive, destination, kind, true)
+}
+
+/// Like [`extract_archive`] but keeps the archive's top-level structure.
+///
+/// Runtime archives all wrap their files in a directory (`bun-darwin-arm64/`,
+/// `node-v20.../`), which the default extractor strips. The runx release
+/// archives put the binary at the root, so self-update must not strip.
+pub fn extract_archive_keep_top_level(
+    archive: &Path,
+    destination: &Path,
+    kind: ArchiveKind,
+) -> Result<()> {
+    extract_archive_with(archive, destination, kind, false)
+}
+
+fn extract_archive_with(
+    archive: &Path,
+    destination: &Path,
+    kind: ArchiveKind,
+    strip_first: bool,
+) -> Result<()> {
     println!("Extracting to {}", destination.display());
     match kind {
-        ArchiveKind::Zip => extract_zip(archive, destination),
+        ArchiveKind::Zip => extract_zip(archive, destination, strip_first),
         ArchiveKind::TarGz => {
             let file = File::open(archive)
                 .with_context(|| format!("Failed to open {}", archive.display()))?;
-            extract_tar(GzDecoder::new(file), destination)
+            extract_tar(GzDecoder::new(file), destination, strip_first)
         }
         ArchiveKind::TarXz => {
             let file = File::open(archive)
                 .with_context(|| format!("Failed to open {}", archive.display()))?;
-            extract_tar(XzDecoder::new(file), destination)
+            extract_tar(XzDecoder::new(file), destination, strip_first)
         }
     }
 }
 
-fn extract_zip(archive_path: &Path, destination: &Path) -> Result<()> {
+fn extract_zip(archive_path: &Path, destination: &Path, strip_first: bool) -> Result<()> {
     let file = File::open(archive_path)
         .with_context(|| format!("Failed to open {}", archive_path.display()))?;
     let mut archive = ZipArchive::new(file).context("Failed to read zip archive")?;
@@ -67,8 +89,13 @@ fn extract_zip(archive_path: &Path, destination: &Path) -> Result<()> {
         let Some(enclosed) = entry.enclosed_name() else {
             continue;
         };
-        let Some(relative) = strip_first_component(&enclosed) else {
-            continue;
+        let relative = if strip_first {
+            let Some(relative) = strip_first_component(&enclosed) else {
+                continue;
+            };
+            relative
+        } else {
+            enclosed
         };
         let output_path = destination.join(&relative);
 
@@ -101,15 +128,37 @@ fn extract_zip(archive_path: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn extract_tar<R: io::Read>(reader: R, destination: &Path) -> Result<()> {
+fn extract_tar<R: io::Read>(reader: R, destination: &Path, strip_first: bool) -> Result<()> {
     let mut archive = Archive::new(reader);
     let entries = archive.entries().context("Failed to read tar archive")?;
 
     for entry in entries {
         let mut entry = entry.context("Failed to read tar entry")?;
         let path = entry.path().context("Failed to read tar entry path")?;
-        let Some(relative) = strip_first_component(&path) else {
-            continue;
+        let relative = if strip_first {
+            let Some(relative) = strip_first_component(&path) else {
+                continue;
+            };
+            relative
+        } else {
+            // `strip_first_component` also rejects absolute paths and `..`;
+            // without the strip we must apply that sanitisation ourselves,
+            // or a crafted archive could escape the destination.
+            let mut safe_components = Vec::new();
+            for component in path.components() {
+                match component {
+                    Component::Normal(part) => safe_components.push(part.to_os_string()),
+                    Component::CurDir => {}
+                    _ => {
+                        safe_components.clear();
+                        break;
+                    }
+                }
+            }
+            if safe_components.is_empty() {
+                continue;
+            }
+            PathBuf::from_iter(safe_components)
         };
         let output_path = destination.join(&relative);
         let entry_type = entry.header().entry_type();
@@ -549,6 +598,66 @@ mod tests {
             let mode = fs::metadata(&extracted).unwrap().permissions().mode();
             assert_eq!(mode & 0o111, 0o111, "executable bit must be preserved");
         }
+    }
+
+    /// The runx release archives (unlike runtime archives) put the binary at
+    /// the root; the non-stripping extractor must keep it, while the default
+    /// extractor drops root-level files (that is why self-update uses it).
+    #[test]
+    fn keeps_top_level_files_for_self_update() {
+        let dir = tmp();
+        let destination = dir.path().join("dest");
+        fs::create_dir_all(&destination).unwrap();
+
+        let archive_path = destination.parent().unwrap().join("release.tar.gz");
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = file_header("runx", 3, 0o755);
+        header.set_cksum();
+        builder.append(&header, b"bin".as_slice()).unwrap();
+        let tar_bytes = builder.into_inner().unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        io::Write::write_all(&mut encoder, &tar_bytes).unwrap();
+        fs::write(&archive_path, encoder.finish().unwrap()).unwrap();
+
+        extract_archive_keep_top_level(&archive_path, &destination, ArchiveKind::TarGz)
+            .expect("extraction should succeed");
+        assert_eq!(fs::read(destination.join("runx")).unwrap(), b"bin");
+    }
+
+    /// The non-stripping extractor must still reject traversal: an absolute
+    /// path must not escape the destination. The `tar` builder validates
+    /// paths, so the malicious archive is hand-crafted like one from the wire.
+    #[test]
+    fn keep_top_level_still_blocks_traversal() {
+        let dir = tmp();
+        let destination = dir.path().join("dest");
+        fs::create_dir_all(&destination).unwrap();
+
+        let mut header = [0u8; 512];
+        header[..8].copy_from_slice(b"../evil\0"); // name
+        header[100..108].copy_from_slice(b"0000755\0"); // mode
+        header[108..124].copy_from_slice(b"0000000000000000"); // uid/gid
+        header[124..136].copy_from_slice(b"000000000003"); // size (octal)
+        header[136..148].copy_from_slice(b"000000000000"); // mtime
+        header[148..156].copy_from_slice(b"        "); // checksum placeholder
+        header[156] = b'0'; // typeflag: regular file
+        header[257..263].copy_from_slice(b"ustar\0"); // magic
+        let checksum: u64 = header.iter().map(|&b| u64::from(b)).sum();
+        header[148..156].copy_from_slice(format!("{checksum:06o}\0 ").as_bytes());
+
+        let mut archive = header.to_vec();
+        archive.extend_from_slice(b"bin");
+        archive.resize(1024, 0); // entry data block + end-of-archive marker
+
+        let archive_path = destination.parent().unwrap().join("evil.tar.gz");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        io::Write::write_all(&mut encoder, &archive).unwrap();
+        fs::write(&archive_path, encoder.finish().unwrap()).unwrap();
+
+        extract_archive_keep_top_level(&archive_path, &destination, ArchiveKind::TarGz)
+            .expect("extraction should succeed");
+        assert!(!destination.join("evil").exists());
+        assert!(!destination.parent().unwrap().join("evil").exists());
     }
 
     /// The full attack: entry 1 plants a symlink pointing outside, entry 2

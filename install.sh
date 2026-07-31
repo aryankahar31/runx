@@ -92,7 +92,7 @@ verify_checksum() {
         field = $2
         sub(/^\*/, "", field)          # coreutils binary-mode marker
         sub(/^.*\//, "", field)        # compare basenames only
-        if (field == name && $1 ~ /^[0-9a-fA-F]{64}$/) {
+        if (field == name && length($1) == 64 && $1 ~ /^[0-9a-fA-F]+$/) {
           print tolower($1)
           exit
         }
@@ -178,7 +178,7 @@ setup_path() {
   esac
   _path_line="export PATH=\"$_path_entry:\$PATH\""
 
-  _shell_name="${SHELL##*/}"
+  _shell_name="$(basename "${SHELL:-}")"
   _rc_file=""
   case "$_shell_name" in
     zsh) _rc_file="$HOME/.zprofile" ;;
