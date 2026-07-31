@@ -753,8 +753,7 @@ mod tests {
     #[test]
     fn verifies_against_a_directly_carried_digest() {
         let payload = payload_of(40_000);
-        let (base, _ranges, server) =
-            scripted_server(payload.clone(), vec![Behavior::Serve], 1);
+        let (base, _ranges, server) = scripted_server(payload.clone(), vec![Behavior::Serve], 1);
 
         let download = download_to_temp(
             &format!("{base}/archive.tar.gz"),
@@ -777,15 +776,10 @@ mod tests {
     #[test]
     fn rejects_a_mismatched_expected_digest() {
         let payload = payload_of(10_000);
-        let (base, _ranges, server) =
-            scripted_server(payload.clone(), vec![Behavior::Serve], 1);
+        let (base, _ranges, server) = scripted_server(payload.clone(), vec![Behavior::Serve], 1);
 
-        let err = download_to_temp(
-            &format!("{base}/archive.tar.gz"),
-            "",
-            Some(HASH_A),
-        )
-        .expect_err("a mismatched expected digest must fail");
+        let err = download_to_temp(&format!("{base}/archive.tar.gz"), "", Some(HASH_A))
+            .expect_err("a mismatched expected digest must fail");
 
         assert!(
             format!("{err:#}").contains("SHA-256 mismatch"),

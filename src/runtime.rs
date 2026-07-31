@@ -599,7 +599,10 @@ mod tests {
         assert_eq!(spec.tool, "bun");
         assert_eq!(spec.version, "1.3.14");
         assert_eq!(spec.archive_kind, ArchiveKind::Zip);
-        assert!(spec.expected_sha256.is_none(), "bun verifies via SHASUMS256.txt");
+        assert!(
+            spec.expected_sha256.is_none(),
+            "bun verifies via SHASUMS256.txt"
+        );
         assert!(
             spec.url.ends_with("/bun-v1.3.14/bun-darwin-aarch64.zip")
                 || spec.url.ends_with("/bun-v1.3.14/bun-darwin-x64.zip")
@@ -678,15 +681,15 @@ mod tests {
         };
 
         write_go_cache(&path, "1.26.5", "darwin-arm64", &asset);
-        let loaded = read_go_cache(&path, "1.26.5", "darwin-arm64")
-            .expect("fresh cache entry should hit");
+        let loaded =
+            read_go_cache(&path, "1.26.5", "darwin-arm64").expect("fresh cache entry should hit");
         assert_eq!(loaded.url, asset.url);
         assert_eq!(loaded.sha256, asset.sha256);
 
         // Other platforms are preserved and a stale entry is a miss.
         assert!(read_go_cache(&path, "1.26.5", "linux-amd64").is_none());
-        let mut cache: GoReleaseCache = serde_json::from_str(&fs::read_to_string(&path).unwrap())
-            .expect("cache parses");
+        let mut cache: GoReleaseCache =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).expect("cache parses");
         cache
             .get_mut("1.26.5")
             .unwrap()

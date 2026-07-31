@@ -223,6 +223,35 @@ fn no_arguments_prints_help_and_succeeds() {
     );
 }
 
+// ── Completions ──────────────────────────────────────────────────────────────
+
+/// Completion scripts are generated offline for every shell clap knows; the
+/// script must reference the binary name so shells can find the right command.
+#[test]
+fn completions_generate_a_script_for_known_shells() {
+    let dir = tmp();
+    for shell in ["bash", "zsh", "fish", "powershell"] {
+        let output = runx(dir.path(), &["completions", shell]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "completions {shell} should succeed"
+        );
+        assert!(
+            stdout_of(&output).contains("runx"),
+            "completions {shell} should reference runx, got:\n{}",
+            stdout_of(&output)
+        );
+    }
+
+    let unknown = runx(dir.path(), &["completions", "csh"]);
+    assert_ne!(
+        unknown.status.code(),
+        Some(0),
+        "unknown shells are rejected"
+    );
+}
+
 #[test]
 fn init_refuses_to_overwrite_an_existing_config() {
     let dir = tmp();

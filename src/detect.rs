@@ -192,7 +192,9 @@ fn detect_bun(dir: &Path) -> Option<Detected> {
     }
 
     // Priority 2: the corepack-style packageManager field ("bun@1.1.0").
-    let manager = json.get("packageManager").and_then(|value| value.as_str())?;
+    let manager = json
+        .get("packageManager")
+        .and_then(|value| value.as_str())?;
     let requirement = manager
         .strip_prefix("bun@")?
         // Corepack appends a digest as `bun@1.1.0+sha512.…`; the digest is not
@@ -213,7 +215,7 @@ fn detect_go(dir: &Path) -> Option<Detected> {
     let raw = read_file_to_string_lossy(&dir.join("go.mod"))?;
 
     for line in raw.lines() {
-        let mut tokens = line.trim().split_whitespace();
+        let mut tokens = line.split_whitespace();
         if tokens.next() != Some("go") {
             continue;
         }
@@ -873,8 +875,11 @@ mod tests {
     #[test]
     fn detects_go_from_gomod_directive() {
         let dir = tmp();
-        fs::write(dir.path().join("go.mod"), "module example.com/hello\n\ngo 1.22.5\n")
-            .unwrap();
+        fs::write(
+            dir.path().join("go.mod"),
+            "module example.com/hello\n\ngo 1.22.5\n",
+        )
+        .unwrap();
 
         let result = detect_runtimes(dir.path());
         let go = result
@@ -976,7 +981,10 @@ mod tests {
         let lines = detect_runtimes(dir.path()).unresolvable();
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("bun"), "should name the tool");
-        assert!(lines[0].contains("packageManager"), "should name the source");
+        assert!(
+            lines[0].contains("packageManager"),
+            "should name the source"
+        );
     }
 
     #[test]

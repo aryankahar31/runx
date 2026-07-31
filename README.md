@@ -80,6 +80,23 @@ configuration always wins over auto-detection, with no merging.
 | 1 | `.python-version` | Plain text, leading `v` stripped |
 | 2 | `pyproject.toml` → `[project].requires-python` | TOML, range resolved (see below) |
 
+### Bun (first match wins)
+
+| Priority | File | Notes |
+|----------|------|-------|
+| 1 | `package.json` → `engines.bun` | JSON, range resolved |
+| 2 | `package.json` → `packageManager` | `bun@1.1.0` form; the `+sha512.…` digest is ignored |
+
+### Go (first match wins)
+
+| Priority | File | Notes |
+|----------|------|-------|
+| 1 | `go.mod` → `go` directive | Plain text; the `toolchain` directive is ignored |
+
+A `go.mod` also marks a project root for auto-detection, alongside
+`package.json`, `.nvmrc`, `.node-version`, `.python-version`, `pyproject.toml`,
+`.git` and `runx.toml`.
+
 ## Semver range resolution
 
 When a version file contains a range rather than an exact version, runx
@@ -271,8 +288,9 @@ iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 | iex
 >
 > Checksums confirm the download is intact and matches what the publisher
 > listed. They are fetched from the same origin as the artifact, so they are
-> not by themselves protection against a compromised release host —
-> signature verification is on the roadmap.
+> not by themselves protection against a compromised release host.
+> `runx self update` verifies the same checksum before swapping the binary;
+> cryptographic signature verification is on the roadmap (Sigstore/cosign).
 
 Verify installation
 
@@ -447,9 +465,9 @@ No repeated downloads.
 |----------|--------|
 | Node.js | ✅ |
 | Python | ✅ |
-| Bun | 🚧 Planned |
+| Bun | ✅ |
+| Go | ✅ |
 | Deno | 🚧 Planned |
-| Go | 🚧 Planned |
 | Java | 🚧 Planned |
 | .NET | 🚧 Planned |
 
@@ -503,7 +521,28 @@ unless you pass `--yes`.
 ```bash
 runx --version
 runx --help
+runx doctor           # diagnose problems with the cache and PATH
 ```
+
+## Shell completions
+
+```bash
+runx completions bash         # or: zsh, fish, powershell
+runx completions zsh > "$ZDOTDIR/.zfunc/_runx"
+```
+
+## Self update
+
+```bash
+runx self update
+```
+
+Checks the latest GitHub release, verifies it against the release `SHA256SUMS`,
+and atomically swaps the current binary (the previous one is kept as
+`runx.old` until the new one runs). The binary needs write access to its own
+directory — update from a local `cargo install` location manually instead.
+Releases must publish a platform archive (`runx-{linux|macos|windows}-{x64|arm64}.tar.gz` or `.zip`)
+plus `SHA256SUMS` for `self update` to work.
 
 ## Environment variables
 
@@ -664,6 +703,8 @@ directory hooks.
 ## v0.2
 
 - ✅ Zero-config auto-detection (Node.js + Python from `.nvmrc`, `.node-version`, `package.json`, `.python-version`, `pyproject.toml`)
+- ✅ Bun (from `engines.bun` / `packageManager`, or `runx.toml`)
+- ✅ Go (from the `go.mod` `go` directive, or `runx.toml`)
 
 ---
 
@@ -685,11 +726,12 @@ directory hooks.
 - ✅ Cache management (`list`, `size`, `clean`, `prune`)
 - ✅ Retry with exponential backoff and resumable downloads
 - ✅ `RUNX_HOME` for cache relocation
-- 🚧 `runx doctor` — diagnose broken cache, corrupt runtimes, `PATH` conflicts
-- 🚧 Shell completions (bash, zsh, fish, PowerShell)
-- 🚧 Bun
-- 🚧 Go
-- 🚧 `runx self update`
+- ✅ `runx doctor` — diagnose broken cache, corrupt runtimes, `PATH` conflicts
+- ✅ Shell completions (bash, zsh, fish, PowerShell)
+- ✅ Bun
+- ✅ Go
+- ✅ `runx self update` — checks the latest GitHub release, verifies the SHA-256
+  checksum, and atomically swaps the binary
 - 🚧 Signature verification (Sigstore/cosign path)
 
 ---

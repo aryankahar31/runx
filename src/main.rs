@@ -8,6 +8,7 @@ use runx::extractor;
 use runx::lock;
 use runx::registry;
 use runx::runtime;
+use runx::self_update;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -80,9 +81,28 @@ enum Command {
     /// Diagnose problems with the cache and PATH.
     Doctor,
 
+    /// Print a shell completion script for the given shell.
+    Completions {
+        /// One of bash, zsh, fish, powershell, elvish.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+
+    /// Manage runx itself.
+    Self_ {
+        #[command(subcommand)]
+        action: SelfAction,
+    },
+
     /// Any other word is treated as a [run] command key, so `runx dev` works.
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+#[derive(Debug, Subcommand)]
+enum SelfAction {
+    /// Download and install the newest runx release, verifying its checksum.
+    Update,
 }
 
 #[derive(Debug, Subcommand)]
@@ -135,6 +155,10 @@ fn run() -> Result<()> {
             CacheAction::Prune { older_than, yes } => cache_prune(older_than, yes),
         },
         Some(Command::Doctor) => doctor_command(),
+        Some(Command::Completions { shell }) => completions_command(shell),
+        Some(Command::Self_ { action }) => match action {
+            SelfAction::Update => self_update::update(),
+        },
         Some(Command::External(args)) => dispatch_external(args),
         None => print_help(),
     }
@@ -144,6 +168,16 @@ fn print_help() -> Result<()> {
     use clap::CommandFactory;
     Cli::command().print_help()?;
     println!();
+    Ok(())
+}
+
+/// Print a shell completion script to stdout.
+///
+/// Source the output from your shell profile, e.g. for bash:
+/// `runx completions bash >> ~/.bashrc`.
+fn completions_command(shell: clap_complete::Shell) -> Result<()> {
+    use clap::CommandFactory;
+    clap_complete::generate(shell, &mut Cli::command(), "runx", &mut std::io::stdout());
     Ok(())
 }
 

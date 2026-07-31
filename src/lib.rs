@@ -12,4 +12,5 @@ pub mod http;
 pub mod lock;
 pub mod registry;
 pub mod runtime;
+pub mod self_update;
 pub mod version;

@@ -385,17 +385,16 @@ fn fetch_bun_versions() -> Result<Vec<Version>> {
     let mut found: Vec<Version> = Vec::new();
 
     for page in 1..=BUN_PAGES {
-        let url = format!(
-            "https://api.github.com/repos/oven-sh/bun/releases?per_page=100&page={page}"
-        );
+        let url =
+            format!("https://api.github.com/repos/oven-sh/bun/releases?per_page=100&page={page}");
         let body = crate::http::get(&url)
             .call()
             .with_context(|| format!("Failed to fetch Bun releases: {url}"))?
             .into_string()
             .context("Failed to read Bun release metadata")?;
 
-        let releases: Vec<BunRelease> = serde_json::from_str(&body)
-            .context("Failed to decode Bun release metadata")?;
+        let releases: Vec<BunRelease> =
+            serde_json::from_str(&body).context("Failed to decode Bun release metadata")?;
         if releases.is_empty() {
             break;
         }
@@ -428,8 +427,8 @@ fn fetch_go_versions() -> Result<Vec<Version>> {
         .into_string()
         .context("Failed to read the Go release index")?;
 
-    let releases: Vec<GoRelease> = serde_json::from_str(&body)
-        .context("Failed to decode the Go release index")?;
+    let releases: Vec<GoRelease> =
+        serde_json::from_str(&body).context("Failed to decode the Go release index")?;
 
     Ok(go_versions_from_index(&releases))
 }
@@ -635,7 +634,7 @@ mod tests {
 
     #[test]
     fn bun_versions_are_deduplicated_and_sorted() {
-        let releases = vec![
+        let releases = [
             BunRelease {
                 tag_name: "bun-v1.3.14".to_string(),
             },
