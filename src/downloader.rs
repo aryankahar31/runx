@@ -27,14 +27,24 @@ impl Download {
     }
 }
 
-/// Download `url` to a temporary file, verify its SHA-256 against the checksum
-/// document published at `checksum_url`, and return the verified archive.
+/// Download `url` to a temporary file and verify its SHA-256, then return the
+/// verified archive.
+///
+/// The digest is verified either against the checksum document published at
+/// `checksum_url`, or — when `expected_sha256` is given — directly against
+/// that digest, for publishers who list it in the release metadata itself
+/// (Go's `go.dev/dl` JSON). At most one source is consulted; when
+/// `expected_sha256` is set, `checksum_url` is ignored.
 ///
 /// The inner [`NamedTempFile`] auto-deletes on drop (including on panic or
 /// early return), so the caller should extract from `path()` and then drop it.
 /// The checksum is verified *before* returning — a file that fails verification
 /// is never handed back for extraction.
-pub fn download_to_temp(url: &str, checksum_url: &str) -> Result<Download> {
+pub fn download_to_temp(
+    url: &str,
+    checksum_url: &str,
+    expected_sha256: Option<&str>,
+) -> Result<Download> {
     println!("Downloading {url}");
 
     let mut temp = NamedTempFile::new().context("Failed to create temporary download file")?;
@@ -65,7 +75,7 @@ pub fn download_to_temp(url: &str, checksum_url: &str) -> Result<Download> {
 
         match fetch_into(url, &mut temp, have) {
             Ok(()) => {
-                let sha256 = verify_checksum(url, checksum_url, &temp)?;
+                let sha256 = verify_checksum(url, checksum_url, expected_sha256, &temp)?;
                 // Do NOT call `.keep()` — returning the NamedTempFile lets it
                 // auto-delete on drop, so a killed process leaks nothing.
                 return Ok(Download { temp, sha256 });
@@ -206,16 +216,29 @@ fn seek_to_end(temp: &mut NamedTempFile) -> Result<()> {
     Ok(())
 }
 
-/// Verify the SHA-256 of `temp` against the expected hash published at
-/// `checksum_url`, returning the verified digest.
+/// Verify the SHA-256 of `temp` against the expected digest, returning the
+/// verified digest.
 ///
-/// Returns an error on mismatch without extracting anything.
-fn verify_checksum(url: &str, checksum_url: &str, temp: &NamedTempFile) -> Result<String> {
+/// The expected digest comes either directly (`expected_sha256`) or from the
+/// checksum document published at `checksum_url`. Returns an error on
+/// mismatch without extracting anything.
+fn verify_checksum(
+    url: &str,
+    checksum_url: &str,
+    expected_sha256: Option<&str>,
+    temp: &NamedTempFile,
+) -> Result<String> {
     let filename = url.rsplit('/').next().unwrap_or(url);
-    let document = fetch_checksum_document(checksum_url)?;
-    let expected = extract_expected_hash(&document, filename).ok_or_else(|| {
-        anyhow::anyhow!("Could not find a SHA-256 hash for {filename} in {checksum_url}")
-    })?;
+
+    let expected = match expected_sha256 {
+        Some(expected) => expected.to_ascii_lowercase(),
+        None => {
+            let document = fetch_checksum_document(checksum_url)?;
+            extract_expected_hash(&document, filename).ok_or_else(|| {
+                anyhow::anyhow!("Could not find a SHA-256 hash for {filename} in {checksum_url}")
+            })?
+        }
+    };
 
     let actual = compute_sha256(temp.path())?;
     if !actual.eq_ignore_ascii_case(&expected) {
@@ -711,11 +734,65 @@ mod tests {
         (0..size).map(|i| (i % 251) as u8).collect()
     }
 
+    fn digest_of(payload: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        hex_encode(&hasher.finalize())
+    }
+
     fn fetch(base: &str) -> Result<Download> {
         download_to_temp(
             &format!("{base}/archive.tar.gz"),
             &format!("{base}/SHASUMS256.txt"),
+            None,
         )
+    }
+
+    /// A publisher that carries the digest in the release metadata rather than
+    /// a checksum document must be verified the same way.
+    #[test]
+    fn verifies_against_a_directly_carried_digest() {
+        let payload = payload_of(40_000);
+        let (base, _ranges, server) =
+            scripted_server(payload.clone(), vec![Behavior::Serve], 1);
+
+        let download = download_to_temp(
+            &format!("{base}/archive.tar.gz"),
+            "",
+            Some(&digest_of(&payload)),
+        )
+        .expect("download should verify against the expected digest");
+
+        assert_eq!(
+            std::fs::read(download.path()).expect("read file"),
+            payload,
+            "the verified file must be intact"
+        );
+
+        server.join().ok();
+    }
+
+    /// A wrong directly-carried digest must fail exactly like a document
+    /// mismatch, without consulting any checksum URL.
+    #[test]
+    fn rejects_a_mismatched_expected_digest() {
+        let payload = payload_of(10_000);
+        let (base, _ranges, server) =
+            scripted_server(payload.clone(), vec![Behavior::Serve], 1);
+
+        let err = download_to_temp(
+            &format!("{base}/archive.tar.gz"),
+            "",
+            Some(HASH_A),
+        )
+        .expect_err("a mismatched expected digest must fail");
+
+        assert!(
+            format!("{err:#}").contains("SHA-256 mismatch"),
+            "expected a checksum mismatch, got: {err:#}"
+        );
+
+        server.join().ok();
     }
 
     /// The point of the feature: a connection dropped partway must resume from

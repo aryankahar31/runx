@@ -340,7 +340,11 @@ fn provision(
             let home = home.clone();
             std::thread::spawn(move || -> Result<Provisioned> {
                 println!("Installing {} {}", spec.tool, spec.version);
-                let download = downloader::download_to_temp(&spec.url, &spec.checksum_url)?;
+                let download = downloader::download_to_temp(
+                    &spec.url,
+                    &spec.checksum_url,
+                    spec.expected_sha256.as_deref(),
+                )?;
                 let staging = cache::staging_dir(&home, &spec)?;
 
                 // Record the digest that was actually verified, so `runx.lock`
@@ -747,7 +751,7 @@ fn file_name_of(path: &Path) -> String {
 }
 
 /// Managed tool names that could be shimmed on the user's PATH.
-const MANAGED_TOOLS: &[&str] = &["node", "python", "python3"];
+const MANAGED_TOOLS: &[&str] = &["node", "python", "python3", "bun", "go"];
 
 /// Find PATH entries resolving to one of the managed tools *inside* the runx
 /// cache. Such a shim survives `runx cache clean` and then silently runs

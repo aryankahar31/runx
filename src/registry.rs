@@ -42,6 +42,18 @@ const NODE_INDEX_URL: &str = "https://nodejs.org/dist/index.json";
 /// versions. Ten pages of ten releases covers well over a year of releases.
 const PYTHON_PAGES: u32 = 10;
 
+/// Go publishes every stable release, with digests, in one JSON document.
+///
+/// `include=all` is required: without it go.dev only lists the latest couple
+/// of minor versions, so an older `go.mod` directive (e.g. `go 1.22`) would
+/// resolve to nothing.
+pub const GO_INDEX_URL: &str = "https://go.dev/dl/?mode=json&include=all";
+
+/// How many pages of Bun releases to scan. `per_page=100` and a page that
+/// comes back empty stops the scan, so this is a generous ceiling rather than
+/// a fixed cost.
+const BUN_PAGES: u32 = 5;
+
 /// On-disk cache envelope.
 #[derive(Debug, Deserialize, serde::Serialize)]
 struct CachedIndex {
@@ -63,6 +75,30 @@ struct PythonRelease {
 #[derive(Debug, Deserialize)]
 struct PythonAssetName {
     name: String,
+}
+
+/// One entry of Go's `dl/?mode=json` release index.
+///
+/// Shared with [`crate::runtime`], which reads the per-file digests from the
+/// same document to verify Go downloads.
+#[derive(Debug, Deserialize)]
+pub struct GoRelease {
+    pub version: String,
+    pub stable: bool,
+    #[serde(default)]
+    pub files: Vec<GoFile>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GoFile {
+    pub filename: String,
+    #[serde(default)]
+    pub sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BunRelease {
+    tag_name: String,
 }
 
 /// How a version *range* is turned into a concrete release.
@@ -237,6 +273,8 @@ pub fn available_versions(tool: &str, platform: &str) -> Result<Vec<Version>> {
     let versions = match tool {
         "node" => fetch_node_versions()?,
         "python" => fetch_python_versions(platform)?,
+        "bun" => fetch_bun_versions()?,
+        "go" => fetch_go_versions()?,
         other => anyhow::bail!("No release index available for runtime `{other}`"),
     };
 
@@ -336,6 +374,75 @@ fn python_version_from_asset(name: &str) -> Option<Version> {
     let rest = name.strip_prefix("cpython-")?;
     let version = rest.split(['+', '-']).next()?;
     Version::parse(version)
+}
+
+/// Pull versions out of Bun's GitHub release tags (`bun-v1.3.14`).
+///
+/// Bun publishes every supported platform for every release, so the platform
+/// does not need to filter the list. Canary and pre-release tags
+/// (`bun-v1.3.14-canary.x`) fail to parse as versions and are skipped.
+fn fetch_bun_versions() -> Result<Vec<Version>> {
+    let mut found: Vec<Version> = Vec::new();
+
+    for page in 1..=BUN_PAGES {
+        let url = format!(
+            "https://api.github.com/repos/oven-sh/bun/releases?per_page=100&page={page}"
+        );
+        let body = crate::http::get(&url)
+            .call()
+            .with_context(|| format!("Failed to fetch Bun releases: {url}"))?
+            .into_string()
+            .context("Failed to read Bun release metadata")?;
+
+        let releases: Vec<BunRelease> = serde_json::from_str(&body)
+            .context("Failed to decode Bun release metadata")?;
+        if releases.is_empty() {
+            break;
+        }
+
+        for release in releases {
+            if let Some(version) = version_from_bun_tag(&release.tag_name) {
+                found.push(version);
+            }
+        }
+    }
+
+    Ok(sorted_unique(found.into_iter()))
+}
+
+/// `bun-v1.3.14` -> `1.3.14`; `None` for canary, pre-release and malformed tags.
+fn version_from_bun_tag(tag: &str) -> Option<Version> {
+    let version = tag.strip_prefix("bun-v")?;
+    Version::parse(version).filter(|parsed| parsed.to_three_parts() == version)
+}
+
+/// Pull versions out of Go's `dl/?mode=json` release index.
+///
+/// Only plain `goMAJOR.MINOR.PATCH` stable releases count: pre-releases
+/// (`go1.27rc1`) and the two-part aliases Go lists alongside full releases
+/// (`go1.25`) are not installable downloads runx resolves to.
+fn fetch_go_versions() -> Result<Vec<Version>> {
+    let body = crate::http::get(GO_INDEX_URL)
+        .call()
+        .with_context(|| format!("Failed to fetch the Go release index from {GO_INDEX_URL}"))?
+        .into_string()
+        .context("Failed to read the Go release index")?;
+
+    let releases: Vec<GoRelease> = serde_json::from_str(&body)
+        .context("Failed to decode the Go release index")?;
+
+    Ok(go_versions_from_index(&releases))
+}
+
+/// Extract the stable, full `MAJOR.MINOR.PATCH` versions from a parsed index.
+fn go_versions_from_index(releases: &[GoRelease]) -> Vec<Version> {
+    sorted_unique(releases.iter().filter_map(|release| {
+        if !release.stable {
+            return None;
+        }
+        let version = release.version.strip_prefix("go")?;
+        Version::parse(version).filter(|parsed| parsed.to_three_parts() == version)
+    }))
 }
 
 /// Sort ascending and drop duplicates.
@@ -491,6 +598,101 @@ mod tests {
             collect_python_versions(&releases, "x86_64-unknown-linux-gnu").into_iter(),
         );
         assert_eq!(versions, vec![v("3.11.7")]);
+    }
+
+    // ── Bun index parsing ────────────────────────────────────────────────────
+
+    #[test]
+    fn parses_bun_release_tags() {
+        assert_eq!(
+            version_from_bun_tag("bun-v1.3.14").expect("stable tag parses"),
+            v("1.3.14")
+        );
+        assert_eq!(
+            version_from_bun_tag("bun-v1.0.0").expect("oldest stable parses"),
+            v("1.0.0")
+        );
+    }
+
+    /// Canary, pre-release and unrelated tags must never become installable
+    /// versions: a canary build is not what a stable range should resolve to.
+    #[test]
+    fn ignores_non_stable_bun_tags() {
+        for tag in [
+            "bun-v1.3.14-canary.123",
+            "bun-v1.3.14-rc.1",
+            "v1.3.14",
+            "bun-v1.3",
+            "nightly",
+        ] {
+            assert_eq!(
+                version_from_bun_tag(tag),
+                None,
+                "{tag} must not count as a stable release"
+            );
+        }
+    }
+
+    #[test]
+    fn bun_versions_are_deduplicated_and_sorted() {
+        let releases = vec![
+            BunRelease {
+                tag_name: "bun-v1.3.14".to_string(),
+            },
+            BunRelease {
+                tag_name: "bun-v1.3.14".to_string(),
+            },
+            BunRelease {
+                tag_name: "bun-v1.2.0".to_string(),
+            },
+        ];
+
+        let versions = sorted_unique(
+            releases
+                .iter()
+                .filter_map(|release| version_from_bun_tag(&release.tag_name)),
+        );
+        assert_eq!(versions, vec![v("1.2.0"), v("1.3.14")]);
+    }
+
+    // ── Go index parsing ──────────────────────────────────────────────────────
+
+    #[test]
+    fn keeps_only_stable_full_versions_from_the_go_index() {
+        let releases = vec![
+            GoRelease {
+                version: "go1.26.5".to_string(),
+                stable: true,
+                files: vec![],
+            },
+            GoRelease {
+                version: "go1.26.5".to_string(),
+                stable: true,
+                files: vec![],
+            },
+            GoRelease {
+                version: "go1.27rc1".to_string(),
+                stable: false,
+                files: vec![],
+            },
+            // The two-part alias Go lists beside the full release.
+            GoRelease {
+                version: "go1.25".to_string(),
+                stable: true,
+                files: vec![],
+            },
+            GoRelease {
+                version: "go1.22.5".to_string(),
+                stable: true,
+                files: vec![],
+            },
+        ];
+
+        assert_eq!(
+            go_versions_from_index(&releases),
+            vec![v("1.22.5"), v("1.26.5")],
+            "pre-releases and two-part aliases must not be installable versions"
+        );
     }
 
     // ── Disk cache ───────────────────────────────────────────────────────────

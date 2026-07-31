@@ -11,6 +11,13 @@
 //! 1. `.python-version`
 //! 2. `pyproject.toml` → `[project].requires-python`
 //!
+//! **Bun**
+//! 1. `package.json` → `engines.bun`
+//! 2. `package.json` → `packageManager` (`"bun@1.1.0"`, corepack-style)
+//!
+//! **Go**
+//! 1. `go.mod` → `go` directive (`go 1.22.0`)
+//!
 //! **Range resolution**: version hints are parsed with [`crate::version::Req`].
 //! A hint that cannot be turned into a concrete version — because it has no
 //! lower bound (`<20`), because it excludes its own bound (`!=3.11`), or
@@ -72,6 +79,8 @@ impl Detected {
 pub struct DetectionResult {
     pub node: Option<Detected>,
     pub python: Option<Detected>,
+    pub bun: Option<Detected>,
+    pub go: Option<Detected>,
     /// Shell command inferred from `package.json` `scripts.dev`, if present.
     /// Currently only `"npm run dev"` is inferred — no other heuristics are
     /// attempted, per the v0.2 scope.
@@ -81,19 +90,24 @@ pub struct DetectionResult {
 impl DetectionResult {
     /// Every hint that was found but could not be resolved, as printable lines.
     pub fn unresolvable(&self) -> Vec<String> {
-        [("node", &self.node), ("python", &self.python)]
-            .into_iter()
-            .filter_map(|(tool, slot)| match slot.as_ref()? {
-                Detected::Unresolvable {
-                    source,
-                    requirement,
-                    reason,
-                } => Some(format!(
-                    "  {tool} `{requirement}` (from {source}) — {reason}"
-                )),
-                Detected::Found(_) => None,
-            })
-            .collect()
+        [
+            ("node", &self.node),
+            ("python", &self.python),
+            ("bun", &self.bun),
+            ("go", &self.go),
+        ]
+        .into_iter()
+        .filter_map(|(tool, slot)| match slot.as_ref()? {
+            Detected::Unresolvable {
+                source,
+                requirement,
+                reason,
+            } => Some(format!(
+                "  {tool} `{requirement}` (from {source}) — {reason}"
+            )),
+            Detected::Found(_) => None,
+        })
+        .collect()
     }
 }
 
@@ -108,6 +122,8 @@ pub fn detect_runtimes(dir: &Path) -> DetectionResult {
     DetectionResult {
         node: detect_node(dir),
         python: detect_python(dir),
+        bun: detect_bun(dir),
+        go: detect_go(dir),
         inferred_dev_command: infer_dev_command(dir),
     }
 }
@@ -158,6 +174,58 @@ fn detect_python_from_pyproject(dir: &Path) -> Option<Detected> {
         .and_then(|value| value.as_str())?;
 
     Some(record_hint(requires, "pyproject.toml (requires-python)"))
+}
+
+// ── Bun detection ─────────────────────────────────────────────────────────────
+
+fn detect_bun(dir: &Path) -> Option<Detected> {
+    let raw = read_file_to_string_lossy(&dir.join("package.json"))?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+
+    // Priority 1: engines.bun, mirroring engines.node.
+    if let Some(range) = json
+        .get("engines")
+        .and_then(|engines| engines.get("bun"))
+        .and_then(|value| value.as_str())
+    {
+        return Some(record_hint(range, "package.json (engines.bun)"));
+    }
+
+    // Priority 2: the corepack-style packageManager field ("bun@1.1.0").
+    let manager = json.get("packageManager").and_then(|value| value.as_str())?;
+    let requirement = manager
+        .strip_prefix("bun@")?
+        // Corepack appends a digest as `bun@1.1.0+sha512.…`; the digest is not
+        // part of the version.
+        .split('+')
+        .next()?;
+
+    Some(record_hint(requirement, "package.json (packageManager)"))
+}
+
+// ── Go detection ──────────────────────────────────────────────────────────────
+
+/// Detect the Go version from the `go` directive in `go.mod`.
+///
+/// Only the first `go` directive is read (there is exactly one in a valid
+/// module); the `toolchain go1.22.5` directive is deliberately ignored.
+fn detect_go(dir: &Path) -> Option<Detected> {
+    let raw = read_file_to_string_lossy(&dir.join("go.mod"))?;
+
+    for line in raw.lines() {
+        let mut tokens = line.trim().split_whitespace();
+        if tokens.next() != Some("go") {
+            continue;
+        }
+        // A trailing comment after the version is harmless: the requirement
+        // parser only sees the version token.
+        let Some(version) = tokens.next() else {
+            continue;
+        };
+        return Some(record_hint(version, "go.mod"));
+    }
+
+    None
 }
 
 // ── Run-command inference ─────────────────────────────────────────────────────
@@ -271,13 +339,18 @@ fn normalise_requirement(raw: &str) -> String {
 /// Build the map form expected by `RunxConfig::runtimes`, keyed tool to
 /// *requirement*, including only hints that parsed.
 pub fn detected_runtimes_map(result: &DetectionResult) -> BTreeMap<String, String> {
-    [("node", &result.node), ("python", &result.python)]
-        .into_iter()
-        .filter_map(|(tool, slot)| {
-            let found = slot.as_ref()?.found()?;
-            Some((tool.to_string(), found.requirement.clone()))
-        })
-        .collect()
+    [
+        ("node", &result.node),
+        ("python", &result.python),
+        ("bun", &result.bun),
+        ("go", &result.go),
+    ]
+    .into_iter()
+    .filter_map(|(tool, slot)| {
+        let found = slot.as_ref()?.found()?;
+        Some((tool.to_string(), found.requirement.clone()))
+    })
+    .collect()
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -704,6 +777,162 @@ mod tests {
         assert_eq!(result.inferred_dev_command.as_deref(), Some("npm run dev"));
     }
 
+    // ── Bun detection ────────────────────────────────────────────────────────
+
+    #[test]
+    fn detects_bun_from_package_json_engines() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"bun": ">=1.1.0"}}"#,
+        )
+        .unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let bun = result
+            .bun
+            .as_ref()
+            .expect("bun should be detected")
+            .found()
+            .expect("bun hint should parse");
+        assert_eq!(bun.requirement, ">=1.1.0");
+        assert_eq!(bun.source, "package.json (engines.bun)");
+        assert!(bun.is_range);
+    }
+
+    /// Corepack's `packageManager` field is `bun@1.1.0` or, pinned,
+    /// `bun@1.1.0+sha512.<digest>` — the digest is not part of the version.
+    #[test]
+    fn detects_bun_from_package_manager_field() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"packageManager": "bun@1.1.0+sha512.a1b2c3"}"#,
+        )
+        .unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let bun = result
+            .bun
+            .as_ref()
+            .expect("bun should be detected")
+            .found()
+            .expect("bun hint should parse");
+        assert_eq!(bun.requirement, "1.1.0");
+        assert_eq!(bun.source, "package.json (packageManager)");
+        assert!(!bun.is_range);
+    }
+
+    #[test]
+    fn engines_bun_wins_over_package_manager() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"bun": "1.2.0"}, "packageManager": "bun@1.3.14"}"#,
+        )
+        .unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let bun = result
+            .bun
+            .as_ref()
+            .expect("bun should be detected")
+            .found()
+            .expect("bun hint should parse");
+        assert_eq!(bun.requirement, "1.2.0");
+        assert_eq!(bun.source, "package.json (engines.bun)");
+    }
+
+    /// A `packageManager` for another tool must not be read as a Bun hint.
+    #[test]
+    fn non_bun_package_managers_are_ignored() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"packageManager": "pnpm@9.0.0"}"#,
+        )
+        .unwrap();
+
+        assert!(detect_runtimes(dir.path()).bun.is_none());
+    }
+
+    #[test]
+    fn returns_none_when_no_bun_hint_present() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"node": "20.11.0"}}"#,
+        )
+        .unwrap();
+
+        assert!(detect_runtimes(dir.path()).bun.is_none());
+    }
+
+    // ── Go detection ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn detects_go_from_gomod_directive() {
+        let dir = tmp();
+        fs::write(dir.path().join("go.mod"), "module example.com/hello\n\ngo 1.22.5\n")
+            .unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let go = result
+            .go
+            .as_ref()
+            .expect("go should be detected")
+            .found()
+            .expect("go hint should parse");
+        assert_eq!(go.requirement, "1.22.5");
+        assert_eq!(go.source, "go.mod");
+        assert!(!go.is_range);
+    }
+
+    /// A two-part directive (`go 1.22`) is an X-range, so it records the hint
+    /// and resolves to a concrete release later.
+    #[test]
+    fn two_part_gomod_directive_is_a_range() {
+        let dir = tmp();
+        fs::write(dir.path().join("go.mod"), "module m\n\ngo 1.22\n").unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let go = result
+            .go
+            .as_ref()
+            .expect("go should be detected")
+            .found()
+            .expect("go hint should parse");
+        assert_eq!(go.requirement, "1.22");
+        assert!(go.is_range);
+    }
+
+    /// The `toolchain` directive must not be mistaken for the `go` directive.
+    #[test]
+    fn toolchain_directive_is_ignored() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("go.mod"),
+            "module m\n\ngo 1.22.0\ntoolchain go1.23.4\n",
+        )
+        .unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let go = result
+            .go
+            .as_ref()
+            .expect("go should be detected")
+            .found()
+            .expect("go hint should parse");
+        assert_eq!(go.requirement, "1.22.0");
+        assert_eq!(go.source, "go.mod");
+    }
+
+    #[test]
+    fn returns_none_when_no_gomod() {
+        let dir = tmp();
+        assert!(detect_runtimes(dir.path()).go.is_none());
+    }
+
     // ── Map building ──────────────────────────────────────────────────────────
 
     #[test]
@@ -715,6 +944,39 @@ mod tests {
         let map = detected_runtimes_map(&detect_runtimes(dir.path()));
         assert_eq!(map.get("node").map(String::as_str), Some(">=20"));
         assert_eq!(map.get("python").map(String::as_str), Some("3.11.7"));
+    }
+
+    /// Bun and Go requirements reach the runtimes map like any other tool.
+    #[test]
+    fn runtimes_map_carries_bun_and_go() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"packageManager": "bun@1.3.14"}"#,
+        )
+        .unwrap();
+        fs::write(dir.path().join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+
+        let map = detected_runtimes_map(&detect_runtimes(dir.path()));
+        assert_eq!(map.get("bun").map(String::as_str), Some("1.3.14"));
+        assert_eq!(map.get("go").map(String::as_str), Some("1.22.5"));
+    }
+
+    /// An unusable Bun hint is reported with its tool and source, not silently
+    /// dropped.
+    #[test]
+    fn unresolvable_bun_hints_name_the_tool_and_source() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"packageManager": "bun@canary"}"#,
+        )
+        .unwrap();
+
+        let lines = detect_runtimes(dir.path()).unresolvable();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("bun"), "should name the tool");
+        assert!(lines[0].contains("packageManager"), "should name the source");
     }
 
     #[test]

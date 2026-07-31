@@ -139,8 +139,9 @@ fn validate_version_format(tool: &str, version: &str) -> Result<()> {
 ///
 /// A directory qualifies if it contains a `runx.toml`, or any standard
 /// ecosystem version file (`.nvmrc`, `.node-version`, `.python-version`,
-/// `package.json`, `pyproject.toml`). Returns `None` if the filesystem root is
-/// reached without a match. This mirrors how cargo/npm/git locate their config.
+/// `package.json`, `pyproject.toml`, `go.mod`). Returns `None` if the
+/// filesystem root is reached without a match. This mirrors how cargo/npm/git
+/// locate their config.
 pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
     let mut current = start;
     loop {
@@ -154,6 +155,7 @@ pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
             ".python-version",
             "package.json",
             "pyproject.toml",
+            "go.mod",
         ]
         .iter()
         .any(|f| current.join(f).exists());
@@ -199,7 +201,12 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
     // concrete version is reported later, by whoever resolves the requirement,
     // since choosing it may need the published release list.
     let mut detection_lines: Vec<String> = vec![];
-    for (tool, slot) in [("node", &detected.node), ("python", &detected.python)] {
+    for (tool, slot) in [
+        ("node", &detected.node),
+        ("python", &detected.python),
+        ("bun", &detected.bun),
+        ("go", &detected.go),
+    ] {
         let Some(runtime) = slot.as_ref().and_then(detect::Detected::found) else {
             continue;
         };
@@ -230,7 +237,7 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
 
         return Err(UserError::new(format!(
             "No runx.toml found in {dir} and no standard version files were detected.\n\
-             Hint: run `runx init` to create a starter config, or add a .nvmrc / package.json.",
+             Hint: run `runx init` to create a starter config, or add a .nvmrc / package.json / go.mod.",
             dir = dir.display()
         ))
         .into());
@@ -272,7 +279,7 @@ build = "node --version"
 
 #[cfg(test)]
 mod tests {
-    use super::{load_or_detect, RunxConfig, CONFIG_FILE};
+    use super::{find_project_dir, load_or_detect, RunxConfig, CONFIG_FILE};
     use std::fs;
     use tempfile::TempDir;
 
@@ -458,5 +465,34 @@ test = "npm test"
             msg.contains("runx init"),
             "error should hint at runx init: {msg}"
         );
+    }
+
+    /// A directory with only a `go.mod` is a project root, so detection can
+    /// find it walking up from a subdirectory.
+    #[test]
+    fn go_mod_marks_a_project_root() {
+        let dir = tmp();
+        fs::write(dir.path().join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+        fs::create_dir(dir.path().join("cmd")).unwrap();
+
+        let root = find_project_dir(&dir.path().join("cmd")).expect("go.mod marks the root");
+        assert_eq!(root, dir.path());
+    }
+
+    /// Auto-detection synthesises a config from a `go.mod` + `package.json`
+    /// pair even without a runx.toml.
+    #[test]
+    fn auto_detects_go_from_gomod() {
+        let dir = tmp();
+        fs::write(dir.path().join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"dev": "go run ."}}"#,
+        )
+        .unwrap();
+
+        let resolved = load_or_detect(dir.path()).expect("should auto-detect");
+        assert_eq!(resolved.inner.runtimes["go"], "1.22.5");
+        assert_eq!(resolved.inner.run["dev"], "npm run dev");
     }
 }

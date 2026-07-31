@@ -565,6 +565,7 @@ mod tests {
             version: "20.11.0".to_string(),
             url: "https://example.invalid/node.tar.gz".to_string(),
             checksum_url: "https://example.invalid/SHASUMS256.txt".to_string(),
+            expected_sha256: None,
             archive_kind: ArchiveKind::TarGz,
             executable: if cfg!(windows) {
                 "node.exe".to_string()
