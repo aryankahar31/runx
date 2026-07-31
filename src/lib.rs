@@ -10,5 +10,6 @@ pub mod executor;
 pub mod extractor;
 pub mod http;
 pub mod lock;
+pub mod registry;
 pub mod runtime;
 pub mod version;
