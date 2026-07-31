@@ -162,10 +162,7 @@ pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
         if has_version_file {
             return Some(current.to_path_buf());
         }
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => return None,
-        }
+        current = current.parent()?;
     }
 }
 
