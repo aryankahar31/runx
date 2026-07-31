@@ -541,6 +541,7 @@ fn cache_commands_work_outside_a_project() {
         vec!["cache", "size"],
         vec!["cache", "clean"],
         vec!["cache", "prune"],
+        vec!["doctor"],
     ] {
         let output = runx_with_home(dir.path(), &home, &args);
         assert_eq!(
@@ -551,4 +552,141 @@ fn cache_commands_work_outside_a_project() {
             stderr_of(&output)
         );
     }
+}
+
+// ── runx doctor ──────────────────────────────────────────────────────────────
+
+/// A directory that looks like a runtime but holds no executable: the
+/// fingerprint of a truncated install.
+fn plant_broken_runtime(home: &Path, tool: &str, version: &str) -> std::path::PathBuf {
+    let root = home.join("runtimes").join(tool).join(version);
+    fs::create_dir_all(&root).expect("create runtime dirs");
+    fs::write(root.join("partial-file"), vec![0u8; 8]).expect("write partial content");
+    root
+}
+
+#[test]
+fn doctor_reports_no_cache_as_healthy() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(stdout_of(&output).contains("no cache yet"));
+}
+
+#[test]
+fn doctor_healthy_cache_exits_zero() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_runtime(&home, "node", "20.11.0", true);
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(stdout.contains("node 20.11.0"), "{stdout}");
+    assert!(stdout.contains("everything looks healthy"), "{stdout}");
+}
+
+/// runtimes installed before the completion marker existed have a working
+/// executable but no receipt; doctor must not scream at them, since they are
+/// adopted automatically on next use.
+#[test]
+fn doctor_accepts_a_legacy_runtime_without_a_receipt() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_runtime(&home, "python", "3.11.7", false);
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(stdout_of(&output).contains("legacy install"));
+}
+
+#[test]
+fn doctor_flags_a_truncated_runtime() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_broken_runtime(&home, "node", "20.11.0");
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(
+        stderr_of(&output).contains("1 issue"),
+        "stderr:\n{}",
+        stderr_of(&output)
+    );
+}
+
+#[test]
+fn doctor_flags_empty_orphan_directories() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(home.join("runtimes").join("node").join("0.0.0")).unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(
+        stdout_of(&output).contains("empty orphan"),
+        "stdout:\n{}",
+        stdout_of(&output)
+    );
+}
+
+/// Downloads abandoned for over the 1-hour grace period (a killed process, a
+/// crash) must surface so `runx cache prune --yes` can reclaim the space.
+#[cfg(unix)]
+#[test]
+fn doctor_flags_abandoned_staging_downloads() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let staging = home
+        .join("runtimes")
+        .join("node")
+        .join(".staging-20.11.0-1-1-1");
+    fs::create_dir_all(&staging).unwrap();
+    fs::write(staging.join("fragment"), vec![0u8; 8]).unwrap();
+
+    let older = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
+    fs::File::open(&staging)
+        .unwrap()
+        .set_modified(older)
+        .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(
+        stdout_of(&output).contains("abandoned download"),
+        "stdout:\n{}",
+        stdout_of(&output)
+    );
 }

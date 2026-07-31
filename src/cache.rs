@@ -454,6 +454,12 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Read-only check used by `runx doctor`: whether the runtime's expected
+/// executable exists, without adopting or writing anything.
+pub fn has_expected_executable(root: &Path, spec: &RuntimeSpec) -> bool {
+    expected_executable(root, spec).is_file()
+}
+
 fn expected_executable(root: &Path, spec: &RuntimeSpec) -> PathBuf {
     let relative_bin = spec
         .bin_dirs

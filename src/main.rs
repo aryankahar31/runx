@@ -77,6 +77,9 @@ enum Command {
         action: CacheAction,
     },
 
+    /// Diagnose problems with the cache and PATH.
+    Doctor,
+
     /// Any other word is treated as a [run] command key, so `runx dev` works.
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -131,6 +134,7 @@ fn run() -> Result<()> {
             CacheAction::Clean { yes } => cache_clean(yes),
             CacheAction::Prune { older_than, yes } => cache_prune(older_than, yes),
         },
+        Some(Command::Doctor) => doctor_command(),
         Some(Command::External(args)) => dispatch_external(args),
         None => print_help(),
     }
@@ -622,6 +626,149 @@ fn cache_prune(older_than_days: u64, confirmed: bool) -> Result<()> {
         println!("Removed {cleared} incomplete download(s).");
     }
     Ok(())
+}
+
+/// Diagnose the cache and PATH.
+///
+/// Checks each cached runtime directory for a valid completion receipt or a
+/// missing executable (truncated install), plus empty orphan directories,
+/// abandoned staging directories, and stray files; and checks PATH for stale
+/// shims pointing into the runx cache.
+///
+/// Exits non-zero when something needs fixing.
+fn doctor_command() -> Result<()> {
+    let home = cache::runx_home()?;
+    let runtimes = cache::runtimes_dir(&home);
+    let stale = cache::stale_staging(&home)?;
+    let mut broken: Vec<String> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+
+    println!("runx doctor — checking {}", runtimes.display());
+
+    if !runtimes.exists() {
+        println!("  ✓ no cache yet — nothing to diagnose");
+    } else {
+        for tool_dir in read_dir_sorted(&runtimes)? {
+            let tool = file_name_of(&tool_dir);
+            if !tool_dir.is_dir() {
+                broken.push(format!("stray file {}", tool_dir.display()));
+                continue;
+            }
+
+            let versions = read_dir_sorted(&tool_dir)?;
+            let mut saw_runtime = false;
+            for version_dir in versions {
+                let name = file_name_of(&version_dir);
+                if cache::is_staging_name(&name) {
+                    if stale.contains(&version_dir) {
+                        broken.push(format!(
+                            "abandoned download {tool}/{name} (interrupted install)"
+                        ));
+                    } else {
+                        notes.push(format!(
+                            "download in progress or recently interrupted: {tool}/{name}"
+                        ));
+                    }
+                    continue;
+                }
+                saw_runtime = true;
+
+                let spec = runtime::resolve_runtime(&tool, &name).ok();
+                if cache::is_complete(&version_dir) {
+                    println!("  ✓ {tool} {name}");
+                } else if spec
+                    .as_ref()
+                    .is_some_and(|s| cache::has_expected_executable(&version_dir, s))
+                {
+                    // Pre-marker install; healed on next use.
+                    notes.push(format!(
+                        "{tool} {name}: legacy install without a receipt; will be adopted on next use"
+                    ));
+                } else if read_dir_sorted(&version_dir)?.is_empty() {
+                    broken.push(format!("empty orphan directory {tool}/{name}"));
+                } else {
+                    broken.push(format!(
+                        "{tool} {name}: incomplete — missing the expected executable"
+                    ));
+                }
+            }
+            if !saw_runtime {
+                notes.push(format!("no runtimes installed for {tool}"));
+            }
+        }
+    }
+
+    let home_canonical = fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
+    for (tool, shim) in runx_shims_on_path(&home_canonical) {
+        broken.push(format!(
+            "`{tool}` on PATH points into the runx cache ({}) — stale shim, remove it",
+            shim.display()
+        ));
+    }
+
+    for note in &notes {
+        println!("  ~ {note}");
+    }
+    if broken.is_empty() {
+        println!("✓ everything looks healthy");
+        return Ok(());
+    }
+
+    for issue in &broken {
+        println!("  ✗ {issue}");
+    }
+    Err(error::UserError::new(format!(
+        "runx doctor found {} issue{}.\n\
+         Fixes: `runx cache clean --yes` removes everything (recommended when\n\
+         truncation is suspected), `runx cache prune --yes` clears abandoned\n\
+         downloads, or reinstall a runtime by simply running its project command\n\
+         again — a broken cache entry is replaced automatically.",
+        broken.len(),
+        if broken.len() == 1 { "" } else { "s" }
+    ))
+    .into())
+}
+
+/// Directory entries sorted by name, so doctor output is stable across runs.
+fn read_dir_sorted(path: &Path) -> Result<Vec<PathBuf>> {
+    let mut entries: Vec<PathBuf> = fs::read_dir(path)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect();
+    entries.sort();
+    Ok(entries)
+}
+
+fn file_name_of(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Managed tool names that could be shimmed on the user's PATH.
+const MANAGED_TOOLS: &[&str] = &["node", "python", "python3"];
+
+/// Find PATH entries resolving to one of the managed tools *inside* the runx
+/// cache. Such a shim survives `runx cache clean` and then silently runs
+/// nothing, so doctor flags it.
+fn runx_shims_on_path(home: &Path) -> Vec<(String, PathBuf)> {
+    let mut found = Vec::new();
+    for dir in env::split_paths(&env::var_os("PATH").unwrap_or_default()) {
+        if dir == Path::new("") {
+            continue;
+        }
+        for tool in MANAGED_TOOLS {
+            let candidate = dir.join(tool);
+            if candidate.is_file() {
+                let real = fs::canonicalize(&candidate).unwrap_or(candidate);
+                if real.starts_with(home) {
+                    found.push(((*tool).to_string(), real));
+                }
+            }
+        }
+    }
+    found
 }
 
 /// Write `runx.lock` pinning what this project currently resolves to.
