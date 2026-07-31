@@ -638,7 +638,9 @@ fn doctor_accepts_a_legacy_runtime_without_a_receipt() {
 
     // Python resolution normally consults the GitHub API to learn the asset
     // URLs. Plant a fresh release cache so this test stays offline, exactly
-    // like the node tests: doctor only inspects the cache layout.
+    // like the node tests: doctor only inspects the cache layout. The
+    // `cached_at_secs` must be recent — the cache treats entries older than
+    // 24h as stale and falls back to the network.
     let cache_file = home.join("python-release-cache.json");
     let platforms = [
         "x86_64-unknown-linux-gnu",
@@ -648,13 +650,17 @@ fn doctor_accepts_a_legacy_runtime_without_a_receipt() {
         "x86_64-pc-windows-msvc",
         "aarch64-pc-windows-msvc",
     ];
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after 1970")
+        .as_secs();
     let entries = platforms
         .iter()
         .map(|platform| {
             format!(
                 r#""{platform}": {{"url": "https://example.invalid/cpython.tgz",
                     "checksum_url": "https://example.invalid/cpython.tgz.sha256",
-                    "cached_at_secs": 0}}"#
+                    "cached_at_secs": {now}}}"#
             )
         })
         .collect::<Vec<_>>()
