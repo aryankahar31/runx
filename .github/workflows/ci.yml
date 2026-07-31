@@ -30,6 +30,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt -- --check
 
+      # Clippy was previously not run in CI, so warnings accumulated silently.
+      # `-D warnings` makes any new lint a build failure.
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
       - name: Test
         run: cargo test
 
