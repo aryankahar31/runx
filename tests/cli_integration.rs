@@ -321,3 +321,234 @@ fn finds_config_in_a_parent_directory() {
         stderr_of(&output)
     );
 }
+
+// ── Cache subcommands ────────────────────────────────────────────────────────
+//
+// These build a fake cache directly on disk rather than installing a real
+// runtime, so they stay offline and fast. `runx cache` only reads directory
+// structure and receipts, so a synthetic tree exercises the same code paths.
+
+/// Create a plausible cached runtime under `home`, optionally marked complete.
+fn plant_runtime(home: &Path, tool: &str, version: &str, complete: bool) -> std::path::PathBuf {
+    let root = home.join("runtimes").join(tool).join(version);
+    let bin = root.join(if cfg!(windows) { "." } else { "bin" });
+    fs::create_dir_all(&bin).expect("create runtime dirs");
+
+    let exe = if cfg!(windows) {
+        format!("{tool}.exe")
+    } else {
+        tool.to_string()
+    };
+    // Enough bytes that the size report is non-zero.
+    fs::write(bin.join(exe), vec![0u8; 4096]).expect("write fake executable");
+
+    if complete {
+        let receipt = format!(
+            r#"{{"tool":"{tool}","version":"{version}","installed_at_secs":0,
+                "runx_version":"test","source_url":"https://example.invalid","sha256":null}}"#
+        );
+        fs::write(root.join(".runx-complete.json"), receipt).expect("write receipt");
+    }
+    root
+}
+
+/// Run runx with an explicit cache home, outside any project.
+fn runx_with_home(dir: &Path, home: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_runx"))
+        .args(args)
+        .current_dir(dir)
+        .env("RUNX_HOME", home)
+        .output()
+        .expect("failed to run the runx binary")
+}
+
+#[test]
+fn cache_list_reports_an_empty_cache_clearly() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["cache", "list"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        stdout_of(&output).contains("No cached runtimes"),
+        "got:\n{}",
+        stdout_of(&output)
+    );
+}
+
+#[test]
+fn cache_list_shows_installed_runtimes_with_size() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_runtime(&home, "node", "20.11.0", true);
+    plant_runtime(&home, "python", "3.11.7", true);
+
+    let output = runx_with_home(dir.path(), &home, &["cache", "list"]);
+    let stdout = stdout_of(&output);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        stdout.contains("node") && stdout.contains("20.11.0"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("python") && stdout.contains("3.11.7"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("KiB"), "should report a size: {stdout}");
+}
+
+/// A runtime with no receipt is legacy or damaged; it must be listed and
+/// flagged, not hidden, or the user cannot account for their disk usage.
+#[test]
+fn cache_list_flags_incomplete_runtimes() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_runtime(&home, "node", "18.0.0", false);
+
+    let output = runx_with_home(dir.path(), &home, &["cache", "list"]);
+    assert!(
+        stdout_of(&output).contains("incomplete"),
+        "an unreceipted runtime should be flagged: {}",
+        stdout_of(&output)
+    );
+}
+
+#[test]
+fn cache_size_totals_the_cache() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_runtime(&home, "node", "20.11.0", true);
+
+    let output = runx_with_home(dir.path(), &home, &["cache", "size"]);
+    let stdout = stdout_of(&output);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout.contains("1 runtime"), "{stdout}");
+    assert!(stdout.contains("Total:"), "{stdout}");
+}
+
+/// Deleting every cached runtime is destructive and easy to mistype, so it must
+/// be a dry run until explicitly confirmed.
+#[test]
+fn cache_clean_without_yes_deletes_nothing() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let root = plant_runtime(&home, "node", "20.11.0", true);
+
+    let output = runx_with_home(dir.path(), &home, &["cache", "clean"]);
+    let stdout = stdout_of(&output);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout.contains("Would remove"), "{stdout}");
+    assert!(
+        stdout.contains("--yes"),
+        "should say how to confirm: {stdout}"
+    );
+    assert!(
+        root.is_dir(),
+        "the runtime must survive a run without --yes"
+    );
+}
+
+#[test]
+fn cache_clean_with_yes_removes_runtimes() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let root = plant_runtime(&home, "node", "20.11.0", true);
+
+    let output = runx_with_home(dir.path(), &home, &["cache", "clean", "--yes"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!root.exists(), "the runtime should be deleted");
+}
+
+/// Age is measured from last use; a freshly planted runtime has an install
+/// timestamp of 0 (the epoch) and so is prunable, but only with --yes.
+#[test]
+fn cache_prune_without_yes_deletes_nothing() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let root = plant_runtime(&home, "node", "20.11.0", true);
+
+    let output = runx_with_home(dir.path(), &home, &["cache", "prune", "--older-than", "0"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        stdout_of(&output).contains("Would remove"),
+        "{}",
+        stdout_of(&output)
+    );
+    assert!(root.is_dir(), "prune must not delete without --yes");
+}
+
+#[test]
+fn cache_prune_spares_recently_used_runtimes() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let root = plant_runtime(&home, "node", "20.11.0", true);
+    // Mark it as used right now.
+    fs::write(
+        root.join(".runx-last-used"),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .to_string(),
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["cache", "prune", "--older-than", "30"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        root.is_dir(),
+        "a runtime used today must not be pruned at a 30-day threshold"
+    );
+    assert!(
+        stdout_of(&output).contains("No runtimes unused"),
+        "got:\n{}",
+        stdout_of(&output)
+    );
+}
+
+#[test]
+fn cache_prune_with_yes_removes_stale_runtimes() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let root = plant_runtime(&home, "node", "20.11.0", true);
+
+    let output = runx_with_home(
+        dir.path(),
+        &home,
+        &["cache", "prune", "--older-than", "0", "--yes"],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!root.exists(), "a stale runtime should be removed");
+}
+
+/// Cache commands must work anywhere, with no project config present.
+#[test]
+fn cache_commands_work_outside_a_project() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_runtime(&home, "node", "20.11.0", true);
+
+    for args in [
+        vec!["cache", "list"],
+        vec!["cache", "size"],
+        vec!["cache", "clean"],
+        vec!["cache", "prune"],
+    ] {
+        let output = runx_with_home(dir.path(), &home, &args);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "`runx {}` should not require a project, stderr:\n{}",
+            args.join(" "),
+            stderr_of(&output)
+        );
+    }
+}

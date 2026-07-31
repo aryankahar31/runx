@@ -225,6 +225,210 @@ pub fn write_receipt(root: &Path, spec: &RuntimeSpec, sha256: Option<String>) ->
         .with_context(|| format!("Failed to write install marker in {}", root.display()))
 }
 
+/// Written next to the completion marker whenever a runtime is used.
+///
+/// Kept *separate* from the completion marker on purpose. Recording last-use by
+/// rewriting the receipt would mean a process killed mid-write could leave
+/// unparseable JSON, and [`is_complete`] would then report a perfectly good
+/// runtime as incomplete. A dedicated file cannot damage validity: if it is
+/// missing or corrupt, callers simply fall back to the install date.
+pub const LAST_USED_MARKER: &str = ".runx-last-used";
+
+/// One cached runtime, as reported by `runx cache list`.
+#[derive(Debug, Clone)]
+pub struct CacheEntry {
+    pub tool: String,
+    pub version: String,
+    pub root: PathBuf,
+    pub size_bytes: u64,
+    /// False when the completion marker is absent or unparseable.
+    pub complete: bool,
+    pub installed_at_secs: Option<u64>,
+    pub last_used_secs: Option<u64>,
+}
+
+impl CacheEntry {
+    /// Best available age signal, preferring last use over install date.
+    pub fn last_activity_secs(&self) -> Option<u64> {
+        self.last_used_secs.or(self.installed_at_secs)
+    }
+
+    /// Age in whole days relative to `now`, if any timestamp is known.
+    pub fn age_days(&self, now: u64) -> Option<u64> {
+        let last = self.last_activity_secs()?;
+        Some(now.saturating_sub(last) / 86_400)
+    }
+}
+
+/// Record that a runtime was just used. Best effort; failures are ignored so a
+/// read-only cache (a shared CI mount, for instance) still works.
+pub fn touch_last_used(root: &Path) {
+    let _ = fs::write(root.join(LAST_USED_MARKER), now_secs().to_string());
+}
+
+/// Read the last-used timestamp, if one was recorded and is parseable.
+pub fn read_last_used(root: &Path) -> Option<u64> {
+    fs::read_to_string(root.join(LAST_USED_MARKER))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Every cached runtime under `home`, sorted by tool then version.
+///
+/// In-progress staging directories are excluded: they are not installed
+/// runtimes, and listing them would imply the user could use them.
+pub fn list_cached(home: &Path) -> Result<Vec<CacheEntry>> {
+    let runtimes = runtimes_dir(home);
+    let mut entries = Vec::new();
+
+    let Ok(tools) = fs::read_dir(&runtimes) else {
+        // A cache that was never populated is empty, not an error.
+        return Ok(entries);
+    };
+
+    for tool_dir in tools.flatten() {
+        if !tool_dir.path().is_dir() {
+            continue;
+        }
+        let tool = tool_dir.file_name().to_string_lossy().into_owned();
+
+        let Ok(versions) = fs::read_dir(tool_dir.path()) else {
+            continue;
+        };
+        for version_dir in versions.flatten() {
+            let root = version_dir.path();
+            if !root.is_dir() {
+                continue;
+            }
+            let version = version_dir.file_name().to_string_lossy().into_owned();
+            if is_staging_name(&version) {
+                continue;
+            }
+
+            let receipt = read_receipt(&root);
+            entries.push(CacheEntry {
+                tool: tool.clone(),
+                version,
+                size_bytes: directory_size(&root),
+                complete: receipt.is_some(),
+                installed_at_secs: receipt.map(|r| r.installed_at_secs),
+                last_used_secs: read_last_used(&root),
+                root,
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| a.tool.cmp(&b.tool).then_with(|| a.version.cmp(&b.version)));
+    Ok(entries)
+}
+
+/// Abandoned staging directories, left behind by a killed install.
+pub fn list_staging(home: &Path) -> Result<Vec<PathBuf>> {
+    let runtimes = runtimes_dir(home);
+    let mut found = Vec::new();
+
+    let Ok(tools) = fs::read_dir(&runtimes) else {
+        return Ok(found);
+    };
+
+    for tool_dir in tools.flatten() {
+        let Ok(versions) = fs::read_dir(tool_dir.path()) else {
+            continue;
+        };
+        for version_dir in versions.flatten() {
+            let name = version_dir.file_name().to_string_lossy().into_owned();
+            if is_staging_name(&name) && version_dir.path().is_dir() {
+                found.push(version_dir.path());
+            }
+        }
+    }
+
+    found.sort();
+    Ok(found)
+}
+
+/// How long an abandoned staging directory is left alone before cleanup
+/// considers it garbage.
+///
+/// A staging directory may belong to an install running in *another process*
+/// right now. Deleting it would break that install, so cleanup only touches
+/// staging directories older than this grace period. An hour is far longer than
+/// any runtime download.
+pub const STAGING_GRACE_SECS: u64 = 3600;
+
+/// Seconds since `path` was last modified, if that can be determined.
+fn dir_age_secs(path: &Path) -> Option<u64> {
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
+    let secs = modified.duration_since(UNIX_EPOCH).ok()?.as_secs();
+    Some(now_secs().saturating_sub(secs))
+}
+
+/// Staging directories old enough to be considered abandoned.
+///
+/// Excludes anything within [`STAGING_GRACE_SECS`] so a concurrent install is
+/// never destroyed.
+pub fn stale_staging(home: &Path) -> Result<Vec<PathBuf>> {
+    Ok(list_staging(home)?
+        .into_iter()
+        .filter(|path| dir_age_secs(path).is_some_and(|age| age >= STAGING_GRACE_SECS))
+        .collect())
+}
+
+/// Total size of `path`, following no symlinks.
+///
+/// `symlink_metadata` keeps link targets from being counted twice — Python
+/// runtimes alias `python -> python3.11` — and stops a link out of the tree from
+/// inflating the total. Unreadable entries are skipped: a size report must not
+/// fail because of one bad permission.
+pub fn directory_size(path: &Path) -> u64 {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+
+    if metadata.file_type().is_symlink() {
+        return metadata.len();
+    }
+    if metadata.is_file() {
+        return metadata.len();
+    }
+
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| directory_size(&entry.path()))
+        .sum()
+}
+
+/// Human-readable byte count using binary units.
+pub fn format_size(bytes: u64) -> String {
+    const UNITS: [(&str, u64); 4] = [
+        ("GiB", 1024 * 1024 * 1024),
+        ("MiB", 1024 * 1024),
+        ("KiB", 1024),
+        ("B", 1),
+    ];
+
+    for (label, scale) in UNITS {
+        if bytes >= scale {
+            // One decimal place except for whole bytes, where it is noise.
+            if scale == 1 {
+                return format!("{bytes} {label}");
+            }
+            return format!("{:.1} {label}", bytes as f64 / scale as f64);
+        }
+    }
+    "0 B".to_string()
+}
+
+/// Delete a cached runtime directory.
+pub fn remove_entry(root: &Path) -> Result<()> {
+    fs::remove_dir_all(root).with_context(|| format!("Failed to remove {}", root.display()))
+}
+
 /// Remove a staging directory, ignoring failures.
 ///
 /// Called on the error path, where the extraction error is what the user needs
@@ -239,7 +443,11 @@ pub fn is_staging_name(name: &str) -> bool {
     name.starts_with(STAGING_PREFIX)
 }
 
-fn now_secs() -> u64 {
+/// Current Unix timestamp in seconds, saturating to 0 before the epoch.
+///
+/// Exposed so callers computing cache ages use the same clock as the timestamps
+/// recorded in receipts and last-used markers.
+pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
@@ -571,5 +779,237 @@ mod tests {
         let root = runtime_root_in(home.path(), "node", "20.11.0");
         assert!(root.starts_with(home.path()));
         assert!(root.ends_with("runtimes/node/20.11.0") || cfg!(windows));
+    }
+
+    // ── Size formatting ──────────────────────────────────────────────────────
+
+    #[test]
+    fn formats_sizes_with_binary_units() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1023), "1023 B");
+        assert_eq!(format_size(1024), "1.0 KiB");
+        assert_eq!(format_size(1536), "1.5 KiB");
+        assert_eq!(format_size(1024 * 1024), "1.0 MiB");
+        assert_eq!(format_size(50 * 1024 * 1024), "50.0 MiB");
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GiB");
+    }
+
+    // ── Directory sizing ─────────────────────────────────────────────────────
+
+    #[test]
+    fn sums_nested_file_sizes() {
+        let dir = tmp();
+        fs::create_dir_all(dir.path().join("bin")).unwrap();
+        fs::write(dir.path().join("bin/node"), vec![0u8; 1000]).unwrap();
+        fs::write(dir.path().join("README"), vec![0u8; 24]).unwrap();
+
+        assert_eq!(directory_size(dir.path()), 1024);
+    }
+
+    /// Python runtimes alias `python -> python3.11`. Following the link would
+    /// count the target twice and overstate the cache size.
+    #[test]
+    #[cfg(unix)]
+    fn does_not_double_count_symlinked_files() {
+        let dir = tmp();
+        fs::write(dir.path().join("python3.11"), vec![0u8; 1000]).unwrap();
+        std::os::unix::fs::symlink("python3.11", dir.path().join("python")).unwrap();
+
+        let size = directory_size(dir.path());
+        assert!(
+            size < 1100,
+            "a symlink must not be counted as another full copy, got {size}"
+        );
+    }
+
+    /// A link pointing outside the cache must not inflate the total.
+    #[test]
+    #[cfg(unix)]
+    fn ignores_symlink_targets_outside_the_tree() {
+        let dir = tmp();
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("huge"), vec![0u8; 100_000]).unwrap();
+
+        let runtime = dir.path().join("runtime");
+        fs::create_dir_all(&runtime).unwrap();
+        std::os::unix::fs::symlink(&outside, runtime.join("escape")).unwrap();
+
+        assert!(
+            directory_size(&runtime) < 10_000,
+            "must not follow a link out of the runtime directory"
+        );
+    }
+
+    #[test]
+    fn missing_directory_has_zero_size() {
+        let dir = tmp();
+        assert_eq!(directory_size(&dir.path().join("nope")), 0);
+    }
+
+    // ── Listing ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_cache_lists_nothing() {
+        let dir = tmp();
+        assert!(list_cached(dir.path()).expect("should succeed").is_empty());
+    }
+
+    #[test]
+    fn lists_installed_runtimes_sorted() {
+        let home = tmp();
+        let spec = spec();
+
+        // Install node 20.11.0 properly.
+        let staging = staging_dir(home.path(), &spec).expect("staging");
+        populate(&staging, &spec);
+        commit_runtime(home.path(), &staging, &spec, Some("abc".to_string())).expect("commit");
+
+        // And a second runtime, out of alphabetical order.
+        let mut python = spec.clone();
+        python.tool = "python".to_string();
+        python.version = "3.11.7".to_string();
+        let staging = staging_dir(home.path(), &python).expect("staging");
+        populate(&staging, &python);
+        commit_runtime(home.path(), &staging, &python, None).expect("commit");
+
+        let entries = list_cached(home.path()).expect("list");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].tool, "node", "should be sorted by tool");
+        assert_eq!(entries[1].tool, "python");
+        assert!(entries[0].complete);
+        assert!(entries[0].size_bytes > 0);
+        assert!(entries[0].installed_at_secs.is_some());
+    }
+
+    /// Staging directories are mid-install, not usable runtimes.
+    #[test]
+    fn listing_excludes_staging_directories() {
+        let home = tmp();
+        let spec = spec();
+        let staging = staging_dir(home.path(), &spec).expect("staging");
+        populate(&staging, &spec);
+
+        assert!(
+            list_cached(home.path()).expect("list").is_empty(),
+            "an in-progress install must not appear as a cached runtime"
+        );
+
+        let abandoned = list_staging(home.path()).expect("list staging");
+        assert_eq!(abandoned.len(), 1, "but it is reportable as staging");
+        assert_eq!(abandoned[0], staging);
+    }
+
+    /// A legacy or damaged install still lists, flagged incomplete, so the user
+    /// can see and clean it rather than wondering where the disk went.
+    #[test]
+    fn lists_incomplete_runtimes_as_incomplete() {
+        let home = tmp();
+        let spec = spec();
+        let root = runtime_root_in(home.path(), "node", "20.11.0");
+        fs::create_dir_all(root.join(&spec.bin_dirs[0])).unwrap();
+        fs::write(root.join(&spec.bin_dirs[0]).join(&spec.executable), b"x").unwrap();
+
+        let entries = list_cached(home.path()).expect("list");
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].complete, "no receipt means incomplete");
+        assert!(entries[0].installed_at_secs.is_none());
+    }
+
+    // ── Last-used tracking ───────────────────────────────────────────────────
+
+    #[test]
+    fn last_used_round_trips() {
+        let dir = tmp();
+        touch_last_used(dir.path());
+
+        let recorded = read_last_used(dir.path()).expect("should record a timestamp");
+        assert!(
+            now_secs().saturating_sub(recorded) < 5,
+            "timestamp should be recent"
+        );
+    }
+
+    #[test]
+    fn missing_or_corrupt_last_used_is_none() {
+        let dir = tmp();
+        assert_eq!(read_last_used(dir.path()), None);
+
+        fs::write(dir.path().join(LAST_USED_MARKER), b"not a number").unwrap();
+        assert_eq!(read_last_used(dir.path()), None);
+    }
+
+    /// Recording last use must never be able to invalidate a runtime, which is
+    /// why it lives in its own file rather than in the receipt.
+    #[test]
+    fn touching_last_used_does_not_affect_completeness() {
+        let home = tmp();
+        let spec = spec();
+        let staging = staging_dir(home.path(), &spec).expect("staging");
+        populate(&staging, &spec);
+        let cached = commit_runtime(home.path(), &staging, &spec, None).expect("commit");
+
+        touch_last_used(&cached.root);
+
+        assert!(is_complete(&cached.root), "still a valid runtime");
+        assert!(read_receipt(&cached.root).is_some(), "receipt intact");
+    }
+
+    #[test]
+    fn age_prefers_last_use_over_install_date() {
+        let now = 10 * 86_400;
+        let entry = CacheEntry {
+            tool: "node".to_string(),
+            version: "20.11.0".to_string(),
+            root: PathBuf::from("/tmp/x"),
+            size_bytes: 0,
+            complete: true,
+            installed_at_secs: Some(0),
+            last_used_secs: Some(8 * 86_400),
+        };
+
+        assert_eq!(entry.age_days(now), Some(2), "should measure from last use");
+
+        let never_used = CacheEntry {
+            last_used_secs: None,
+            ..entry
+        };
+        assert_eq!(
+            never_used.age_days(now),
+            Some(10),
+            "should fall back to the install date"
+        );
+    }
+
+    #[test]
+    fn age_is_unknown_without_any_timestamp() {
+        let entry = CacheEntry {
+            tool: "node".to_string(),
+            version: "20.11.0".to_string(),
+            root: PathBuf::from("/tmp/x"),
+            size_bytes: 0,
+            complete: false,
+            installed_at_secs: None,
+            last_used_secs: None,
+        };
+        assert_eq!(entry.age_days(now_secs()), None);
+    }
+
+    // ── Removal ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn removes_a_cached_runtime() {
+        let home = tmp();
+        let spec = spec();
+        let staging = staging_dir(home.path(), &spec).expect("staging");
+        populate(&staging, &spec);
+        let cached = commit_runtime(home.path(), &staging, &spec, None).expect("commit");
+
+        remove_entry(&cached.root).expect("remove");
+
+        assert!(!cached.root.exists());
+        assert!(list_cached(home.path()).expect("list").is_empty());
+        assert!(cached_runtime_in(home.path(), &spec).unwrap().is_none());
     }
 }
