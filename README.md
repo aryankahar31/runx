@@ -301,8 +301,10 @@ runx --version
 Expected output
 
 ```
-runx 0.2.0
+runx <version>
 ```
+
+It prints the exact version you installed (e.g. `runx 0.3.1`).
 
 ---
 
