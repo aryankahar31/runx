@@ -522,10 +522,18 @@ fn fetch_python_release_page(url: &str) -> Result<Vec<GithubRelease>> {
     for attempt in 1..=3 {
         match crate::http::get(url).call() {
             Ok(response) => {
-                match response
-                    .into_json()
-                    .with_context(|| "Failed to decode python-build-standalone release metadata")
-                {
+                // Read the body with into_string, not into_json: ureq's
+                // into_json panics if the body read fails mid-transfer (see
+                // ureq's own "TODO: This expect can actually panic" in
+                // response.rs), and a server that closes early is exactly the
+                // transient failure the retry loop exists for.
+                let parse = response
+                    .into_string()
+                    .with_context(|| "Failed to read python-build-standalone release metadata")
+                    .and_then(|raw| {
+                        serde_json::from_str(&raw).context("Failed to decode release metadata")
+                    });
+                match parse {
                     Ok(releases) => return Ok(releases),
                     Err(err) => {
                         last_error = Some(err);
@@ -737,6 +745,12 @@ mod tests {
                             .write_all(response.as_bytes())
                             .expect("write test response");
                         stream.flush().expect("flush test response");
+
+                        // Keep the socket open until the client closes it:
+                        // dropping it here can race ureq's body read, which
+                        // panics on macOS instead of surfacing an error.
+                        let mut drain = [0u8; 64];
+                        while stream.read(&mut drain).is_ok_and(|read| read > 0) {}
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
