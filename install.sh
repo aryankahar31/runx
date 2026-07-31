@@ -147,7 +147,76 @@ fi
 install -m 0755 "$tmp/runx" "$INSTALL_DIR/runx"
 
 echo "Installed runx to $INSTALL_DIR/runx"
-case ":$PATH:" in
-  *":$INSTALL_DIR:"*) ;;
-  *) echo "Add $INSTALL_DIR to PATH to run runx from any directory." ;;
-esac
+
+# Add the install directory only with the user's permission.  In particular,
+# an installer invoked as `curl ... | sh` must not wait for input that cannot
+# be provided.
+path_setup_instructions() {
+  _rc_file="$1"
+  _path_line="$2"
+
+  echo "Runx is installed but not on your PATH."
+  if [ -n "$_rc_file" ]; then
+    echo "Add this line to $_rc_file:"
+  else
+    echo "Add this line to your shell's startup file:"
+  fi
+  printf '\n  %s\n\n' "$_path_line"
+}
+
+setup_path() {
+  case ":$PATH:" in
+    *":$INSTALL_DIR:"*) return ;;
+  esac
+
+  # Keep the default entry portable if the home directory changes.  Custom
+  # directories are written as supplied.
+  case "$INSTALL_DIR" in
+    "$HOME") _path_entry='$HOME' ;;
+    "$HOME"/*) _path_entry='$HOME'"${INSTALL_DIR#"$HOME"}" ;;
+    *) _path_entry="$INSTALL_DIR" ;;
+  esac
+  _path_line="export PATH=\"$_path_entry:\$PATH\""
+
+  _shell_name="${SHELL##*/}"
+  _rc_file=""
+  case "$_shell_name" in
+    zsh) _rc_file="$HOME/.zprofile" ;;
+    bash)
+      if [ -f "$HOME/.bash_profile" ]; then
+        _rc_file="$HOME/.bash_profile"
+      else
+        _rc_file="$HOME/.bashrc"
+      fi
+      ;;
+  esac
+
+  if [ "${RUNX_INSTALL_NO_MODIFY_PATH:-}" = "1" ] || [ ! -t 0 ] || [ -z "$_rc_file" ]; then
+    path_setup_instructions "$_rc_file" "$_path_line"
+    return
+  fi
+
+  printf 'Runx is installed but not on your PATH.\nAdd it automatically to %s? [Y/n] ' "$_rc_file"
+  _reply=""
+  if ! IFS= read -r _reply; then
+    printf '\n'
+    path_setup_instructions "$_rc_file" "$_path_line"
+    return
+  fi
+  case "$_reply" in
+    ""|y|Y|yes|YES|Yes)
+      if [ -f "$_rc_file" ] && grep -Fqx "$_path_line" "$_rc_file"; then
+        echo "PATH entry already exists in $_rc_file."
+      else
+        {
+          printf '\n# Added by runx installer\n%s\n' "$_path_line"
+        } >> "$_rc_file"
+        echo "Added runx to PATH in $_rc_file."
+      fi
+      echo "Restart your terminal or run: source $_rc_file"
+      ;;
+    *) path_setup_instructions "$_rc_file" "$_path_line" ;;
+  esac
+}
+
+setup_path

@@ -1,3 +1,7 @@
+param(
+    [switch]$NoModifyPath
+)
+
 $ErrorActionPreference = "Stop"
 
 $Repo = if ($env:RUNX_REPO) { $env:RUNX_REPO } else { "aryankahar31/runx" }
@@ -17,6 +21,61 @@ if ($Version -eq "latest") {
     $baseUrl = "https://github.com/$Repo/releases/download/$Version"
 }
 $url = "$baseUrl/$asset"
+
+function Write-PathInstructions {
+    param([string]$PathToAdd)
+
+    Write-Host "Runx is installed but not on your User PATH."
+    Write-Host "Add this directory to the User Path in Windows Environment Variables:"
+    Write-Host ""
+    Write-Host "  $PathToAdd"
+    Write-Host ""
+    Write-Host "Open a new PowerShell window after updating it."
+}
+
+function Test-UserPathContains {
+    param([string]$PathToFind, [string]$UserPath)
+
+    $normalisedTarget = $PathToFind.Trim().TrimEnd('\', '/')
+    return @($UserPath -split ';' | Where-Object {
+        $_.Trim().TrimEnd('\', '/') -ieq $normalisedTarget
+    }).Count -gt 0
+}
+
+function Update-UserPath {
+    param([string]$PathToAdd)
+
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if (Test-UserPathContains -PathToFind $PathToAdd -UserPath $userPath) {
+        return
+    }
+
+    $canPrompt = $false
+    try {
+        $null = $Host.UI.RawUI
+        $canPrompt = -not [Console]::IsInputRedirected
+    } catch {
+        $canPrompt = $false
+    }
+
+    if ($NoModifyPath -or -not $canPrompt) {
+        Write-PathInstructions -PathToAdd $PathToAdd
+        return
+    }
+
+    $reply = Read-Host "Runx is installed but not on your User PATH. Add it automatically? [Y/n]"
+    if ($reply -match '^(|y|yes)$') {
+        $newUserPath = if ([string]::IsNullOrWhiteSpace($userPath)) {
+            $PathToAdd
+        } else {
+            "$($userPath.TrimEnd(';'));$PathToAdd"
+        }
+        [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+        Write-Host "Added runx to your User PATH. Open a new PowerShell window to use it."
+    } else {
+        Write-PathInstructions -PathToAdd $PathToAdd
+    }
+}
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $tmp | Out-Null
@@ -116,9 +175,7 @@ try {
 
     Copy-Item -Path $extracted -Destination (Join-Path $InstallDir "runx.exe") -Force
     Write-Host "Installed runx to $(Join-Path $InstallDir "runx.exe")"
-    if (($env:PATH -split ';') -notcontains $InstallDir) {
-        Write-Host "Add $InstallDir to PATH to run runx from any directory."
-    }
+    Update-UserPath -PathToAdd $InstallDir
 }
 finally {
     Remove-Item -Recurse -Force $tmp
