@@ -82,20 +82,96 @@ configuration always wins over auto-detection, with no merging.
 
 ## Semver range resolution
 
-When a version file contains a range (e.g. `>=3.11`, `^20`, `~20.11`)
-rather than an exact version, runx resolves it to the **minimum version
-that satisfies the constraint**:
+When a version file contains a range rather than an exact version, runx
+resolves it to the **newest published release that satisfies the
+constraint** — the same behaviour as nvm, Volta and mise.
 
-| Input | Resolved to |
+| Input | Resolves to |
 |-------|-------------|
-| `>=3.11` | `3.11.0` |
-| `^20` | `20.0.0` |
-| `~20.11` | `20.11.0` |
-| `>=20.11.0` | `20.11.0` |
-| `20.11.0` | `20.11.0` (exact, no change) |
+| `>=20` | newest release ≥ 20 |
+| `^20` | newest `20.x` |
+| `~20.11` | newest `20.11.x` |
+| `<20` | newest release below 20 |
+| `20` | newest `20.x` (a bare partial version is an X-range) |
+| `18 \|\| >=20` | newest release matching either branch |
+| `>=3.11` | newest release ≥ 3.11 |
+| `~=3.11` | newest `3.x` ≥ 3.11 (PEP 440) |
+| `20.11.0` | `20.11.0` (exact pin, never changed) |
 
-This is a documented simplification. Runx always prints which version was
-chosen and from which file so there are no silent surprises.
+Runx always prints which concrete version a range resolved to, so there
+are no silent surprises.
+
+**Exact pins never touch the network.** Resolving a range needs the
+published release list, which is cached for 6 hours; if it cannot be
+fetched, runx falls back to the lowest satisfying version and says so, so
+offline machines keep working.
+
+### Strict mode
+
+Set `RUNX_RESOLUTION=minimum` to resolve ranges to the *lowest* satisfying
+version instead. This is fully offline and time-independent, but note that
+`>=20` then means "the oldest Node 20 ever published", which carries known
+CVEs. Exact pins are unaffected by this setting.
+
+For reproducibility across machines and CI, prefer `runx lock` (below) over
+strict mode: it pins the exact version that was resolved, rather than
+re-deriving one.
+
+---
+
+# 🔒 Reproducible installs with `runx.lock`
+
+Ranges resolve against the current release list, so the same project can
+pick up a newer runtime next month. When that is not wanted — CI, a team,
+a release branch — generate a lockfile:
+
+```bash
+runx lock
+```
+
+This installs the runtimes, then writes `runx.lock` pinning exactly what
+was resolved. Commit it.
+
+```toml
+version = 1
+
+[runtimes.node]
+version = "20.11.0"
+requirement = ">=20"
+
+[runtimes.node.artifacts.macos-aarch64]
+url = "https://nodejs.org/dist/v20.11.0/node-v20.11.0-darwin-arm64.tar.gz"
+sha256 = "94e443d007e2882f8e5aecc85d978f7591520dc3b642adc7583b3cb0b3fc37d7"
+```
+
+Artifacts are keyed by platform because runtime archives *are*
+platform-specific: Node 20.11.0 on macOS/arm64 is a different file with a
+different digest than on Linux/x64. The **version** pin is shared across
+platforms; the digest is a per-platform integrity check on top. Running
+`runx lock` on macOS does not discard a teammate's Linux entry.
+
+## Enforcing the lockfile in CI
+
+```bash
+runx run test --locked
+```
+
+`--locked` fails rather than resolving anything the lockfile does not
+already pin, mirroring `cargo build --locked`. It fails when a runtime is
+missing from the lockfile, or when `runx.toml` asks for a requirement the
+lockfile does not record.
+
+A missing entry for *your platform* is deliberately not fatal, even under
+`--locked`: the version is still pinned, and the download is still verified
+against the publisher's own checksums. A mixed-OS team is not blocked by a
+lockfile generated elsewhere.
+
+## Precedence
+
+`runx.toml` always wins. If someone bumps a version there without
+re-running `runx lock`, runx uses the config and warns that the lockfile is
+stale — a lockfile that silently overrode an explicit version bump would be
+baffling to debug.
 
 ## Run-command inference
 
@@ -106,17 +182,20 @@ and suggests running `runx init`.
 
 ## Example output
 
-With only a `.nvmrc` and a `package.json` that has a `dev` script:
+With only a `.nvmrc` pinning `v20.11.0` and a `package.json` that has a
+`dev` script:
 
 ```
 No runx.toml found — detected from project files:
   node 20.11.0 (from .nvmrc)
 Installing node 20.11.0
-...
+Downloading https://nodejs.org/dist/v20.11.0/node-v20.11.0-linux-x64.tar.xz
+✓ Checksum verified
+Extracting to /home/user/.runx/runtimes/node/.staging-20.11.0-4127-...
 Running `npm run dev`
 ```
 
-On subsequent runs (runtime already cached):
+On subsequent runs the cached runtime is reused:
 
 ```
 No runx.toml found — detected from project files:
@@ -124,6 +203,18 @@ No runx.toml found — detected from project files:
 Using cached node 20.11.0 at /home/user/.runx/runtimes/node/20.11.0
 Running `npm run dev`
 ```
+
+When the project declares a **range** — say `"engines": { "node": ">=20" }` —
+runx reports which concrete release it picked:
+
+```
+No runx.toml found — detected from project files:
+  node >=20 (from package.json (engines.node))
+Resolved node `>=20` to 22.11.0
+Installing node 22.11.0
+```
+
+Pin the result with `runx lock` if you need that choice to stay fixed.
 
 ## Opt-in-by-absence guarantee
 
@@ -138,16 +229,18 @@ Running `npm run dev`
 # ✨ Features
 
 - 🚀 Zero global runtime installation
-- 📦 Automatic runtime downloads
-- 💾 Intelligent runtime cache
-- 🔒 Isolated execution environment
-- 🛡 SHA-256 checksum verification on install
-- ⚡ Fast startup after first download
+- 📦 Automatic downloads with retry, exponential backoff and **resume**
+- 💾 Cache management — `list`, `size`, `clean`, `prune`
+- 📌 `runx.lock` for reproducible installs across machines and CI
+- 🎯 Ranges resolve to the **newest** matching release (nvm/Volta/mise semantics)
+- 🛡 SHA-256 verification of every download, before extraction
+- ⚛️ Atomic installs — an interrupted download can never corrupt the cache
+- 🔒 Isolated execution — global `PATH` and shell files are never touched
+- 🐚 **No shell integration required**, ever
+- ⚡ Exact version pins resolve offline and instantly
 - 🖥 Cross-platform (Linux, macOS, Windows)
-- ⚙ Configuration using `runx.toml`
-- 🦀 Built with Rust
-- 🔄 Deterministic project environments
-- 🔧 GitHub Releases & CI/CD
+- ⚙ Zero-config auto-detection, or an explicit `runx.toml`
+- 🦀 Built with Rust, no telemetry
 
 ---
 
@@ -169,10 +262,17 @@ iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 | iex
 
 ---
 
-> **🛡 Security:** Both install scripts automatically verify the downloaded
-> binary against the SHA-256 checksum published with each release. If the
-> checksum doesn't match, the installer will abort without extracting or
-> installing anything.
+> **🛡 Security:** Both install scripts verify the downloaded binary against
+> the SHA-256 checksum published with each release, and abort without
+> extracting or installing anything if it does not match. They also **fail
+> closed**: if no SHA-256 tool is available (`sha256sum`, `shasum`, or
+> `openssl`), the install stops rather than silently proceeding unverified.
+> Set `RUNX_SKIP_CHECKSUM=1` to override that deliberately.
+>
+> Checksums confirm the download is intact and matches what the publisher
+> listed. They are fetched from the same origin as the artifact, so they are
+> not by themselves protection against a compromised release host —
+> signature verification is on the roadmap.
 
 Verify installation
 
@@ -357,35 +457,63 @@ No repeated downloads.
 
 # CLI Commands
 
-Initialize configuration
+## Running project commands
+
+Any word that is not a built-in subcommand is treated as a key from `[run]`:
 
 ```bash
-runx init
+runx dev            # runs the `dev` key
+runx build          # runs the `build` key
+runx test           # runs the `test` key
 ```
 
-Run project command
+Use the explicit form when a key collides with a built-in name:
 
 ```bash
-runx dev
+runx run dev
+runx run test --locked   # fail if runx.lock does not pin everything
 ```
 
-Build project
+> Argument passthrough (`runx dev -- --port 3000`) is **not** supported yet.
+> Extra arguments are reported as an error rather than silently dropped. Add a
+> dedicated `[run]` key instead.
+
+## Project setup
 
 ```bash
-runx build
+runx init           # create a starter runx.toml
+runx lock           # install runtimes and write runx.lock
 ```
 
-Show version
+## Cache management
+
+```bash
+runx cache list     # every cached runtime, with size and last use
+runx cache size     # total disk usage
+runx cache clean    # remove all runtimes      (dry run without --yes)
+runx cache prune    # remove runtimes unused for 30+ days
+runx cache prune --older-than 7 --yes
+```
+
+Both `clean` and `prune` print what they *would* delete and change nothing
+unless you pass `--yes`.
+
+## Information
 
 ```bash
 runx --version
-```
-
-Display help
-
-```bash
 runx --help
 ```
+
+## Environment variables
+
+| Variable | Effect |
+|----------|--------|
+| `RUNX_HOME` | Cache location (default `~/.runx`). Useful for CI caching and for isolating a cache without touching `HOME`. |
+| `RUNX_RESOLUTION` | `latest` (default) or `minimum` — see [Strict mode](#strict-mode). |
+
+There is no telemetry, and runx makes no network requests beyond fetching
+runtime release metadata, archives, and their checksums.
 
 ---
 
@@ -467,14 +595,22 @@ target\release\runx.exe
 
 # Isolation
 
-Runx never modifies
+Runx never modifies:
 
-- Global PATH
-- Shell startup files
+- Your global `PATH`
+- Shell startup files (`.bashrc`, `.zshrc`, profiles)
 - System-installed runtimes
-- User environment
+- Anything outside `~/.runx` and your project directory
 
-Instead, every command runs inside an isolated environment using only the configured runtimes.
+Every command runs with the cached runtime's `bin` directories **prepended**
+to `PATH`, so the project's versions take priority over anything installed
+system-wide. The existing `PATH` is then **appended**, so ordinary tools
+(`git`, `make`, `curl`, Homebrew) keep working — runx isolates *runtime
+versions*, not the entire environment.
+
+Because the change is scoped to the child process, **no shell integration is
+required**: no `eval "$(… init)"` line, no shim directory, no directory
+hooks. Nothing about your shell changes until you type `runx`.
 
 ---
 
@@ -488,8 +624,26 @@ Instead, every command runs inside an isolated environment using only the config
 | Runtime cache | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Project launcher | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Cross-platform | ✅ | ⚠️ | ✅ | ⚠️ | ✅ | ✅ |
-| Zero-config detection from existing files | ✅ | ⚠️ (only `.nvmrc`) | ⚠️ (only `volta` field) | ⚠️ (only `.python-version`) | ❌ (requires `.tool-versions`) | ⚠️ (supports `.nvmrc`/`.python-version`, not `package.json` engines or `pyproject.toml`) |
-| Shell integration required | ❌ (none) | ✅ (required) | ❌ (none) | ✅ (required) | ✅ (required) | ⚠️ (optional; needed for ambient switching) |
+| **No shell integration required** | ✅ | ❌ | ✅ (shims) | ❌ | ❌ | ⚠️ (optional; needed for ambient switching) |
+| Reads `package.json` `engines` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Reads `pyproject.toml` `requires-python` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Zero-config from existing files | ✅ | ⚠️ (`.nvmrc`) | ⚠️ (`volta` field) | ⚠️ (`.python-version`) | ❌ (needs `.tool-versions`) | ⚠️ (`.nvmrc`, `.python-version`) |
+| Ranges resolve to newest match | ✅ | ✅ | ✅ | ❌ (exact only) | ❌ (exact only) | ✅ |
+| Checksum verification | ✅ | ⚠️ | ✅ | ⚠️ | ⚠️ (plugin-dependent) | ✅ |
+| Resumable downloads | ✅ | ❌ | ❌ | ❌ | ❌ | ⚠️ |
+| Atomic installs | ✅ | ⚠️ | ✅ | ⚠️ | ⚠️ | ✅ |
+| Cache size / prune commands | ✅ | ❌ | ❌ | ❌ | ❌ | ⚠️ |
+| No telemetry | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ |
+
+Where runx genuinely differs: it reads the version constraints your project
+*already* declares (`package.json` `engines`, `pyproject.toml`
+`requires-python`) instead of requiring its own file, and it needs **no shell
+integration at all** — no `eval` in your profile, no shims on `PATH`, no
+directory hooks.
+
+> Comparisons reflect each tool's documented default behaviour and are
+> best-effort; these projects move quickly, so check their current docs before
+> relying on a row. Corrections via PR are welcome.
 
 ---
 
@@ -510,19 +664,43 @@ Instead, every command runs inside an isolated environment using only the config
 ## v0.2
 
 - ✅ Zero-config auto-detection (Node.js + Python from `.nvmrc`, `.node-version`, `package.json`, `.python-version`, `pyproject.toml`)
-- 🚧 Bun
-- 🚧 Deno
-- 🚧 Go
-- 🚧 Java
 
 ---
 
 ## v0.3
 
-- 🚧 Runtime registry
-- 🚧 Plugin system
-- 🚧 Cache management
-- 🚧 Self update
+**Correctness and safety**
+
+- ✅ Strict version validation (closes a path-traversal → cache-deletion / `PATH`-hijack chain)
+- ✅ Archive extraction hardening (symlink escape, exec bits preserved)
+- ✅ Exact checksum matching (no substring or fall-open matches)
+- ✅ Atomic installs — an interrupted download cannot corrupt the cache
+- ✅ Connect and idle-read timeouts on every request
+- ✅ `cargo clippy -D warnings` enforced in CI
+
+**Features**
+
+- ✅ Correct semver resolution — ranges resolve to the newest matching release
+- ✅ `runx.lock` + `--locked` for reproducible installs
+- ✅ Cache management (`list`, `size`, `clean`, `prune`)
+- ✅ Retry with exponential backoff and resumable downloads
+- ✅ `RUNX_HOME` for cache relocation
+- 🚧 `runx doctor` — diagnose broken cache, corrupt runtimes, `PATH` conflicts
+- 🚧 Shell completions (bash, zsh, fish, PowerShell)
+- 🚧 Bun
+- 🚧 Go
+- 🚧 `runx self update`
+- 🚧 Signature verification (Sigstore/cosign path)
+
+---
+
+## v0.4 and later
+
+- 🚧 Deno, Java, .NET
+- 🚧 Argument passthrough (`runx dev -- --port 3000`)
+- 🚧 Monorepo / workspace support
+- 🚧 Pre/post run hooks
+- 🚧 Plugin system and runtime registry
 
 ---
 
