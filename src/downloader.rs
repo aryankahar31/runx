@@ -14,6 +14,7 @@ use tempfile::NamedTempFile;
 /// The digest is returned rather than discarded so `runx.lock` can record what
 /// was actually installed, instead of re-hashing the file or trusting a second
 /// fetch of the checksum document.
+#[derive(Debug)]
 pub struct Download {
     pub temp: NamedTempFile,
     pub sha256: String,
@@ -35,15 +36,133 @@ impl Download {
 /// is never handed back for extraction.
 pub fn download_to_temp(url: &str, checksum_url: &str) -> Result<Download> {
     println!("Downloading {url}");
-    let response = crate::http::get(url)
-        .call()
-        .with_context(|| format!("Failed to download {url}"))?;
 
-    let total = response
+    let mut temp = NamedTempFile::new().context("Failed to create temporary download file")?;
+    let mut have: u64 = 0;
+    let mut last_error: Option<anyhow::Error> = None;
+
+    for attempt in 0..crate::http::MAX_ATTEMPTS {
+        if attempt > 0 {
+            let delay = crate::http::backoff_delay(attempt - 1);
+            if have > 0 {
+                eprintln!(
+                    "  Download interrupted after {}; resuming in {:.1}s (attempt {}/{})",
+                    crate::cache::format_size(have),
+                    delay.as_secs_f64(),
+                    attempt + 1,
+                    crate::http::MAX_ATTEMPTS
+                );
+            } else {
+                eprintln!(
+                    "  Download failed; retrying in {:.1}s (attempt {}/{})",
+                    delay.as_secs_f64(),
+                    attempt + 1,
+                    crate::http::MAX_ATTEMPTS
+                );
+            }
+            std::thread::sleep(delay);
+        }
+
+        match fetch_into(url, &mut temp, have) {
+            Ok(()) => {
+                let sha256 = verify_checksum(url, checksum_url, &temp)?;
+                // Do NOT call `.keep()` — returning the NamedTempFile lets it
+                // auto-delete on drop, so a killed process leaks nothing.
+                return Ok(Download { temp, sha256 });
+            }
+            Err(Interrupted { written, error }) => {
+                have = written;
+                let retryable = match error.downcast_ref::<ureq::Error>() {
+                    Some(err) => crate::http::is_retryable(err),
+                    // An I/O failure mid-stream (connection reset) is worth
+                    // another attempt.
+                    None => true,
+                };
+                last_error = Some(error);
+                if !retryable {
+                    break;
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Failed to download {url}")))
+        .with_context(|| format!("Failed to download {url}"))
+}
+
+/// A download attempt that did not finish, and how many bytes survived it.
+struct Interrupted {
+    written: u64,
+    error: anyhow::Error,
+}
+
+/// Perform one download attempt, appending to `temp` from byte `resume_from`.
+///
+/// Returns the number of bytes on disk when an attempt fails, so the next
+/// attempt can resume rather than start over — the difference between losing
+/// 5 seconds and losing a 150 MiB transfer.
+fn fetch_into(url: &str, temp: &mut NamedTempFile, resume_from: u64) -> Result<(), Interrupted> {
+    let mut request = crate::http::get(url);
+    if resume_from > 0 {
+        request = request.set("Range", &format!("bytes={resume_from}-"));
+    }
+
+    let response = match request.call() {
+        Ok(response) => response,
+
+        // 416 Range Not Satisfiable means our offset lies past the end of the
+        // file the server now holds, so the bytes we kept are stale — the
+        // release was re-published, or an earlier attempt wrote garbage.
+        // Discarding them and starting over is wasteful but correct; failing
+        // outright would leave the user permanently stuck on a bad partial file.
+        Err(ureq::Error::Status(416, _)) if resume_from > 0 => {
+            let _ = truncate_to_start(temp);
+            return Err(Interrupted {
+                written: 0,
+                // Deliberately not a `ureq::Error`, so the caller treats this as
+                // retryable and makes a clean attempt from byte zero.
+                error: anyhow::anyhow!(
+                    "server rejected the resume range; restarting from the start"
+                ),
+            });
+        }
+
+        Err(err) => {
+            return Err(Interrupted {
+                written: resume_from,
+                error: err.into(),
+            })
+        }
+    };
+
+    // A server that does not support ranges ignores the header and replies 200
+    // with the *whole* body. Appending that to what we already have would
+    // silently produce a corrupt archive, so start over instead. (The checksum
+    // would catch it, but only after another full transfer.)
+    let resuming = resume_from > 0 && response.status() == 206;
+    let start = if resuming { resume_from } else { 0 };
+
+    if !resuming {
+        if let Err(err) = truncate_to_start(temp) {
+            return Err(Interrupted {
+                written: 0,
+                error: err,
+            });
+        }
+    } else if let Err(err) = seek_to_end(temp) {
+        return Err(Interrupted {
+            written: resume_from,
+            error: err,
+        });
+    }
+
+    // Content-Length covers only the remaining bytes on a 206, so add what we
+    // already hold to show a meaningful total.
+    let remaining = response
         .header("Content-Length")
         .and_then(|value| value.parse::<u64>().ok());
-    let progress = match total {
-        Some(bytes) => ProgressBar::new(bytes),
+    let progress = match remaining {
+        Some(bytes) => ProgressBar::new(start + bytes),
         None => ProgressBar::new_spinner(),
     };
     progress.set_style(
@@ -52,17 +171,39 @@ pub fn download_to_temp(url: &str, checksum_url: &str) -> Result<Download> {
         )
         .unwrap_or_else(|_| ProgressStyle::default_bar()),
     );
+    progress.set_position(start);
 
-    let mut temp = NamedTempFile::new().context("Failed to create temporary download file")?;
     let mut reader = response.into_reader();
-    copy_with_progress(&mut reader, temp.as_file_mut(), &progress)?;
+    let result = copy_with_progress(&mut reader, temp.as_file_mut(), &progress);
     progress.finish_and_clear();
 
-    let sha256 = verify_checksum(url, checksum_url, &temp)?;
+    // Survivors are counted from the file itself, not from a byte tally.
+    result.map_err(|error| Interrupted {
+        written: bytes_on_disk(temp),
+        error,
+    })
+}
 
-    // Do NOT call `.keep()` — returning the NamedTempFile lets it auto-delete on
-    // drop, so a killed process never leaks the file on disk.
-    Ok(Download { temp, sha256 })
+/// Discard any partial content so an attempt can start from byte zero.
+fn truncate_to_start(temp: &mut NamedTempFile) -> Result<()> {
+    use std::io::Seek;
+
+    let file = temp.as_file_mut();
+    file.set_len(0)
+        .context("Failed to reset the download file")?;
+    file.rewind()
+        .context("Failed to rewind the download file")?;
+    Ok(())
+}
+
+/// Position the file at its end so resumed bytes append.
+fn seek_to_end(temp: &mut NamedTempFile) -> Result<()> {
+    use std::io::{Seek, SeekFrom};
+
+    temp.as_file_mut()
+        .seek(SeekFrom::End(0))
+        .context("Failed to seek the download file")?;
+    Ok(())
 }
 
 /// Verify the SHA-256 of `temp` against the expected hash published at
@@ -206,12 +347,38 @@ fn copy_with_progress(
     Ok(())
 }
 
+/// Bytes currently on disk for a partial download.
+///
+/// Read from the filesystem rather than tracked in a counter: a `write_all` that
+/// fails partway may still have written some bytes, so a counter can understate
+/// the real length. Resuming from too low an offset while appending would
+/// silently corrupt the archive. On any error this reports 0, which restarts the
+/// download — wasteful but never wrong.
+fn bytes_on_disk(temp: &NamedTempFile) -> u64 {
+    temp.as_file()
+        .metadata()
+        .map(|meta| meta.len())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{extract_expected_hash, is_sha256_hex};
+    use super::*;
+    use std::{
+        io::{BufRead, BufReader},
+        net::{TcpListener, TcpStream},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
+        },
+        thread,
+        time::{Duration, Instant},
+    };
 
     const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    // ── Checksum document parsing ────────────────────────────────────────────
 
     #[test]
     fn finds_hash_in_node_style_manifest() {
@@ -314,5 +481,421 @@ mod tests {
         assert!(!is_sha256_hex("abc"));
         assert!(!is_sha256_hex(&format!("{HASH_A}a")));
         assert!(!is_sha256_hex(&"z".repeat(64)));
+    }
+
+    // ── Retry classification ─────────────────────────────────────────────────
+
+    /// Build a throwaway response so `ureq::Error::Status` can be constructed.
+    fn status_error(code: u16) -> ureq::Error {
+        let response = ureq::Response::new(code, "Status", "").expect("build test response");
+        ureq::Error::Status(code, response)
+    }
+
+    /// Retrying a permanent failure only delays the error the user needs to see:
+    /// a 404 means the version does not exist, and waiting will not change that.
+    #[test]
+    fn permanent_failures_are_not_retried() {
+        for code in [400, 401, 403, 404, 410, 451] {
+            assert!(
+                !crate::http::is_retryable(&status_error(code)),
+                "HTTP {code} should not be retried"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_failures_are_retried() {
+        for code in [408, 425, 429, 500, 502, 503, 504] {
+            assert!(
+                crate::http::is_retryable(&status_error(code)),
+                "HTTP {code} should be retried"
+            );
+        }
+    }
+
+    // ── Backoff ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn backoff_grows_and_is_capped() {
+        let first = crate::http::backoff_delay(0).as_millis();
+        let second = crate::http::backoff_delay(1).as_millis();
+
+        assert!(first >= 500, "first delay should be at least the base");
+        assert!(second > first, "delay should grow: {first} -> {second}");
+
+        // Capped, allowing for the 25% jitter.
+        for attempt in 0..20 {
+            let delay = crate::http::backoff_delay(attempt).as_millis();
+            assert!(
+                delay <= 8_000 + 2_100,
+                "attempt {attempt} delay {delay}ms exceeds the cap"
+            );
+        }
+    }
+
+    /// A large attempt number must not overflow the shift or the multiply.
+    #[test]
+    fn backoff_does_not_overflow() {
+        for attempt in [30_u32, 64, 1000, u32::MAX] {
+            let _ = crate::http::backoff_delay(attempt);
+        }
+    }
+
+    // ── Resume against a scripted server ─────────────────────────────────────
+
+    /// How the test server answers one request for the archive.
+    #[derive(Debug, Clone, Copy)]
+    enum Behavior {
+        /// Announce the full length, send `0..n` bytes, then hang up — exactly
+        /// what a dropped connection looks like to the client.
+        TruncateThenClose(usize),
+        /// Serve correctly, honouring `Range` with a 206.
+        Serve,
+        /// Ignore `Range` and always reply 200 with the whole body.
+        IgnoreRange,
+        /// Fail with a status code.
+        Status(u16),
+    }
+
+    /// `Range` start offsets observed by the test server, one per archive
+    /// request, shared so assertions can inspect what the client actually sent.
+    type SeenRanges = Arc<Mutex<Vec<Option<u64>>>>;
+
+    /// Serve `payload` at `/archive.tar.gz` and its digest at `/SHASUMS256.txt`.
+    ///
+    /// The listener is non-blocking with a deadline and stops after
+    /// `expected_requests`, so a finished client can never leave the thread
+    /// blocked in `accept()` and hang `join()`.
+    fn scripted_server(
+        payload: Vec<u8>,
+        script: Vec<Behavior>,
+        expected_requests: usize,
+    ) -> (String, SeenRanges, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let addr = listener.local_addr().expect("listener address");
+
+        let digest = {
+            let mut hasher = Sha256::new();
+            hasher.update(&payload);
+            hex_encode(&hasher.finalize())
+        };
+        let document = format!("{digest}  archive.tar.gz\n");
+
+        // Range offsets seen on each archive request, for assertions.
+        let ranges = Arc::new(Mutex::new(Vec::new()));
+        let ranges_for_server = Arc::clone(&ranges);
+        let archive_count = Arc::new(AtomicUsize::new(0));
+
+        let handle = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut served = 0usize;
+
+            while served < expected_requests && Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        // An accepted socket can inherit non-blocking mode on
+                        // some platforms; reads below assume blocking.
+                        let _ = stream.set_nonblocking(false);
+                        served += 1;
+
+                        let (path, range) = read_request(&mut stream);
+                        if path.contains("SHASUMS") {
+                            respond(&mut stream, 200, None, document.as_bytes());
+                            continue;
+                        }
+
+                        let index = archive_count.fetch_add(1, Ordering::SeqCst);
+                        ranges_for_server.lock().unwrap().push(range);
+
+                        match script.get(index).copied().unwrap_or(Behavior::Serve) {
+                            Behavior::Status(code) => {
+                                respond(&mut stream, code, None, b"error");
+                            }
+                            Behavior::TruncateThenClose(sent) => {
+                                let body = &payload[..sent.min(payload.len())];
+                                // Full Content-Length, short body.
+                                write_headers(&mut stream, 200, payload.len(), None);
+                                let _ = stream.write_all(body);
+                                let _ = stream.flush();
+                            }
+                            Behavior::IgnoreRange => {
+                                respond(&mut stream, 200, None, &payload);
+                            }
+                            Behavior::Serve => match range {
+                                Some(start) if (start as usize) < payload.len() => {
+                                    let rest = &payload[start as usize..];
+                                    respond(
+                                        &mut stream,
+                                        206,
+                                        Some((start, payload.len() as u64)),
+                                        rest,
+                                    );
+                                }
+                                Some(_) => respond(&mut stream, 416, None, b""),
+                                None => respond(&mut stream, 200, None, &payload),
+                            },
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+
+        (format!("http://{addr}"), ranges, handle)
+    }
+
+    /// Read a request, returning its path and any `Range` start offset.
+    fn read_request(stream: &mut TcpStream) -> (String, Option<u64>) {
+        let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        let _ = reader.read_line(&mut request_line);
+
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("/")
+            .to_string();
+
+        let mut range = None;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" || line == "\n" {
+                break;
+            }
+            let lower = line.to_ascii_lowercase();
+            if let Some(value) = lower.strip_prefix("range:") {
+                if let Some(spec) = value.trim().strip_prefix("bytes=") {
+                    range = spec
+                        .split('-')
+                        .next()
+                        .and_then(|start| start.trim().parse().ok());
+                }
+            }
+        }
+        (path, range)
+    }
+
+    fn write_headers(
+        stream: &mut TcpStream,
+        code: u16,
+        content_length: usize,
+        content_range: Option<(u64, u64)>,
+    ) {
+        let mut headers = format!(
+            "HTTP/1.1 {code} S\r\nContent-Length: {content_length}\r\nConnection: close\r\n"
+        );
+        if let Some((start, total)) = content_range {
+            headers.push_str(&format!(
+                "Content-Range: bytes {start}-{}/{total}\r\n",
+                total - 1
+            ));
+        }
+        headers.push_str("\r\n");
+        let _ = stream.write_all(headers.as_bytes());
+    }
+
+    fn respond(stream: &mut TcpStream, code: u16, content_range: Option<(u64, u64)>, body: &[u8]) {
+        write_headers(stream, code, body.len(), content_range);
+        let _ = stream.write_all(body);
+        let _ = stream.flush();
+    }
+
+    /// Varied bytes, so a wrongly assembled file cannot coincidentally match.
+    fn payload_of(size: usize) -> Vec<u8> {
+        (0..size).map(|i| (i % 251) as u8).collect()
+    }
+
+    fn fetch(base: &str) -> Result<Download> {
+        download_to_temp(
+            &format!("{base}/archive.tar.gz"),
+            &format!("{base}/SHASUMS256.txt"),
+        )
+    }
+
+    /// The point of the feature: a connection dropped partway must resume from
+    /// where it stopped rather than restart, and still verify.
+    #[test]
+    fn resumes_after_an_interrupted_transfer() {
+        let payload = payload_of(200_000);
+        let (base, ranges, server) = scripted_server(
+            payload.clone(),
+            vec![Behavior::TruncateThenClose(100_000), Behavior::Serve],
+            3, // two archive attempts plus the checksum
+        );
+
+        let download = fetch(&base).expect("download should resume and verify");
+
+        assert_eq!(
+            std::fs::read(download.path()).expect("read downloaded file"),
+            payload,
+            "resumed file must match the original byte for byte"
+        );
+
+        let seen = ranges.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "expected one failure and one resume");
+        assert_eq!(seen[0], None, "first attempt should not send Range");
+        assert_eq!(
+            seen[1],
+            Some(100_000),
+            "resume must continue from the bytes already on disk"
+        );
+
+        server.join().ok();
+    }
+
+    /// A server that ignores `Range` replies 200 with the whole body. Appending
+    /// that to what is already held would silently corrupt the archive.
+    #[test]
+    fn restarts_when_the_server_ignores_range() {
+        let payload = payload_of(150_000);
+        let (base, _ranges, server) = scripted_server(
+            payload.clone(),
+            vec![Behavior::TruncateThenClose(70_000), Behavior::IgnoreRange],
+            3,
+        );
+
+        let download = fetch(&base).expect("download should restart cleanly and verify");
+
+        assert_eq!(
+            std::fs::read(download.path()).expect("read file"),
+            payload,
+            "a non-206 reply must replace the partial file, not append to it"
+        );
+
+        server.join().ok();
+    }
+
+    /// 416 means the offset lies past the end of what the server now holds, so
+    /// the kept bytes are stale and must be discarded rather than retried
+    /// forever.
+    #[test]
+    fn recovers_when_the_server_rejects_the_resume_range() {
+        let payload = payload_of(120_000);
+        let (base, _ranges, server) = scripted_server(
+            payload.clone(),
+            vec![
+                Behavior::TruncateThenClose(60_000),
+                Behavior::Status(416),
+                Behavior::Serve,
+            ],
+            4,
+        );
+
+        let download = fetch(&base).expect("should recover from a rejected range");
+
+        assert_eq!(
+            std::fs::read(download.path()).expect("read file"),
+            payload,
+            "should end up with the complete archive"
+        );
+
+        server.join().ok();
+    }
+
+    #[test]
+    fn retries_a_transient_server_error() {
+        let payload = payload_of(50_000);
+        let (base, ranges, server) = scripted_server(
+            payload.clone(),
+            vec![Behavior::Status(503), Behavior::Serve],
+            3,
+        );
+
+        let download = fetch(&base).expect("a 503 should be retried");
+
+        assert_eq!(std::fs::read(download.path()).expect("read file"), payload);
+        assert_eq!(
+            ranges.lock().unwrap().len(),
+            2,
+            "expected exactly one retry"
+        );
+
+        server.join().ok();
+    }
+
+    /// A 404 must fail immediately: the release genuinely does not exist, and
+    /// retrying only makes the user wait to be told so.
+    #[test]
+    fn does_not_retry_a_missing_release() {
+        let (base, ranges, server) = scripted_server(
+            payload_of(1_000),
+            vec![Behavior::Status(404), Behavior::Serve, Behavior::Serve],
+            1,
+        );
+
+        assert!(fetch(&base).is_err(), "a 404 should fail the download");
+        assert_eq!(
+            ranges.lock().unwrap().len(),
+            1,
+            "a permanent failure must not be retried"
+        );
+
+        server.join().ok();
+    }
+
+    #[test]
+    fn gives_up_after_the_attempt_limit() {
+        let attempts = crate::http::MAX_ATTEMPTS as usize;
+        let (base, ranges, server) = scripted_server(
+            payload_of(80_000),
+            // Every attempt truncates, so it can never complete.
+            vec![Behavior::TruncateThenClose(10_000); attempts],
+            attempts,
+        );
+
+        assert!(
+            fetch(&base).is_err(),
+            "should fail after exhausting its attempts"
+        );
+        assert_eq!(
+            ranges.lock().unwrap().len(),
+            attempts,
+            "should make exactly MAX_ATTEMPTS attempts, no more"
+        );
+
+        server.join().ok();
+    }
+
+    /// Verification still runs after a resume, so a transfer that assembles into
+    /// the wrong bytes is caught instead of being extracted.
+    #[test]
+    fn rejects_a_download_whose_digest_does_not_match() {
+        let payload = payload_of(40_000);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let (path, _) = read_request(&mut stream);
+                if path.contains("SHASUMS") {
+                    // A valid-looking digest for different content.
+                    respond(
+                        &mut stream,
+                        200,
+                        None,
+                        format!("{HASH_A}  archive.tar.gz\n").as_bytes(),
+                    );
+                } else {
+                    respond(&mut stream, 200, None, &payload);
+                }
+            }
+        });
+
+        let err = fetch(&format!("http://{addr}")).expect_err("mismatched digest must fail");
+        assert!(
+            format!("{err:#}").contains("SHA-256 mismatch"),
+            "expected a checksum mismatch, got: {err:#}"
+        );
+
+        server.join().ok();
     }
 }

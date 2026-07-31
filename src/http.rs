@@ -14,7 +14,10 @@
 //! timeout plus an **idle** read timeout: a transfer may take as long as it
 //! needs so long as bytes keep arriving, but a stalled socket fails promptly.
 
-use std::{sync::OnceLock, time::Duration};
+use std::{
+    sync::OnceLock,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 /// Compile-time User-Agent derived from the crate version, so it never goes
 /// stale as the crate is bumped.
@@ -49,6 +52,55 @@ pub fn agent() -> &'static ureq::Agent {
 /// Start a GET request with runx's standard timeouts and User-Agent.
 pub fn get(url: &str) -> ureq::Request {
     agent().get(url)
+}
+
+/// Total attempts before a download is abandoned.
+pub const MAX_ATTEMPTS: u32 = 4;
+
+/// First backoff delay; each subsequent attempt doubles it.
+const BASE_DELAY_MS: u64 = 500;
+
+/// Ceiling on backoff, so a long outage does not stall for minutes.
+const MAX_DELAY_MS: u64 = 8_000;
+
+/// Whether a failed request is worth repeating.
+///
+/// Retrying a permanent failure only delays the error the user needs to see: a
+/// 404 means the version does not exist, and no amount of waiting changes that.
+/// Only transport failures and the status codes that specifically signal "try
+/// again" are retried.
+pub fn is_retryable(error: &ureq::Error) -> bool {
+    match error {
+        // 408 Request Timeout, 425 Too Early, 429 Too Many Requests, and the
+        // 5xx family are all transient by definition.
+        ureq::Error::Status(code, _) => {
+            matches!(code, 408 | 425 | 429 | 500 | 502 | 503 | 504)
+        }
+        // Connection reset, DNS hiccup, TLS failure, idle timeout.
+        ureq::Error::Transport(_) => true,
+    }
+}
+
+/// Delay before attempt `attempt` (zero-based), with jitter.
+///
+/// Jitter matters because runx installs runtimes in parallel threads: without
+/// it, several downloads throttled by the same server would retry in lockstep
+/// and be throttled again together. It is derived from the system clock rather
+/// than by adding a random-number dependency to a deliberately small CLI.
+pub fn backoff_delay(attempt: u32) -> Duration {
+    // `1 << attempt` with the shift clamped, so a large attempt count cannot
+    // overflow the multiply.
+    let doublings = attempt.min(5);
+    let exponential = BASE_DELAY_MS.saturating_mul(1_u64 << doublings);
+    let capped = exponential.min(MAX_DELAY_MS);
+
+    let spread = capped / 4 + 1;
+    let jitter = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| u64::from(elapsed.subsec_nanos()) % spread)
+        .unwrap_or(0);
+
+    Duration::from_millis(capped + jitter)
 }
 
 #[cfg(test)]
