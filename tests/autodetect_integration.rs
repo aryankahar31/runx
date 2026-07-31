@@ -98,10 +98,14 @@ fn explicit_toml_always_wins_over_detection() {
     );
 }
 
-/// A project with a semver range in `package.json` engines should resolve to
-/// the minimum satisfying version and mark the range as collapsed.
+/// A semver range in `package.json` engines is carried through config loading
+/// **verbatim**, not collapsed to a version.
+///
+/// Choosing the concrete release needs the published version list (to honour
+/// "newest satisfying release"), and config loading must stay offline and
+/// read-only. Resolution happens later, in `registry::resolve_requirement`.
 #[test]
-fn range_in_package_json_engines_is_resolved() {
+fn range_in_package_json_engines_is_preserved_for_later_resolution() {
     let dir = tmp();
     fs::write(
         dir.path().join("package.json"),
@@ -109,13 +113,47 @@ fn range_in_package_json_engines_is_resolved() {
     )
     .unwrap();
 
-    let resolved =
-        config::load_or_detect(dir.path()).expect("should auto-detect and resolve range");
+    let resolved = config::load_or_detect(dir.path()).expect("should auto-detect the range");
 
     assert_eq!(
-        resolved.inner.runtimes["node"], "20.0.0",
-        "^20 should resolve to 20.0.0 (minimum satisfying version)"
+        resolved.inner.runtimes["node"], "^20",
+        "the requirement must reach the resolver intact"
     );
+}
+
+/// The range is resolved to the newest satisfying release, as nvm, volta and
+/// mise do. Resolving `^20` to `20.0.0` would hand the user the oldest release
+/// in the line.
+#[test]
+fn range_resolves_to_the_newest_satisfying_release() {
+    use runx::registry::{choose_version, Resolution};
+    use runx::version::Version;
+
+    let published: Vec<Version> = ["20.0.0", "20.11.0", "20.12.1", "22.1.0"]
+        .iter()
+        .map(|raw| Version::parse(raw).expect("valid version"))
+        .collect();
+
+    let chosen =
+        choose_version("^20", Resolution::Latest, Some(&published)).expect("should resolve");
+
+    assert_eq!(
+        chosen.version, "20.12.1",
+        "^20 should pick the newest 20.x, not 20.0.0 and not 22.1.0"
+    );
+    assert!(chosen.was_range);
+}
+
+/// Strict mode remains available for anyone who needs the old, fully offline
+/// and time-independent behaviour.
+#[test]
+fn minimum_resolution_remains_available_as_strict_mode() {
+    use runx::registry::{choose_version, Resolution};
+
+    let chosen = choose_version("^20", Resolution::Minimum, None).expect("should resolve offline");
+
+    assert_eq!(chosen.version, "20.0.0");
+    assert!(chosen.was_range);
 }
 
 /// A Python project with only `.python-version` and no Node files should

@@ -6,6 +6,7 @@ use runx::error;
 use runx::executor;
 use runx::extractor;
 use runx::lock;
+use runx::registry;
 use runx::runtime;
 
 use anyhow::{Context, Result};
@@ -228,7 +229,12 @@ fn provision(
         }
     }
 
-    // Resolve specs first — fast, and no network for concrete versions.
+    // Turn each requirement into a concrete version, then into a spec.
+    //
+    // A lockfile pin is already concrete and is used verbatim — that is what
+    // makes a locked install reproducible. Anything else may be a range, which
+    // resolves to the newest published release satisfying it.
+    let mode = registry::Resolution::from_env();
     let mut specs: Vec<(runtime::RuntimeSpec, String)> = Vec::new();
     for entry in &plan {
         let requirement = config
@@ -237,9 +243,26 @@ fn provision(
             .cloned()
             .unwrap_or_else(|| entry.version.clone());
 
-        let spec = runtime::resolve_runtime(&entry.tool, &entry.version).with_context(|| {
-            format!("Failed to resolve runtime {} {}", entry.tool, entry.version)
-        })?;
+        let version = if entry.from_lock {
+            entry.version.clone()
+        } else {
+            let chosen = registry::resolve_requirement(&entry.tool, &entry.version, mode)
+                .with_context(|| format!("Failed to resolve {} `{}`", entry.tool, entry.version))?;
+
+            if let Some(note) = &chosen.note {
+                eprintln!("Note: {}: {note}", entry.tool);
+            }
+            if chosen.was_range {
+                println!(
+                    "Resolved {} `{}` to {}",
+                    entry.tool, entry.version, chosen.version
+                );
+            }
+            chosen.version
+        };
+
+        let spec = runtime::resolve_runtime(&entry.tool, &version)
+            .with_context(|| format!("Failed to resolve runtime {} {version}", entry.tool))?;
         specs.push((spec, requirement));
     }
 

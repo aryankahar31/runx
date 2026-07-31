@@ -278,8 +278,11 @@ fn minimum_of_conjunction(clauses: &[Clause]) -> Option<Version> {
 ///
 /// Returns the clauses plus whether the term was an exact pin.
 fn parse_term(term: &str) -> Option<(Vec<Clause>, bool)> {
-    // Wildcards: `*`, `x`, and `latest` mean "anything".
-    if matches!(term, "*" | "x" | "X" | "latest") {
+    // Semver wildcards mean "any version". `latest` is deliberately *not*
+    // accepted: it is a channel alias, not a constraint, and treating it as
+    // "anything" made it resolve to `0.0.0` whenever the release list was
+    // unavailable.
+    if matches!(term, "*" | "x" | "X") {
         return Some((
             vec![Clause {
                 op: Op::Gte,
@@ -342,9 +345,17 @@ fn parse_term(term: &str) -> Option<(Vec<Clause>, bool)> {
         return Some((upper_bounded(bound, pivot), false));
     }
 
-    // Bare version: an exact pin.
+    // Bare version. A *partial* one is an X-range, not an exact pin: in
+    // node-semver `20` means `20.x.x` and `20.11` means `20.11.x`, and `.nvmrc`
+    // files rely on that (nvm resolves a bare `20` to the newest 20.x). Treating
+    // it as exactly 20.0.0 would hand the user the oldest release in the line —
+    // the same defect as resolving `>=20` to `20.0.0`.
     let bound = Version::parse(term.trim_start_matches(['v', 'V']))?;
-    Some((vec![Clause { op: Op::Eq, bound }], true))
+    if bound.precision() >= 3 {
+        return Some((vec![Clause { op: Op::Eq, bound }], true));
+    }
+    let pivot = bound.precision().saturating_sub(1);
+    Some((upper_bounded(bound, pivot), false))
 }
 
 /// Build `>=bound, <bound.bump_at(pivot)`.
@@ -600,7 +611,7 @@ mod tests {
 
     #[test]
     fn wildcards_match_anything() {
-        for wildcard in ["*", "x", "latest"] {
+        for wildcard in ["*", "x", "X"] {
             let req = Req::parse(wildcard).expect("parse");
             assert!(req.matches(&v("0.0.1")));
             assert!(req.matches(&v("99.0.0")));

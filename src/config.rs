@@ -108,15 +108,30 @@ impl RunxConfig {
     }
 }
 
-/// Validate that a runtime version string is a concrete `MAJOR.MINOR.PATCH`.
+/// Validate that a runtime version entry is a requirement runx understands.
 ///
-/// Delegates to [`crate::version::validate_concrete`] so that `runx.toml` and
-/// auto-detected versions are held to exactly the same rules. Keeping a second
-/// hand-rolled check here is how the two paths drifted apart in the first
-/// place: this one rejected `lts/iron`, while auto-detection accepted it.
+/// Accepts an exact pin (`20.11.0`) or a range (`>=20`, `^20.11`, `~=3.11`).
+/// A range is resolved to a concrete release later, once the published version
+/// list is available, so this layer only rejects text that is not a version
+/// requirement at all — `lts/iron`, a path, a shell fragment.
+///
+/// The strict `MAJOR.MINOR.PATCH` check still runs, but at the point where it
+/// matters: [`crate::runtime::resolve_runtime`] validates the *concrete* version
+/// immediately before it is interpolated into the cache path and download URL.
+/// Requirement text never reaches either, and `Req::parse` itself only accepts
+/// digits, dots and comparison operators, so a traversal payload is refused
+/// twice over.
 fn validate_version_format(tool: &str, version: &str) -> Result<()> {
-    crate::version::validate_concrete(tool, version)
-        .map_err(|message| UserError::new(message).into())
+    if crate::version::Req::parse(version).is_some() {
+        return Ok(());
+    }
+
+    Err(UserError::new(format!(
+        "Invalid version requirement `{version}` for runtime `{tool}`.\n\
+         Expected an exact version (e.g. 20.11.0) or a range (e.g. >=20, ^20.11).\n\
+         Hint: aliases such as `lts/iron` or `latest` are not supported."
+    ))
+    .into())
 }
 
 /// Walk up the directory tree from `start`, returning the first directory that
@@ -180,22 +195,17 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
     // ── Branch 2: auto-detection ──────────────────────────────────────────────
     let detected = detect::detect_runtimes(dir);
 
-    // Transparency lines for everything that resolved, plus a note whenever a
-    // range was collapsed so the user sees which concrete version was picked.
+    // Transparency lines naming the requirement and the file it came from. The
+    // concrete version is reported later, by whoever resolves the requirement,
+    // since choosing it may need the published release list.
     let mut detection_lines: Vec<String> = vec![];
     for (tool, slot) in [("node", &detected.node), ("python", &detected.python)] {
-        let Some(runtime) = slot.as_ref().and_then(detect::Detected::resolved) else {
+        let Some(runtime) = slot.as_ref().and_then(detect::Detected::found) else {
             continue;
         };
-        if runtime.range_collapsed {
-            eprintln!(
-                "  Note: {tool} range `{}` in {} resolved to {} (lowest satisfying version)",
-                runtime.requirement, runtime.source, runtime.version
-            );
-        }
         detection_lines.push(format!(
             "  {tool} {} (from {})",
-            runtime.version, runtime.source
+            runtime.requirement, runtime.source
         ));
     }
 
@@ -314,22 +324,55 @@ test = "npm test"
         assert!(config.runtimes.is_empty());
     }
 
-    /// The traversal payload proved reachable via auto-detection must be
-    /// rejected when it arrives through `runx.toml` too.
+    /// Anything that is not a version requirement must be refused, including the
+    /// traversal payload that was reachable through auto-detection.
     #[test]
-    fn rejects_traversal_and_alias_versions_in_toml() {
+    fn rejects_non_requirement_versions_in_toml() {
         for bad in [
             "../../../../tmp/pwned",
+            "..",
+            "/etc/passwd",
             "lts/iron",
+            // A channel alias, not a constraint: it has no lower bound, so
+            // treating it as a wildcard resolved to 0.0.0.
             "latest",
-            "20",
-            "v20.11.0",
+            "nightly",
             "20.11.0 && echo hi",
+            "$(whoami)",
         ] {
             let raw = format!("[runtimes]\nnode = \"{bad}\"\n\n[run]\ndev = \"true\"\n");
             assert!(
                 RunxConfig::parse_toml(&raw).is_err(),
                 "version {bad:?} must be rejected"
+            );
+        }
+    }
+
+    /// Ranges are now valid in `runx.toml`, because the concrete version is
+    /// chosen later against the published release list. The strict
+    /// `MAJOR.MINOR.PATCH` check still applies at `resolve_runtime`, immediately
+    /// before the version reaches a cache path or download URL.
+    #[test]
+    fn accepts_version_requirements_in_toml() {
+        for good in [
+            "20.11.0",
+            "v20.11.0",
+            // Partial versions are X-ranges, as in node-semver and nvm.
+            "20",
+            "20.11",
+            ">=20",
+            "^20.11",
+            "~20.11",
+            "~=3.11",
+            "<20",
+            ">=14 <17",
+            "18 || >=20",
+            "3.11.*",
+        ] {
+            let raw = format!("[runtimes]\nnode = \"{good}\"\n\n[run]\ndev = \"true\"\n");
+            assert!(
+                RunxConfig::parse_toml(&raw).is_ok(),
+                "requirement {good:?} should be accepted"
             );
         }
     }

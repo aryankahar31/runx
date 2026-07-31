@@ -58,20 +58,47 @@ fn normalized_tool(tool: &str) -> String {
     tool.trim().to_ascii_lowercase()
 }
 
-fn resolve_node(version: &str) -> Result<RuntimeSpec> {
-    let platform = match (env::consts::OS, env::consts::ARCH) {
-        ("linux", "x86_64") => ("linux-x64", ArchiveKind::TarXz),
-        ("linux", "aarch64") => ("linux-arm64", ArchiveKind::TarXz),
-        ("macos", "x86_64") => ("darwin-x64", ArchiveKind::TarGz),
-        ("macos", "aarch64") => ("darwin-arm64", ArchiveKind::TarGz),
-        ("windows", "x86_64") => ("win-x64", ArchiveKind::Zip),
-        ("windows", "aarch64") => ("win-arm64", ArchiveKind::Zip),
+/// Node's platform token and archive format for the current host.
+fn node_platform() -> Result<(&'static str, ArchiveKind)> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("linux", "x86_64") => Ok(("linux-x64", ArchiveKind::TarXz)),
+        ("linux", "aarch64") => Ok(("linux-arm64", ArchiveKind::TarXz)),
+        ("macos", "x86_64") => Ok(("darwin-x64", ArchiveKind::TarGz)),
+        ("macos", "aarch64") => Ok(("darwin-arm64", ArchiveKind::TarGz)),
+        ("windows", "x86_64") => Ok(("win-x64", ArchiveKind::Zip)),
+        ("windows", "aarch64") => Ok(("win-arm64", ArchiveKind::Zip)),
         (os, arch) => {
-            return Err(
-                UserError::new(format!("Node runtime is not supported on {os}/{arch}.")).into(),
-            )
+            Err(UserError::new(format!("Node runtime is not supported on {os}/{arch}.")).into())
         }
-    };
+    }
+}
+
+/// python-build-standalone's target triple for the current host.
+fn python_platform() -> Result<&'static str> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64") => Ok("aarch64-unknown-linux-gnu"),
+        ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
+        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
+        ("windows", "x86_64") => Ok("x86_64-pc-windows-msvc"),
+        ("windows", "aarch64") => Ok("aarch64-pc-windows-msvc"),
+        (os, arch) => {
+            Err(UserError::new(format!("Python runtime is not supported on {os}/{arch}.")).into())
+        }
+    }
+}
+
+/// Platform key used when querying and caching a release index.
+pub fn registry_platform(tool: &str) -> Result<String> {
+    match normalized_tool(tool).as_str() {
+        "node" => Ok(node_platform()?.0.to_string()),
+        "python" => Ok(python_platform()?.to_string()),
+        other => Err(UserError::new(format!("Unsupported runtime `{other}`.")).into()),
+    }
+}
+
+fn resolve_node(version: &str) -> Result<RuntimeSpec> {
+    let platform = node_platform()?;
 
     let ext = match platform.1 {
         ArchiveKind::Zip => "zip",
@@ -97,20 +124,7 @@ fn resolve_node(version: &str) -> Result<RuntimeSpec> {
 }
 
 fn resolve_python(version: &str) -> Result<RuntimeSpec> {
-    let platform = match (env::consts::OS, env::consts::ARCH) {
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-        ("macos", "x86_64") => "x86_64-apple-darwin",
-        ("macos", "aarch64") => "aarch64-apple-darwin",
-        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
-        ("windows", "aarch64") => "aarch64-pc-windows-msvc",
-        (os, arch) => {
-            return Err(
-                UserError::new(format!("Python runtime is not supported on {os}/{arch}.")).into(),
-            )
-        }
-    };
-
+    let platform = python_platform()?;
     let asset = find_python_asset(version, platform)?;
     Ok(RuntimeSpec {
         tool: "python".to_string(),

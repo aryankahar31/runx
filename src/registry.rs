@@ -65,6 +65,164 @@ struct PythonAssetName {
     name: String,
 }
 
+/// How a version *range* is turned into a concrete release.
+///
+/// Exact pins are unaffected by this setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Resolution {
+    /// Newest release satisfying the range — what nvm, volta and mise do, and
+    /// the default. Resolving `>=20` to `20.0.0` would hand the user a runtime
+    /// with a year of known CVEs.
+    #[default]
+    Latest,
+    /// Lowest release satisfying the range. Fully offline and time-independent,
+    /// which is why it remains available as a strict mode.
+    Minimum,
+}
+
+impl Resolution {
+    /// Read the mode from `RUNX_RESOLUTION`.
+    ///
+    /// An unrecognised value falls back to the default rather than failing: a
+    /// typo in an environment variable should not make runx unusable.
+    pub fn from_env() -> Self {
+        match std::env::var("RUNX_RESOLUTION") {
+            Ok(value) => Self::parse(&value).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Parse a mode name, case-insensitively.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "latest" => Some(Self::Latest),
+            "minimum" | "min" | "lowest" => Some(Self::Minimum),
+            _ => None,
+        }
+    }
+}
+
+/// The outcome of resolving one requirement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chosen {
+    /// The concrete `MAJOR.MINOR.PATCH` version to install.
+    pub version: String,
+    /// True when the requirement was a range rather than an exact pin.
+    pub was_range: bool,
+    /// Set when resolution did not go as intended, e.g. the release list could
+    /// not be fetched and a lower bound was used instead.
+    pub note: Option<String>,
+}
+
+/// Pick a concrete version for `requirement`.
+///
+/// Pure policy, separated from the network so it can be tested exhaustively:
+/// `available` is `None` when no release list could be obtained.
+///
+/// Falling back to the lowest satisfying version on a failed lookup is
+/// deliberate. An offline or air-gapped machine, or a GitHub API rate limit,
+/// should degrade to the old behaviour with a warning rather than refuse to
+/// resolve a range at all.
+pub fn choose_version(
+    requirement: &str,
+    mode: Resolution,
+    available: Option<&[Version]>,
+) -> Result<Chosen> {
+    let req = crate::version::Req::parse(requirement).ok_or_else(|| {
+        anyhow::anyhow!(
+            "`{requirement}` is not a recognised version or range \
+             (aliases like `lts/*` are not supported)"
+        )
+    })?;
+
+    // An exact pin needs no release list, so this path stays offline.
+    if req.exact {
+        let version = req
+            .minimum()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine a version from `{requirement}`"))?;
+        return Ok(Chosen {
+            version: version.to_three_parts(),
+            was_range: false,
+            note: None,
+        });
+    }
+
+    let minimum = req.minimum();
+
+    if mode == Resolution::Minimum {
+        let version = minimum.ok_or_else(|| {
+            anyhow::anyhow!(
+                "`{requirement}` has no lowest satisfying version; \
+                 use the default `latest` resolution to pick from published releases"
+            )
+        })?;
+        return Ok(Chosen {
+            version: version.to_three_parts(),
+            was_range: true,
+            note: None,
+        });
+    }
+
+    match available {
+        Some(versions) => match req.best_match(versions) {
+            Some(best) => Ok(Chosen {
+                version: best.to_three_parts(),
+                was_range: true,
+                note: None,
+            }),
+            // The list was fetched but nothing in it satisfies the range.
+            None => Err(anyhow::anyhow!(
+                "No published release satisfies `{requirement}`"
+            )),
+        },
+        None => {
+            let version = minimum.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Could not fetch the release list, and `{requirement}` has no \
+                     lowest satisfying version to fall back to"
+                )
+            })?;
+
+            // An open-ended requirement such as `*` or `>=0` has a nominal floor
+            // of 0.0.0, which no runtime publishes. Falling back to it would
+            // produce a baffling 404 rather than an explanation.
+            if version.to_three_parts() == "0.0.0" {
+                anyhow::bail!(
+                    "Could not fetch the release list, and `{requirement}` is too \
+                     open-ended to resolve offline. Pin a version or a bounded \
+                     range (e.g. `^20`)."
+                );
+            }
+
+            Ok(Chosen {
+                version: version.to_three_parts(),
+                was_range: true,
+                note: Some(format!(
+                    "could not fetch the release list; using the lowest version \
+                     satisfying `{requirement}`"
+                )),
+            })
+        }
+    }
+}
+
+/// Resolve `requirement` for `tool`, fetching the release list when needed.
+pub fn resolve_requirement(tool: &str, requirement: &str, mode: Resolution) -> Result<Chosen> {
+    // Avoid the network entirely for exact pins and for strict mode.
+    if mode == Resolution::Minimum || is_exact(requirement) {
+        return choose_version(requirement, mode, None);
+    }
+
+    let platform = crate::runtime::registry_platform(tool)?;
+    let available = available_versions(tool, &platform).ok();
+    choose_version(requirement, mode, available.as_deref())
+}
+
+/// True when `requirement` pins a single version, needing no release list.
+fn is_exact(requirement: &str) -> bool {
+    crate::version::Req::parse(requirement).is_some_and(|req| req.exact)
+}
+
 /// Every version of `tool` available upstream, newest last.
 ///
 /// Consults the on-disk cache first. A network failure propagates so the caller
@@ -394,5 +552,156 @@ mod tests {
     #[test]
     fn unknown_runtime_has_no_index() {
         assert!(available_versions("ruby", "x86_64").is_err());
+    }
+
+    // ── Resolution policy ────────────────────────────────────────────────────
+
+    fn releases(list: &[&str]) -> Vec<Version> {
+        list.iter().map(|raw| v(raw)).collect()
+    }
+
+    /// An exact pin must behave identically in both modes and never need a
+    /// release list, so the common case stays offline and instant.
+    #[test]
+    fn exact_pins_are_unaffected_by_mode() {
+        for mode in [Resolution::Latest, Resolution::Minimum] {
+            let chosen = choose_version("20.11.0", mode, None).expect("exact pin resolves");
+            assert_eq!(chosen.version, "20.11.0");
+            assert!(!chosen.was_range);
+            assert!(chosen.note.is_none());
+        }
+        assert!(is_exact("20.11.0"));
+        assert!(is_exact("==3.11.7"));
+        assert!(!is_exact(">=20"));
+    }
+
+    /// The flip: a range now resolves to the newest satisfying release, matching
+    /// nvm/volta/mise, instead of the lowest.
+    #[test]
+    fn latest_mode_picks_the_newest_satisfying_release() {
+        let available = releases(&["18.20.3", "20.11.0", "20.12.1", "22.1.0"]);
+
+        let chosen =
+            choose_version(">=20", Resolution::Latest, Some(&available)).expect("resolves");
+        assert_eq!(chosen.version, "22.1.0");
+        assert!(chosen.was_range);
+        assert!(chosen.note.is_none(), "a clean resolution needs no note");
+    }
+
+    #[test]
+    fn latest_mode_respects_upper_bounds() {
+        let available = releases(&["18.20.3", "20.11.0", "20.12.1", "22.1.0"]);
+
+        let chosen = choose_version("^20", Resolution::Latest, Some(&available)).expect("resolves");
+        assert_eq!(chosen.version, "20.12.1", "^20 must not cross into 22");
+    }
+
+    #[test]
+    fn minimum_mode_still_picks_the_lowest() {
+        let available = releases(&["20.11.0", "22.1.0"]);
+
+        let chosen =
+            choose_version(">=20", Resolution::Minimum, Some(&available)).expect("resolves");
+        assert_eq!(chosen.version, "20.0.0");
+        assert!(chosen.was_range);
+    }
+
+    /// An offline machine or a rate-limited API must degrade to the old
+    /// behaviour with a warning, not refuse to resolve.
+    #[test]
+    fn failed_lookup_falls_back_to_the_lower_bound_with_a_note() {
+        let chosen = choose_version(">=3.11", Resolution::Latest, None).expect("should degrade");
+
+        assert_eq!(chosen.version, "3.11.0");
+        let note = chosen.note.as_deref().unwrap_or_default();
+        assert!(
+            note.contains("release list"),
+            "the user must be told resolution was degraded, got: {note}"
+        );
+    }
+
+    /// Ranges with no lower bound were previously unresolvable; with a real
+    /// release list they now resolve correctly.
+    #[test]
+    fn upper_bound_only_range_resolves_against_a_release_list() {
+        let available = releases(&["18.20.3", "19.9.0", "20.11.0"]);
+
+        let chosen = choose_version("<20", Resolution::Latest, Some(&available)).expect("resolves");
+        assert_eq!(
+            chosen.version, "19.9.0",
+            "<20 should pick the newest release below 20"
+        );
+    }
+
+    /// ...but in strict mode there is genuinely no defensible answer, so it must
+    /// error rather than invent one (the old code returned 20.0.0 here).
+    #[test]
+    fn upper_bound_only_range_errors_in_minimum_mode() {
+        assert!(choose_version("<20", Resolution::Minimum, None).is_err());
+    }
+
+    #[test]
+    fn errors_when_no_release_satisfies_the_range() {
+        let available = releases(&["18.20.3", "20.11.0"]);
+        let err = choose_version(">=24", Resolution::Latest, Some(&available))
+            .expect_err("nothing satisfies >=24");
+        assert!(format!("{err:#}").contains(">=24"));
+    }
+
+    #[test]
+    fn unparseable_requirements_error_clearly() {
+        for bad in ["lts/iron", "nightly", "", "garbage"] {
+            let err =
+                choose_version(bad, Resolution::Latest, None).expect_err("should not resolve");
+            assert!(
+                format!("{err:#}").contains("not a recognised version"),
+                "unexpected message for {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn alternation_picks_the_newest_across_alternatives() {
+        let available = releases(&["16.0.0", "18.20.3", "20.11.0", "22.1.0"]);
+        let chosen =
+            choose_version("18 || >=20", Resolution::Latest, Some(&available)).expect("resolves");
+        assert_eq!(chosen.version, "22.1.0");
+    }
+
+    #[test]
+    fn python_style_requirements_resolve_to_latest() {
+        let available = releases(&["3.10.13", "3.11.7", "3.12.1", "3.13.0"]);
+
+        let chosen =
+            choose_version(">=3.11", Resolution::Latest, Some(&available)).expect("resolves");
+        assert_eq!(chosen.version, "3.13.0");
+
+        // PEP 440 compatible-release caps the major version.
+        let capped =
+            choose_version("~=3.11", Resolution::Latest, Some(&available)).expect("resolves");
+        assert_eq!(capped.version, "3.13.0");
+    }
+
+    // ── Mode parsing ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn latest_is_the_default_mode() {
+        assert_eq!(Resolution::default(), Resolution::Latest);
+    }
+
+    #[test]
+    fn parses_mode_names_case_insensitively() {
+        assert_eq!(Resolution::parse("latest"), Some(Resolution::Latest));
+        assert_eq!(Resolution::parse("LATEST"), Some(Resolution::Latest));
+        assert_eq!(Resolution::parse("minimum"), Some(Resolution::Minimum));
+        assert_eq!(Resolution::parse(" min "), Some(Resolution::Minimum));
+        assert_eq!(Resolution::parse("lowest"), Some(Resolution::Minimum));
+    }
+
+    /// A typo in an environment variable must not make runx unusable.
+    #[test]
+    fn unknown_mode_names_are_rejected_by_parse() {
+        assert_eq!(Resolution::parse("newest"), None);
+        assert_eq!(Resolution::parse(""), None);
     }
 }

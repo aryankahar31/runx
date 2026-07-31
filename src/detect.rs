@@ -18,36 +18,38 @@
 //! [`Detected::Unresolvable`] rather than silently guessed. Guessing is how
 //! `<20` used to resolve to `20.0.0`, a version the constraint forbids.
 
-use crate::version::{Req, Version};
+use crate::version::Req;
 use std::{collections::BTreeMap, fs, path::Path};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-/// A single detected runtime version and the file it came from.
+/// A version requirement found in a project file.
+///
+/// Detection deliberately stops at the *requirement* and does not pick a
+/// concrete version. Choosing one may need the upstream release list (to honour
+/// "newest satisfying release"), and detection must stay a fast, offline,
+/// read-only scan. Resolution happens later, in [`crate::registry`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedRuntime {
-    /// The concrete version string (e.g. `"20.11.0"`).
-    pub version: String,
+    /// The requirement text as written in the project file, e.g. `">=20"`.
+    pub requirement: String,
     /// Human-readable source description (e.g. `".nvmrc"`).
     pub source: String,
-    /// The original requirement text as written in the project file.
-    pub requirement: String,
-    /// Set to `true` when the version was resolved from a range rather than
-    /// read verbatim.  Callers should print a note in that case.
-    pub range_collapsed: bool,
+    /// True when the requirement is a range rather than a single pinned version.
+    pub is_range: bool,
 }
 
 /// The outcome of inspecting one runtime's version hints.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Detected {
-    /// A concrete version was determined.
-    Version(DetectedRuntime),
-    /// A hint was found but could not be resolved to a concrete version.
+    /// A usable version requirement was found.
+    Found(DetectedRuntime),
+    /// A hint was present but is not a version requirement at all.
     ///
     /// This is deliberately *not* an `Option::None`: the difference between
     /// "this project says nothing about Node" and "this project asks for a Node
-    /// version I cannot pin down" matters to the user, and collapsing the two
-    /// produces a misleading "nothing detected" error.
+    /// version I cannot make sense of" matters to the user, and collapsing the
+    /// two produces a misleading "nothing detected" error.
     Unresolvable {
         source: String,
         requirement: String,
@@ -56,10 +58,10 @@ pub enum Detected {
 }
 
 impl Detected {
-    /// The resolved runtime, if resolution succeeded.
-    pub fn resolved(&self) -> Option<&DetectedRuntime> {
+    /// The requirement, if the hint parsed.
+    pub fn found(&self) -> Option<&DetectedRuntime> {
         match self {
-            Self::Version(runtime) => Some(runtime),
+            Self::Found(runtime) => Some(runtime),
             Self::Unresolvable { .. } => None,
         }
     }
@@ -89,7 +91,7 @@ impl DetectionResult {
                 } => Some(format!(
                     "  {tool} `{requirement}` (from {source}) — {reason}"
                 )),
-                Detected::Version(_) => None,
+                Detected::Found(_) => None,
             })
             .collect()
     }
@@ -116,7 +118,7 @@ fn detect_node(dir: &Path) -> Option<Detected> {
     // Priority 1 and 2: plain-text version files.
     for filename in [".nvmrc", ".node-version"] {
         if let Some(raw) = read_plain_version_file(dir, filename) {
-            return Some(resolve_hint(&raw, filename));
+            return Some(record_hint(&raw, filename));
         }
     }
 
@@ -132,7 +134,7 @@ fn detect_node_from_package_json(dir: &Path) -> Option<Detected> {
         .and_then(|engines| engines.get("node"))
         .and_then(|value| value.as_str())?;
 
-    Some(resolve_hint(node_range, "package.json (engines.node)"))
+    Some(record_hint(node_range, "package.json (engines.node)"))
 }
 
 // ── Python detection ──────────────────────────────────────────────────────────
@@ -140,7 +142,7 @@ fn detect_node_from_package_json(dir: &Path) -> Option<Detected> {
 fn detect_python(dir: &Path) -> Option<Detected> {
     // Priority 1: .python-version
     if let Some(raw) = read_plain_version_file(dir, ".python-version") {
-        return Some(resolve_hint(&raw, ".python-version"));
+        return Some(record_hint(&raw, ".python-version"));
     }
 
     // Priority 2: pyproject.toml [project].requires-python
@@ -155,7 +157,7 @@ fn detect_python_from_pyproject(dir: &Path) -> Option<Detected> {
         .and_then(|project| project.get("requires-python"))
         .and_then(|value| value.as_str())?;
 
-    Some(resolve_hint(requires, "pyproject.toml (requires-python)"))
+    Some(record_hint(requires, "pyproject.toml (requires-python)"))
 }
 
 // ── Run-command inference ─────────────────────────────────────────────────────
@@ -226,66 +228,59 @@ fn read_plain_version_file(dir: &Path, filename: &str) -> Option<String> {
     Some(line.to_string())
 }
 
-/// Turn one raw version hint into a [`Detected`].
+/// Record one raw version hint, without choosing a concrete version.
 ///
-/// Resolution uses the *minimum* version satisfying the requirement. When no
-/// minimum is defensible the hint is reported as unresolvable instead of being
-/// guessed at.
-fn resolve_hint(raw: &str, source: &str) -> Detected {
-    let requirement = raw.trim().to_string();
+/// Only hints that are not version requirements at all (`lts/iron`, a path, a
+/// shell fragment) are rejected here. A range such as `<20` is kept: it is
+/// perfectly resolvable against the published release list, and deciding that
+/// requires the network, which detection must not touch.
+fn record_hint(raw: &str, source: &str) -> Detected {
+    let requirement = normalise_requirement(raw);
 
-    let unresolvable = |reason: &str| Detected::Unresolvable {
-        source: source.to_string(),
-        requirement: requirement.clone(),
-        reason: reason.to_string(),
-    };
-
-    let Some(req) = Req::parse(&requirement) else {
-        return unresolvable(
-            "not a recognised version or range (aliases like `lts/*` are not supported)",
-        );
-    };
-
-    match req.minimum() {
-        Some(version) => Detected::Version(DetectedRuntime {
-            version: version.to_three_parts(),
+    match Req::parse(&requirement) {
+        Some(req) => Detected::Found(DetectedRuntime {
+            requirement,
             source: source.to_string(),
-            requirement: requirement.clone(),
-            range_collapsed: !req.exact,
+            is_range: !req.exact,
         }),
-        // e.g. `<20` (no floor) or `!=3.11` (excludes its own bound).
-        None => unresolvable("no concrete lowest version satisfies this range"),
+        None => Detected::Unresolvable {
+            source: source.to_string(),
+            requirement,
+            reason: "not a recognised version or range (aliases like `lts/*` are not supported)"
+                .to_string(),
+        },
     }
 }
 
-/// Resolve a version requirement to the minimum satisfying version.
+/// Strip the cosmetic `v` prefix that `.nvmrc` conventionally carries.
 ///
-/// Returns `None` when the requirement cannot be resolved. Prefer
-/// [`Req::best_match`] when a real release list is available, since resolving
-/// to the newest matching release is what nvm/volta/mise do.
-pub fn resolve_semver_range(range: &str) -> Option<(String, bool)> {
-    let req = Req::parse(range)?;
-    let minimum = req.minimum()?;
-    Some((minimum.to_three_parts(), !req.exact))
+/// Only applied when a digit follows, so `v20.11.0` is normalised while `>=20`
+/// and `^20.11` are left alone. Keeping requirement text canonical matters
+/// because it is echoed in banners, synthesised configs and `runx.lock`, and is
+/// compared against the lockfile to detect a changed requirement.
+fn normalise_requirement(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix(['v', 'V']) {
+        if rest.starts_with(|c: char| c.is_ascii_digit()) {
+            return rest.to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
-/// Highest version in `available` satisfying `requirement`.
-pub fn resolve_to_latest(requirement: &str, available: &[Version]) -> Option<String> {
-    let req = Req::parse(requirement)?;
-    req.best_match(available).map(|best| best.to_three_parts())
-}
-
-/// Build the map form expected by `RunxConfig::runtimes`, including only
-/// runtimes that resolved to a concrete version.
+/// Build the map form expected by `RunxConfig::runtimes`, keyed tool to
+/// *requirement*, including only hints that parsed.
 pub fn detected_runtimes_map(result: &DetectionResult) -> BTreeMap<String, String> {
     [("node", &result.node), ("python", &result.python)]
         .into_iter()
         .filter_map(|(tool, slot)| {
-            let resolved = slot.as_ref()?.resolved()?;
-            Some((tool.to_string(), resolved.version.clone()))
+            let found = slot.as_ref()?.found()?;
+            Some((tool.to_string(), found.requirement.clone()))
         })
         .collect()
 }
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
@@ -299,14 +294,14 @@ mod tests {
         tempfile::tempdir().expect("create temp dir")
     }
 
-    /// Resolved runtime for `node`, panicking with context if unresolved.
+    /// The detected requirement for `node`, panicking with context if absent.
     fn node_of(result: &DetectionResult) -> &DetectedRuntime {
         result
             .node
             .as_ref()
             .expect("node should be detected")
-            .resolved()
-            .expect("node should resolve to a concrete version")
+            .found()
+            .expect("node hint should parse")
     }
 
     fn python_of(result: &DetectionResult) -> &DetectedRuntime {
@@ -314,8 +309,8 @@ mod tests {
             .python
             .as_ref()
             .expect("python should be detected")
-            .resolved()
-            .expect("python should resolve to a concrete version")
+            .found()
+            .expect("python hint should parse")
     }
 
     // ── Node.js detection ─────────────────────────────────────────────────────
@@ -327,9 +322,9 @@ mod tests {
 
         let result = detect_runtimes(dir.path());
         let node = node_of(&result);
-        assert_eq!(node.version, "20.11.0");
+        assert_eq!(node.requirement, "20.11.0", "the `v` prefix is cosmetic");
         assert_eq!(node.source, ".nvmrc");
-        assert!(!node.range_collapsed);
+        assert!(!node.is_range, "an exact pin is not a range");
     }
 
     #[test]
@@ -338,13 +333,14 @@ mod tests {
         fs::write(dir.path().join(".node-version"), "18.20.3").unwrap();
 
         let result = detect_runtimes(dir.path());
-        let node = node_of(&result);
-        assert_eq!(node.version, "18.20.3");
-        assert_eq!(node.source, ".node-version");
+        assert_eq!(node_of(&result).requirement, "18.20.3");
+        assert_eq!(node_of(&result).source, ".node-version");
     }
 
+    /// Ranges are preserved verbatim rather than collapsed at detection time,
+    /// so the resolver can pick the newest satisfying release later.
     #[test]
-    fn detects_node_from_package_json_engines() {
+    fn detects_node_range_from_package_json_engines() {
         let dir = tmp();
         fs::write(
             dir.path().join("package.json"),
@@ -354,9 +350,12 @@ mod tests {
 
         let result = detect_runtimes(dir.path());
         let node = node_of(&result);
-        assert_eq!(node.version, "20.11.0");
+        assert_eq!(
+            node.requirement, ">=20.11.0",
+            "the requirement must survive detection intact"
+        );
         assert_eq!(node.source, "package.json (engines.node)");
-        assert!(node.range_collapsed, ">=20.11.0 is a range");
+        assert!(node.is_range);
     }
 
     #[test]
@@ -376,7 +375,7 @@ mod tests {
         .unwrap();
 
         let result = detect_runtimes(dir.path());
-        assert_eq!(node_of(&result).version, "20.11.0");
+        assert_eq!(node_of(&result).requirement, "20.11.0");
         assert_eq!(node_of(&result).source, ".nvmrc");
     }
 
@@ -390,7 +389,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(node_of(&detect_runtimes(dir.path())).version, "18.20.3");
+        assert_eq!(node_of(&detect_runtimes(dir.path())).requirement, "18.20.3");
     }
 
     #[test]
@@ -400,7 +399,7 @@ mod tests {
         fs::write(dir.path().join(".node-version"), "18.20.3").unwrap();
 
         let result = detect_runtimes(dir.path());
-        assert_eq!(node_of(&result).version, "20.11.0");
+        assert_eq!(node_of(&result).requirement, "20.11.0");
         assert_eq!(node_of(&result).source, ".nvmrc");
     }
 
@@ -412,14 +411,13 @@ mod tests {
         fs::write(dir.path().join(".python-version"), "3.11.7\n").unwrap();
 
         let result = detect_runtimes(dir.path());
-        let python = python_of(&result);
-        assert_eq!(python.version, "3.11.7");
-        assert_eq!(python.source, ".python-version");
-        assert!(!python.range_collapsed);
+        assert_eq!(python_of(&result).requirement, "3.11.7");
+        assert_eq!(python_of(&result).source, ".python-version");
+        assert!(!python_of(&result).is_range);
     }
 
     #[test]
-    fn detects_python_from_pyproject_toml_requires_python() {
+    fn detects_python_requirement_from_pyproject() {
         let dir = tmp();
         fs::write(
             dir.path().join("pyproject.toml"),
@@ -428,9 +426,23 @@ mod tests {
         .unwrap();
 
         let result = detect_runtimes(dir.path());
-        let python = python_of(&result);
-        assert_eq!(python.version, "3.11.0");
-        assert!(python.range_collapsed);
+        assert_eq!(python_of(&result).requirement, ">=3.11");
+        assert!(python_of(&result).is_range);
+    }
+
+    /// PEP 440 compatible-release syntax appears widely in pyproject.toml.
+    #[test]
+    fn detects_pep440_compatible_release() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nrequires-python = \"~=3.11\"\n",
+        )
+        .unwrap();
+
+        let result = detect_runtimes(dir.path());
+        assert_eq!(python_of(&result).requirement, "~=3.11");
+        assert!(python_of(&result).is_range);
     }
 
     #[test]
@@ -443,7 +455,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(python_of(&detect_runtimes(dir.path())).version, "3.12.0");
+        assert_eq!(
+            python_of(&detect_runtimes(dir.path())).requirement,
+            "3.12.0"
+        );
     }
 
     // ── Run-command inference ─────────────────────────────────────────────────
@@ -481,11 +496,11 @@ mod tests {
         assert!(detect_runtimes(dir.path()).inferred_dev_command.is_none());
     }
 
-    // ── Malicious / malformed hints ───────────────────────────────────────────
+    // ── Malicious and malformed hints ─────────────────────────────────────────
 
     /// A `.nvmrc` is attacker-controlled in any cloned repo. Its contents must
-    /// never become a usable version, because the version lands in a cache path
-    /// that gets recursively deleted and in a download URL.
+    /// never become a usable requirement, since a version reaches both a cache
+    /// path that gets recursively deleted and a download URL.
     #[test]
     fn path_traversal_in_nvmrc_is_unresolvable() {
         let dir = tmp();
@@ -493,10 +508,9 @@ mod tests {
 
         let detected = detect_runtimes(dir.path()).node.expect("hint is present");
         assert!(
-            detected.resolved().is_none(),
-            "traversal payload must not resolve to a version"
+            detected.found().is_none(),
+            "a traversal payload must not parse as a requirement"
         );
-        assert!(matches!(detected, Detected::Unresolvable { .. }));
     }
 
     #[test]
@@ -513,12 +527,25 @@ mod tests {
     }
 
     #[test]
+    fn shell_metacharacters_are_unresolvable() {
+        for payload in ["20.11.0 && rm -rf /", "$(whoami)", "20.11.0; echo hi"] {
+            let dir = tmp();
+            fs::write(dir.path().join(".nvmrc"), payload).unwrap();
+
+            let detected = detect_runtimes(dir.path()).node.expect("hint present");
+            assert!(
+                detected.found().is_none(),
+                "{payload:?} must not parse as a requirement"
+            );
+        }
+    }
+
+    #[test]
     fn alias_in_nvmrc_is_reported_not_guessed() {
         let dir = tmp();
         fs::write(dir.path().join(".nvmrc"), "lts/iron").unwrap();
 
-        let detected = detect_runtimes(dir.path()).node.expect("hint is present");
-        match detected {
+        match detect_runtimes(dir.path()).node.expect("hint is present") {
             Detected::Unresolvable {
                 requirement,
                 reason,
@@ -528,15 +555,17 @@ mod tests {
                 assert_eq!(source, ".nvmrc");
                 assert!(reason.contains("lts"), "reason should mention aliases");
             }
-            Detected::Version(runtime) => {
-                panic!("lts/iron must not resolve, got {}", runtime.version)
+            Detected::Found(runtime) => {
+                panic!("lts/iron must not parse, got {}", runtime.requirement)
             }
         }
     }
 
-    /// Regression: `<20` used to resolve to `20.0.0`, which the range forbids.
+    /// Behaviour change: `<20` is no longer rejected at detection time. It is a
+    /// valid constraint, resolvable against the published release list, so it is
+    /// recorded and resolved later rather than guessed at or discarded.
     #[test]
-    fn upper_bound_only_range_is_unresolvable_not_wrong() {
+    fn upper_bound_only_range_is_recorded_for_later_resolution() {
         let dir = tmp();
         fs::write(
             dir.path().join("package.json"),
@@ -544,17 +573,15 @@ mod tests {
         )
         .unwrap();
 
-        let detected = detect_runtimes(dir.path()).node.expect("hint is present");
-        assert!(
-            detected.resolved().is_none(),
-            "<20 has no defensible minimum"
-        );
+        let result = detect_runtimes(dir.path());
+        assert_eq!(node_of(&result).requirement, "<20");
+        assert!(node_of(&result).is_range);
     }
 
-    /// Regression: `18 || >=20` used to produce the literal directory name
-    /// `"18 || >=20.0.0"`.
+    /// Alternation used to produce the literal directory name
+    /// `"18 || >=20.0.0"`; it is now kept intact as a requirement.
     #[test]
-    fn alternation_resolves_to_lowest_alternative() {
+    fn alternation_is_preserved_verbatim() {
         let dir = tmp();
         fs::write(
             dir.path().join("package.json"),
@@ -563,7 +590,8 @@ mod tests {
         .unwrap();
 
         let result = detect_runtimes(dir.path());
-        assert_eq!(node_of(&result).version, "18.0.0");
+        assert_eq!(node_of(&result).requirement, "18 || >=20");
+        assert!(node_of(&result).is_range);
     }
 
     #[test]
@@ -571,7 +599,7 @@ mod tests {
         let dir = tmp();
         fs::write(dir.path().join(".nvmrc"), "\n# pinned for CI\n20.11.0\n").unwrap();
 
-        assert_eq!(node_of(&detect_runtimes(dir.path())).version, "20.11.0");
+        assert_eq!(node_of(&detect_runtimes(dir.path())).requirement, "20.11.0");
     }
 
     #[test]
@@ -579,6 +607,19 @@ mod tests {
         let dir = tmp();
         fs::write(dir.path().join(".nvmrc"), "   \n\n").unwrap();
         assert!(detect_runtimes(dir.path()).node.is_none());
+    }
+
+    // ── Requirement normalisation ─────────────────────────────────────────────
+
+    #[test]
+    fn strips_only_a_cosmetic_v_prefix() {
+        assert_eq!(normalise_requirement("v20.11.0"), "20.11.0");
+        assert_eq!(normalise_requirement("V20.11.0"), "20.11.0");
+        assert_eq!(normalise_requirement("  v20.11.0  "), "20.11.0");
+        // Operators and non-version text must be left alone.
+        assert_eq!(normalise_requirement(">=20"), ">=20");
+        assert_eq!(normalise_requirement("^20.11"), "^20.11");
+        assert_eq!(normalise_requirement("vnext"), "vnext");
     }
 
     // ── Encoding ──────────────────────────────────────────────────────────────
@@ -593,7 +634,7 @@ mod tests {
         ];
         fs::write(dir.path().join(".nvmrc"), data).unwrap();
 
-        assert_eq!(node_of(&detect_runtimes(dir.path())).version, "20.11.0");
+        assert_eq!(node_of(&detect_runtimes(dir.path())).requirement, "20.11.0");
     }
 
     #[test]
@@ -605,7 +646,7 @@ mod tests {
         ];
         fs::write(dir.path().join(".nvmrc"), data).unwrap();
 
-        assert_eq!(node_of(&detect_runtimes(dir.path())).version, "18.20.0");
+        assert_eq!(node_of(&detect_runtimes(dir.path())).requirement, "18.20.0");
     }
 
     #[test]
@@ -615,11 +656,10 @@ mod tests {
         data.extend_from_slice(b"20.11.0\n");
         fs::write(dir.path().join(".nvmrc"), data).unwrap();
 
-        assert_eq!(node_of(&detect_runtimes(dir.path())).version, "20.11.0");
+        assert_eq!(node_of(&detect_runtimes(dir.path())).requirement, "20.11.0");
     }
 
-    /// A UTF-16 file with an odd trailing byte previously produced a version;
-    /// the important property is that it does not panic.
+    /// A truncated UTF-16 file must not panic.
     #[test]
     fn odd_length_utf16_does_not_panic() {
         let dir = tmp();
@@ -629,28 +669,26 @@ mod tests {
         let _ = detect_runtimes(dir.path());
     }
 
-    /// UTF-16 with an unpaired surrogate must not make the hint disappear.
+    /// One unpaired surrogate must not discard the whole file.
     #[test]
     fn unpaired_surrogate_still_yields_a_hint() {
         let dir = tmp();
-        // "20.11.0" followed by a lone high surrogate (0xD800).
         let mut data = vec![0xFF, 0xFE];
         for byte in b"20.11.0" {
             data.push(*byte);
             data.push(0x00);
         }
-        data.extend_from_slice(&[0x00, 0xD8]);
+        data.extend_from_slice(&[0x00, 0xD8]); // lone high surrogate
         fs::write(dir.path().join(".nvmrc"), data).unwrap();
 
-        let detected = detect_runtimes(dir.path());
         assert!(
-            detected.node.is_some(),
-            "a lone surrogate must not discard the whole file"
+            detect_runtimes(dir.path()).node.is_some(),
+            "a lone surrogate must not discard the file"
         );
     }
 
-    /// A UTF-16 `package.json` must parse; previously `serde_json` received raw
-    /// UTF-16 bytes because only plain version files went through the decoder.
+    /// PowerShell 5.1 writes UTF-16 by default, so a `package.json` produced by
+    /// `>` redirection must still parse.
     #[test]
     fn reads_utf16_package_json() {
         let dir = tmp();
@@ -662,41 +700,35 @@ mod tests {
         fs::write(dir.path().join("package.json"), data).unwrap();
 
         let result = detect_runtimes(dir.path());
-        assert_eq!(node_of(&result).version, "20.11.0");
+        assert_eq!(node_of(&result).requirement, "20.11.0");
         assert_eq!(result.inferred_dev_command.as_deref(), Some("npm run dev"));
     }
 
-    // ── Range resolution helpers ──────────────────────────────────────────────
+    // ── Map building ──────────────────────────────────────────────────────────
 
     #[test]
-    fn resolve_semver_range_reports_failure_instead_of_guessing() {
-        assert_eq!(
-            resolve_semver_range("20.11.0"),
-            Some(("20.11.0".to_string(), false))
-        );
-        assert_eq!(
-            resolve_semver_range(">=3.11"),
-            Some(("3.11.0".to_string(), true))
-        );
-        assert_eq!(resolve_semver_range("<20"), None);
-        assert_eq!(resolve_semver_range("lts/iron"), None);
+    fn runtimes_map_carries_requirements_for_both_tools() {
+        let dir = tmp();
+        fs::write(dir.path().join(".nvmrc"), ">=20").unwrap();
+        fs::write(dir.path().join(".python-version"), "3.11.7").unwrap();
+
+        let map = detected_runtimes_map(&detect_runtimes(dir.path()));
+        assert_eq!(map.get("node").map(String::as_str), Some(">=20"));
+        assert_eq!(map.get("python").map(String::as_str), Some("3.11.7"));
     }
 
     #[test]
-    fn resolve_to_latest_picks_newest_match() {
-        let available: Vec<Version> = ["20.10.0", "20.11.0", "22.1.0"]
-            .iter()
-            .map(|raw| Version::parse(raw).unwrap())
-            .collect();
+    fn unresolvable_lines_name_the_tool_and_source() {
+        let dir = tmp();
+        fs::write(dir.path().join(".nvmrc"), "lts/iron").unwrap();
 
-        assert_eq!(
-            resolve_to_latest(">=20", &available).as_deref(),
-            Some("22.1.0")
+        let lines = detect_runtimes(dir.path()).unresolvable();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("node"), "should name the tool");
+        assert!(lines[0].contains(".nvmrc"), "should name the source file");
+        assert!(
+            lines[0].contains("lts/iron"),
+            "should quote the requirement"
         );
-        assert_eq!(
-            resolve_to_latest("^20", &available).as_deref(),
-            Some("20.11.0")
-        );
-        assert_eq!(resolve_to_latest(">=24", &available), None);
     }
 }
