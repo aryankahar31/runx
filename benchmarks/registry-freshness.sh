@@ -29,6 +29,9 @@ esac
 
 cd "$(dirname "$0")"
 
+# ponytail: keeping this file's table in sync with the README is manual.
+# When the results change, update the "Latest verified run" table in
+# README.md (Registry freshness section) in the same commit.
 RESULTS="registry-results.json"
 
 command -v curl >/dev/null 2>&1 || { echo "error: curl is required" >&2; exit 1; }

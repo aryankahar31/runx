@@ -304,7 +304,7 @@ Expected output
 runx <version>
 ```
 
-It prints the exact version you installed (e.g. `runx 0.3.1`).
+It prints the exact version you installed.
 
 ---
 
@@ -760,15 +760,15 @@ Latest verified run (`benchmarks/registry-results.json`):
 
 | Runtime | Vendor latest | runx resolved | Status |
 | :-- | :-- | :-- | :--: |
-| node | 26.5.1 | 26.5.1 | ✅ |
+| node | 26.7.0 | 26.7.0 | ✅ |
 | go | 1.26.5 | 1.26.5 | ✅ |
 | bun | 1.3.14 | 1.3.14 | ✅ |
-| python | 3.14.6 | *not verified on this network* | ⚠️ |
+| python | 3.14.7 | 3.14.7 | ✅ |
 
 Honest caveats: the python index is heavy (10 pages of
-python-build-standalone releases, ~15 MB each) and failed to complete on a
-slow network during the initial verification — the weekly CI run exercises it
-on GitHub's own network, which is the environment runx users in CI hit. The
+python-build-standalone releases, ~15 MB each), so the weekly CI run exercises
+it on GitHub's own network, which is the environment runx users in CI hit —
+it passes there even when it is too slow for a laptop. The
 6-hour cache means a release published within the last 6 hours may not yet
 appear in runx's resolution; rerun after the window for a clean check. The
 unauthenticated GitHub API (60 requests/hour/IP) is the practical ceiling for
