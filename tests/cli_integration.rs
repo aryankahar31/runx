@@ -652,12 +652,13 @@ fn doctor_shows_resolved_path_for_project_runtimes() {
     // uses: node's Windows layout has no `bin` subdirectory (the exe sits at
     // the install root), so hardcoding `.../bin` fails on Windows.
     let spec = runx::runtime::resolve_runtime("node", "20.11.0").expect("node resolves");
+    // Reuse the library's root builder, joining components one at a time: a
+    // single `join("node/20.11.0")` would keep the forward slashes on Windows
+    // while the binary's construction yields backslashes.
+    let root = runx::cache::runtime_root_in(&home, &spec.tool, &spec.version);
     let expected = format!(
         "Resolved PATH for `node`: {}",
-        home.join("runtimes")
-            .join("node/20.11.0")
-            .join(&spec.bin_dirs[0])
-            .display()
+        root.join(&spec.bin_dirs[0]).display()
     );
     assert!(
         stdout.contains(&expected),
