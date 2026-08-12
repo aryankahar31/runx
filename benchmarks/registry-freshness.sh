@@ -19,9 +19,16 @@
 # Writes benchmarks/registry-results.json (also uploaded as a CI artifact).
 set -eu
 
+# Anchored to the invocation cwd (repo root in CI), because cd below would
+# otherwise make the relative target/release/runx unresolvable.
+RUNX_BIN="${1:-${RUNX_BIN:-runx}}"
+case "$RUNX_BIN" in
+    /*) : ;;
+    */*) RUNX_BIN="$(pwd)/$RUNX_BIN" ;;
+esac
+
 cd "$(dirname "$0")"
 
-RUNX_BIN="${1:-${RUNX_BIN:-runx}}"
 RESULTS="registry-results.json"
 
 command -v curl >/dev/null 2>&1 || { echo "error: curl is required" >&2; exit 1; }

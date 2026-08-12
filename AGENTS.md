@@ -21,7 +21,6 @@ Single-crate Rust project: one binary (`runx`) plus `src/` library modules. Targ
 - `src/version.rs`: `PartialEq` is manual (derived from `Ord` — do not re-derive). Bare partial versions (`"20"`) are X-ranges; only exact 3-part pins resolve offline.
 - Installs are atomic: extract into `.staging-*` dirs, then rename + write `.runx-complete.json` receipt (see `src/cache.rs`). Runtimes without a receipt but with a working executable are legacy installs, adopted on use — don't "fix" that.
 - `install.sh` / `install.ps1`: exact-match SHA-256, fail closed when no checksum tool is available (`RUNX_SKIP_CHECKSUM=1` to override). Keep both in sync.
-- `tests/test_checksum.sh` is an orphaned legacy script — read it before relying on it.
 
 ## Conventions
 
