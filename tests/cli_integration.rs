@@ -659,7 +659,10 @@ fn doctor_shows_resolved_path_for_project_runtimes() {
             .join(&spec.bin_dirs[0])
             .display()
     );
-    assert!(stdout.contains(&expected), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains(&expected),
+        "expected:\n{expected}\nstdout:\n{stdout}"
+    );
 }
 
 /// A runtime the project asks for but that is not cached is not fabricated:
