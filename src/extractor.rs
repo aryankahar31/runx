@@ -90,10 +90,14 @@ fn extract_zip(archive_path: &Path, destination: &Path, strip_first: bool) -> Re
             continue;
         };
         let relative = if strip_first {
-            let Some(relative) = strip_first_component(&enclosed) else {
-                continue;
-            };
-            relative
+            // A wrapped archive (every entry under one directory, e.g.
+            // `bun-darwin-x64/…`) strips to its inside; an entry at the
+            // archive root (a single file, e.g. Deno's executable) has no
+            // wrapper to strip and lands in the destination root.
+            match strip_first_component(&enclosed).or_else(|| single_component(&enclosed)) {
+                Some(relative) => relative,
+                None => continue,
+            }
         } else {
             enclosed
         };
@@ -394,6 +398,22 @@ fn strip_first_component(path: &Path) -> Option<PathBuf> {
     Some(safe_components.into_iter().skip(1).collect())
 }
 
+/// A single safe path component (e.g. `deno`), or `None` when the path has
+/// more than one part or contains anything but normal components.
+fn single_component(path: &Path) -> Option<PathBuf> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_os_string()),
+            _ => return None,
+        }
+    }
+    match parts.as_slice() {
+        [part] => Some(PathBuf::from(part)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +451,71 @@ mod tests {
     #[test]
     fn returns_none_for_single_component_paths() {
         assert_eq!(strip_first_component(Path::new("README.md")), None);
+    }
+
+    // ── zip extraction ───────────────────────────────────────────────────────
+
+    use std::io::Write;
+
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = File::create(path).expect("create zip fixture");
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, content) in entries {
+            writer.start_file(*name, options).expect("start entry");
+            writer.write_all(content).expect("write entry");
+        }
+        writer.finish().expect("finish zip");
+    }
+
+    /// A root-level single-file archive (Deno's zip contains just the
+    /// executable plus small docs at the root) must extract with no wrapper.
+    #[test]
+    fn extracts_root_level_zip_entries_at_the_destination_root() {
+        let dir = tmp();
+        let archive = dir.path().join("deno.zip");
+        write_zip(
+            &archive,
+            &[
+                ("deno", b"#!/bin/sh\necho deno\n"),
+                ("LICENSE.md", b"MIT\n"),
+            ],
+        );
+
+        let destination = dir.path().join("dest");
+        fs::create_dir_all(&destination).unwrap();
+        extract_archive(&archive, &destination, ArchiveKind::Zip).expect("extracts");
+
+        assert_eq!(
+            fs::read(destination.join("deno")).expect("deno binary present"),
+            b"#!/bin/sh\necho deno\n"
+        );
+        assert!(destination.join("LICENSE.md").exists());
+    }
+
+    /// A wrapped archive (Bun) keeps stripping to the destination root.
+    #[test]
+    fn strips_the_wrapping_directory_of_a_zip_archive() {
+        let dir = tmp();
+        let archive = dir.path().join("bun.zip");
+        write_zip(
+            &archive,
+            &[
+                ("bun-darwin-x64/bun", b"binary"),
+                ("bun-darwin-x64/LICENSE.md", b"MIT"),
+            ],
+        );
+
+        let destination = dir.path().join("dest");
+        fs::create_dir_all(&destination).unwrap();
+        extract_archive(&archive, &destination, ArchiveKind::Zip).expect("extracts");
+
+        assert!(
+            destination.join("bun").exists(),
+            "wrapped entry must land at the root"
+        );
+        assert!(destination.join("LICENSE.md").exists());
     }
 
     // ── link target validation ───────────────────────────────────────────────

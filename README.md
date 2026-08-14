@@ -95,7 +95,7 @@ configuration always wins over auto-detection, with no merging.
 
 A `go.mod` also marks a project root for auto-detection, alongside
 `package.json`, `.nvmrc`, `.node-version`, `.python-version`, `pyproject.toml`,
-`.git` and `runx.toml`.
+`.dvmrc`, `.deno-version`, `.git` and `runx.toml`.
 
 ## Semver range resolution
 
@@ -469,7 +469,7 @@ No repeated downloads.
 | Python | ✅ |
 | Bun | ✅ |
 | Go | ✅ |
-| Deno | 🚧 Planned |
+| Deno | ✅ |
 | Java | 🚧 Planned |
 | .NET | 🚧 Planned |
 
@@ -827,6 +827,7 @@ the python and bun lookups; a weekly run uses a fraction of it.
 - ✅ Shell completions (bash, zsh, fish, PowerShell)
 - ✅ Bun
 - ✅ Go
+- ✅ Deno (from `.dvmrc` / `.deno-version`, or `runx.toml`)
 - ✅ `runx self update` — checks the latest GitHub release, verifies the SHA-256
   checksum, and atomically swaps the binary
 - ✅ Argument passthrough (`runx dev -- --port 3000`)
@@ -836,7 +837,7 @@ the python and bun lookups; a weekly run uses a fraction of it.
 
 ## v0.4 and later
 
-- 🚧 Deno, Java, .NET
+- 🚧 Java, .NET
 - 🚧 Monorepo / workspace support
 - 🚧 Pre/post run hooks
 - 🚧 Plugin system and runtime registry

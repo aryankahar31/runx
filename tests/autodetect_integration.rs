@@ -68,6 +68,66 @@ fn nvmrc_beats_package_json_engines_in_zero_config() {
     );
 }
 
+/// A project with a `.dvmrc` detects the Deno version (the dvm convention,
+/// also adopted by mise and bob).
+#[test]
+fn dvmrc_version_file_detected() {
+    let dir = tmp();
+    fs::write(dir.path().join(".dvmrc"), "2.9.3\n").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts": {"dev": "deno run main.ts"}}"#,
+    )
+    .unwrap();
+
+    let resolved = config::load_or_detect(dir.path()).expect("should auto-detect from .dvmrc");
+
+    assert_eq!(
+        resolved.inner.runtimes["deno"], "2.9.3",
+        "deno version should be detected from .dvmrc"
+    );
+}
+
+/// `.deno-version` is the fallback when no `.dvmrc` is present.
+#[test]
+fn deno_version_file_detected_when_no_dvmrc() {
+    let dir = tmp();
+    fs::write(dir.path().join(".deno-version"), "2.9.6\n").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts": {"dev": "deno run main.ts"}}"#,
+    )
+    .unwrap();
+
+    let resolved =
+        config::load_or_detect(dir.path()).expect("should auto-detect from .deno-version");
+
+    assert_eq!(
+        resolved.inner.runtimes["deno"], "2.9.6",
+        "deno version should be detected from .deno-version"
+    );
+}
+
+/// `.dvmrc` wins over `.deno-version` when both are present.
+#[test]
+fn dvmrc_beats_deno_version_file() {
+    let dir = tmp();
+    fs::write(dir.path().join(".dvmrc"), "2.9.3\n").unwrap();
+    fs::write(dir.path().join(".deno-version"), "2.10.0\n").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts": {"dev": "deno run main.ts"}}"#,
+    )
+    .unwrap();
+
+    let resolved = config::load_or_detect(dir.path()).expect("should auto-detect from .dvmrc");
+
+    assert_eq!(
+        resolved.inner.runtimes["deno"], "2.9.3",
+        ".dvmrc must win over .deno-version"
+    );
+}
+
 /// When a `runx.toml` exists it always wins — even if a `.nvmrc` with a
 /// *different* version is also present.
 #[test]

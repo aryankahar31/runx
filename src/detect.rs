@@ -18,6 +18,10 @@
 //! **Go**
 //! 1. `go.mod` → `go` directive (`go 1.22.0`)
 //!
+//! **Deno**
+//! 1. `.dvmrc` (the dvm convention, also adopted by mise and bob)
+//! 2. `.deno-version`
+//!
 //! **Range resolution**: version hints are parsed with [`crate::version::Req`].
 //! A hint that cannot be turned into a concrete version — because it has no
 //! lower bound (`<20`), because it excludes its own bound (`!=3.11`), or
@@ -81,6 +85,7 @@ pub struct DetectionResult {
     pub python: Option<Detected>,
     pub bun: Option<Detected>,
     pub go: Option<Detected>,
+    pub deno: Option<Detected>,
     /// Shell command inferred from `package.json` `scripts.dev`, if present.
     /// Currently only `"npm run dev"` is inferred — no other heuristics are
     /// attempted, per the v0.2 scope.
@@ -95,6 +100,7 @@ impl DetectionResult {
             ("python", &self.python),
             ("bun", &self.bun),
             ("go", &self.go),
+            ("deno", &self.deno),
         ]
         .into_iter()
         .filter_map(|(tool, slot)| match slot.as_ref()? {
@@ -124,6 +130,7 @@ pub fn detect_runtimes(dir: &Path) -> DetectionResult {
         python: detect_python(dir),
         bun: detect_bun(dir),
         go: detect_go(dir),
+        deno: detect_deno(dir),
         inferred_dev_command: infer_dev_command(dir),
     }
 }
@@ -227,6 +234,19 @@ fn detect_go(dir: &Path) -> Option<Detected> {
         return Some(record_hint(version, "go.mod"));
     }
 
+    None
+}
+
+// ── Deno detection ────────────────────────────────────────────────────────────
+
+fn detect_deno(dir: &Path) -> Option<Detected> {
+    // Priority 1: .dvmrc — the dvm convention, also adopted by mise and bob.
+    // Priority 2: .deno-version.
+    for filename in [".dvmrc", ".deno-version"] {
+        if let Some(raw) = read_plain_version_file(dir, filename) {
+            return Some(record_hint(&raw, filename));
+        }
+    }
     None
 }
 
@@ -346,6 +366,7 @@ pub fn detected_runtimes_map(result: &DetectionResult) -> BTreeMap<String, Strin
         ("python", &result.python),
         ("bun", &result.bun),
         ("go", &result.go),
+        ("deno", &result.deno),
     ]
     .into_iter()
     .filter_map(|(tool, slot)| {

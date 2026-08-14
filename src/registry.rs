@@ -55,6 +55,9 @@ pub const GO_INDEX_URL: &str = "https://go.dev/dl/?mode=json&include=all";
 /// a fixed cost.
 const BUN_PAGES: u32 = 5;
 
+/// How many pages of Deno releases to scan, mirroring [`BUN_PAGES`].
+const DENO_PAGES: u32 = 5;
+
 /// On-disk cache envelope.
 #[derive(Debug, Deserialize, serde::Serialize)]
 struct CachedIndex {
@@ -99,6 +102,12 @@ pub struct GoFile {
 
 #[derive(Debug, Deserialize)]
 struct BunRelease {
+    tag_name: String,
+}
+
+/// One entry of the GitHub Releases API for Deno (`denoland/deno`).
+#[derive(Debug, Deserialize)]
+struct DenoRelease {
     tag_name: String,
 }
 
@@ -283,6 +292,7 @@ pub fn available_versions(tool: &str, platform: &str) -> Result<Vec<Version>> {
         "node" => fetch_node_versions()?,
         "bun" => fetch_bun_versions()?,
         "go" => fetch_go_versions()?,
+        "deno" => fetch_deno_versions()?,
         // Python resolution is requirement-aware and short-circuits on the
         // first satisfying page; going through this generic path would pull
         // the full ~150MB index even for a trivial range.
@@ -514,9 +524,49 @@ fn fetch_bun_versions() -> Result<Vec<Version>> {
     Ok(sorted_unique(found.into_iter()))
 }
 
+/// Pull versions out of Deno's GitHub release tags (`v2.9.6`).
+///
+/// Deno publishes every supported platform for every release, so the platform
+/// does not need to filter the list. RC and canary tags fail to parse as
+/// exact three-part versions and are skipped.
+fn fetch_deno_versions() -> Result<Vec<Version>> {
+    let mut found: Vec<Version> = Vec::new();
+
+    for page in 1..=DENO_PAGES {
+        let url =
+            format!("https://api.github.com/repos/denoland/deno/releases?per_page=100&page={page}");
+        let body = crate::http::get(&url)
+            .call()
+            .with_context(|| format!("Failed to fetch Deno releases: {url}"))?
+            .into_string()
+            .context("Failed to read Deno release metadata")?;
+
+        let releases: Vec<DenoRelease> =
+            serde_json::from_str(&body).context("Failed to decode Deno release metadata")?;
+        if releases.is_empty() {
+            break;
+        }
+
+        for release in releases {
+            if let Some(version) = version_from_deno_tag(&release.tag_name) {
+                found.push(version);
+            }
+        }
+    }
+
+    Ok(sorted_unique(found.into_iter()))
+}
+
 /// `bun-v1.3.14` -> `1.3.14`; `None` for canary, pre-release and malformed tags.
 fn version_from_bun_tag(tag: &str) -> Option<Version> {
     let version = tag.strip_prefix("bun-v")?;
+    Version::parse(version).filter(|parsed| parsed.to_three_parts() == version)
+}
+
+/// `v2.9.6` -> `2.9.6`; `None` for rc and canary tags (`v2.0.0-rc.4`,
+/// `v2.9.6-canary.0`) and malformed tags.
+fn version_from_deno_tag(tag: &str) -> Option<Version> {
+    let version = tag.strip_prefix('v')?;
     Version::parse(version).filter(|parsed| parsed.to_three_parts() == version)
 }
 
@@ -879,6 +929,39 @@ mod tests {
             version_from_bun_tag("bun-v1.0.0").expect("oldest stable parses"),
             v("1.0.0")
         );
+    }
+
+    // ── Deno index parsing ───────────────────────────────────────────────────
+
+    /// Deno tags releases `v2.9.6` (a plain `v` prefix, unlike bun's `bun-v`).
+    #[test]
+    fn parses_deno_release_tags() {
+        assert_eq!(
+            version_from_deno_tag("v2.9.6").expect("stable tag parses"),
+            v("2.9.6")
+        );
+        assert_eq!(
+            version_from_deno_tag("v1.46.3").expect("1.x line parses"),
+            v("1.46.3")
+        );
+    }
+
+    /// RC and canary tags must never become installable versions.
+    #[test]
+    fn ignores_non_stable_deno_tags() {
+        for tag in [
+            "v2.0.0-rc.4",
+            "v2.9.6-canary.0",
+            "bun-v1.3.14",
+            "2.9.6",
+            "v2.9",
+        ] {
+            assert_eq!(
+                version_from_deno_tag(tag),
+                None,
+                "{tag} must not parse as a stable Deno version"
+            );
+        }
     }
 
     /// Canary, pre-release and unrelated tags must never become installable

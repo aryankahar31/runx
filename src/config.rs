@@ -203,6 +203,7 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
         ("python", &detected.python),
         ("bun", &detected.bun),
         ("go", &detected.go),
+        ("deno", &detected.deno),
     ] {
         let Some(runtime) = slot.as_ref().and_then(detect::Detected::found) else {
             continue;

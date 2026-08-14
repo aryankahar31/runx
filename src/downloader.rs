@@ -453,6 +453,18 @@ mod tests {
         );
     }
 
+    /// Deno's checksum sidecar is a per-asset `hash  name` file
+    /// (`deno-<triple>.zip.sha256sum`), so exact asset-name matching applies
+    /// unchanged.
+    #[test]
+    fn matches_deno_sidecar_by_asset_name() {
+        let document = format!("{HASH_A}  deno-x86_64-unknown-linux-gnu.zip\n");
+        assert_eq!(
+            extract_expected_hash(&document, "deno-x86_64-unknown-linux-gnu.zip").as_deref(),
+            Some(HASH_A)
+        );
+    }
+
     /// The old matcher used `line.contains(filename)`, so the digest of a
     /// signature or a longer sibling name could be picked for the archive.
     #[test]

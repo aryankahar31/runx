@@ -57,8 +57,9 @@ pub fn resolve_runtime(tool: &str, version: &str) -> Result<RuntimeSpec> {
         "python" => resolve_python(version),
         "bun" => resolve_bun(version),
         "go" => resolve_go(version),
+        "deno" => resolve_deno(version),
         _ => Err(UserError::new(format!(
-            "Unsupported runtime `{tool}`. Supported runtimes: node, python, bun, go."
+            "Unsupported runtime `{tool}`. Supported runtimes: node, python, bun, go, deno."
         ))
         .into()),
     }
@@ -139,6 +140,7 @@ pub fn registry_platform(tool: &str) -> Result<String> {
         "python" => Ok(python_platform()?.to_string()),
         "bun" => Ok(bun_platform()?.0.to_string()),
         "go" => Ok(go_platform()?.0.to_string()),
+        "deno" => Ok(deno_platform()?.to_string()),
         other => Err(UserError::new(format!("Unsupported runtime `{other}`.")).into()),
     }
 }
@@ -590,6 +592,44 @@ fn executable_name(name: &str) -> String {
     }
 }
 
+/// Deno's platform token for the current host — the same target triples
+/// python-build-standalone uses, which Deno also publishes.
+fn deno_platform() -> Result<&'static str> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64") => Ok("aarch64-unknown-linux-gnu"),
+        ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
+        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
+        ("windows", "x86_64") => Ok("x86_64-pc-windows-msvc"),
+        ("windows", "aarch64") => Ok("aarch64-pc-windows-msvc"),
+        (os, arch) => {
+            Err(UserError::new(format!("Deno runtime is not supported on {os}/{arch}.")).into())
+        }
+    }
+}
+
+/// Deno publishes one zip per platform on GitHub Releases (`v2.9.6` tags),
+/// each containing a single executable at the archive root, plus a per-asset
+/// `.sha256sum` sidecar whose single `hash  filename` line the downloader
+/// already matches exactly.
+fn resolve_deno(version: &str) -> Result<RuntimeSpec> {
+    let platform = deno_platform()?;
+    let url = format!(
+        "https://github.com/denoland/deno/releases/download/v{version}/deno-{platform}.zip"
+    );
+    let checksum_url = format!("{url}.sha256sum");
+    Ok(RuntimeSpec {
+        tool: "deno".to_string(),
+        version: version.to_string(),
+        url,
+        checksum_url,
+        expected_sha256: None,
+        archive_kind: ArchiveKind::Zip,
+        executable: executable_name("deno"),
+        bin_dirs: vec![PathBuf::from(".")],
+    })
+}
+
 fn node_bin_dirs() -> Vec<PathBuf> {
     if cfg!(windows) {
         vec![PathBuf::from(".")]
@@ -653,6 +693,47 @@ mod tests {
         );
         assert_eq!(spec.bin_dirs, vec![PathBuf::from(".")]);
         assert_eq!(spec.executable, executable_name("bun"));
+    }
+
+    // ── Deno spec resolution ─────────────────────────────────────────────────
+
+    #[test]
+    fn deno_spec_uses_denoland_github_release_urls_and_zip_kind() {
+        let spec = resolve_runtime("deno", "2.9.6").expect("deno resolves");
+
+        assert_eq!(spec.tool, "deno");
+        assert_eq!(spec.version, "2.9.6");
+        assert_eq!(spec.archive_kind, ArchiveKind::Zip);
+        assert!(
+            spec.expected_sha256.is_none(),
+            "deno verifies via a .sha256sum sidecar"
+        );
+        let platform = deno_platform().expect("deno platform");
+        assert_eq!(
+            spec.url,
+            format!(
+                "https://github.com/denoland/deno/releases/download/v2.9.6/deno-{platform}.zip"
+            )
+        );
+        assert_eq!(
+            spec.checksum_url,
+            format!("{}.sha256sum", spec.url),
+            "deno publishes one hash  name sidecar per asset"
+        );
+        assert_eq!(spec.executable, executable_name("deno"));
+        assert_eq!(spec.bin_dirs, vec![PathBuf::from(".")]);
+    }
+
+    /// Deno release tags are prefixed `v`; the version must not leak into
+    /// the URL unvalidated, and must be a full three-part pin.
+    #[test]
+    fn deno_spec_rejects_unvalidated_versions() {
+        for bad in ["../../etc", "2.9.6 && rm -rf /", "v2.9.6", "2.9"] {
+            assert!(
+                resolve_runtime("deno", bad).is_err(),
+                "{bad:?} must not resolve to a deno spec"
+            );
+        }
     }
 
     /// Bun release tags are prefixed `bun-v`; the version must not leak into
