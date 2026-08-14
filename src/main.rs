@@ -45,6 +45,7 @@ const RESERVED_COMMANDS: &[&str] = &[
                   e.g. `runx dev`. If runx.toml is missing, runx auto-detects runtimes\n\
                   from standard project files (.nvmrc, .node-version, package.json,\n\
                   .python-version, pyproject.toml).\n\n\
+                  Pass arguments through to the command after `--`, e.g. `runx dev -- --port 3000`.\n\
                   Use `runx run <key>` if a command key collides with a built-in\n\
                   subcommand name."
 )]
@@ -68,6 +69,10 @@ enum Command {
         /// Fail instead of resolving anything runx.lock does not already pin.
         #[arg(long)]
         locked: bool,
+
+        /// Arguments passed through to the run command, after `--`.
+        #[arg(last = true)]
+        passthrough: Vec<String>,
     },
 
     /// Write runx.lock, pinning the exact runtimes this project resolves to.
@@ -147,7 +152,11 @@ fn run() -> Result<()> {
 
     match cli.command {
         Some(Command::Init) => init_config(),
-        Some(Command::Run { key, locked }) => run_command(&key, locked),
+        Some(Command::Run {
+            key,
+            locked,
+            passthrough,
+        }) => run_command(&key, locked, &passthrough),
         Some(Command::Lock) => lock_command(),
         Some(Command::Cache { action }) => match action {
             CacheAction::List => cache_list(),
@@ -184,10 +193,11 @@ fn completions_command(shell: clap_complete::Shell) -> Result<()> {
 
 /// Handle a bare `runx <word>` invocation.
 ///
-/// Clap routes anything that is not a known subcommand here. Extra arguments
-/// are rejected explicitly rather than silently ignored, so a user who tries
-/// `runx dev --port 3000` gets told that argument passthrough is not supported
-/// instead of watching `--port 3000` disappear.
+/// Clap routes anything that is not a known subcommand here, keeping the `--`
+/// marker in the argument list. Everything after `--` is passed through to the
+/// run command; anything else after the key is rejected explicitly rather than
+/// silently ignored, so a user who tries `runx dev --port 3000` gets told to
+/// use `--` instead of watching `--port 3000` disappear.
 fn dispatch_external(args: Vec<String>) -> Result<()> {
     let mut args = args.into_iter();
     let Some(key) = args.next() else {
@@ -195,18 +205,26 @@ fn dispatch_external(args: Vec<String>) -> Result<()> {
     };
 
     let extra: Vec<String> = args.collect();
-    if !extra.is_empty() {
+    let passthrough_start = extra.iter().position(|arg| arg == "--");
+    let (junk, passthrough) = match passthrough_start {
+        Some(i) => (&extra[..i], &extra[i + 1..]),
+        None => (&extra[..], &extra[..0]),
+    };
+
+    if !junk.is_empty() {
+        let hint = format!(
+            "Hint: pass arguments after `--`: `runx {key} -- {junk}`",
+            junk = junk.join(" ")
+        );
         return Err(error::UserError::new(format!(
-            "Unexpected argument{plural} after `{key}`: {extra}\n\
-             runx does not yet forward arguments to the command it runs.\n\
-             Hint: add a dedicated key under [run] in runx.toml.",
-            plural = if extra.len() == 1 { "" } else { "s" },
-            extra = extra.join(" ")
+            "Unexpected argument{plural} after `{key}`: {junk}\n{hint}",
+            plural = if junk.len() == 1 { "" } else { "s" },
+            junk = junk.join(" ")
         ))
         .into());
     }
 
-    run_command(&key, false)
+    run_command(&key, false, passthrough)
 }
 
 fn init_config() -> Result<()> {
@@ -418,7 +436,7 @@ fn provision(
     Ok(provisioned)
 }
 
-fn run_command(command_key: &str, locked: bool) -> Result<()> {
+fn run_command(command_key: &str, locked: bool, passthrough: &[String]) -> Result<()> {
     // RUNX_TIMINGS=1 mirrors mise's MISE_TIMINGS=1: opt-in per-phase timings
     // printed to stderr, used by benchmarks/shell-overhead.sh.
     let timings = env::var_os("RUNX_TIMINGS").is_some();
@@ -450,7 +468,7 @@ fn run_command(command_key: &str, locked: bool) -> Result<()> {
         eprintln!("runx timing: cache: {:?}", t2.duration_since(t1));
     }
 
-    let status = executor::execute(&command, &runtimes, &project_dir)?;
+    let status = executor::execute(&command, &runtimes, &project_dir, passthrough)?;
     process::exit(status.code().unwrap_or(1));
 }
 

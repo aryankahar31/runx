@@ -122,11 +122,107 @@ fn builtin_wins_over_a_same_named_run_key() {
 
 // ── Argument handling ────────────────────────────────────────────────────────
 
-/// Extra arguments must be reported, not silently dropped. Passthrough is not
-/// implemented yet, and quietly ignoring `--port 3000` would look like the flag
-/// was honoured.
+/// Everything after `--` is passed through to the run command verbatim.
 #[test]
-fn extra_arguments_are_rejected_not_ignored() {
+fn passthrough_args_after_double_dash_reach_the_command() {
+    let dir = tmp();
+    write_config(dir.path(), "hello = \"echo MARKER\"\n");
+
+    let output = runx(dir.path(), &["hello", "--", "--port", "3000"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(stdout.contains("MARKER"), "{stdout}");
+    for fragment in ["--port", "3000"] {
+        assert!(
+            stdout.contains(fragment),
+            "passthrough args must reach the command, missing {fragment:?}, got:\n{stdout}"
+        );
+    }
+}
+
+/// Passthrough appends to arguments the run command already carries, rather
+/// than replacing them.
+#[test]
+fn passthrough_appends_to_arguments_already_in_the_command() {
+    let dir = tmp();
+    write_config(dir.path(), "dev = \"echo pre\"\n");
+
+    let output = runx(dir.path(), &["dev", "--", "--port", "3000", "-o", "out"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    // Per-token containment: `cmd`'s echo prints the double-quoted form.
+    for fragment in ["pre", "--port", "3000", "-o", "out"] {
+        assert!(
+            stdout.contains(fragment),
+            "missing {fragment:?}, got:\n{stdout}"
+        );
+    }
+}
+
+/// Arguments with spaces, quotes and other shell specials survive the trip
+/// intact. The assert uses containment because `cmd` on Windows echoes the
+/// double-quoted form, but the characters themselves must be unmodified.
+#[test]
+fn passthrough_preserves_spaces_and_quotes() {
+    let dir = tmp();
+    write_config(dir.path(), "dev = \"echo MARKER\"\n");
+
+    let output = runx(
+        dir.path(),
+        &["dev", "--", "a b", "it's", "$HOME", "*not-a-glob*"],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    for fragment in ["MARKER", "a b", "it's", "$HOME", "*not-a-glob*"] {
+        assert!(
+            stdout.contains(fragment),
+            "missing {fragment:?}, got:\n{stdout}"
+        );
+    }
+}
+
+/// The explicit `runx run <key>` form passes arguments through identically.
+#[test]
+fn passthrough_works_with_explicit_run_subcommand() {
+    let dir = tmp();
+    write_config(dir.path(), "hello = \"echo MARKER\"\n");
+
+    let output = runx(dir.path(), &["run", "hello", "--", "--port", "3000"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(stdout.contains("MARKER"), "{stdout}");
+    for fragment in ["--port", "3000"] {
+        assert!(
+            stdout.contains(fragment),
+            "missing {fragment:?}, got:\n{stdout}"
+        );
+    }
+}
+
+/// Without `--`, extra arguments are still rejected rather than silently
+/// dropped, with a hint pointing at the passthrough syntax.
+#[test]
+fn extra_arguments_without_double_dash_are_rejected_with_a_hint() {
     let dir = tmp();
     write_config(dir.path(), "hello = \"echo MARKER\"\n");
 
@@ -134,13 +230,17 @@ fn extra_arguments_are_rejected_not_ignored() {
     assert_eq!(
         output.status.code(),
         Some(1),
-        "extra args should fail rather than run the command"
+        "bare extra args should fail rather than run the command"
     );
 
     let stderr = stderr_of(&output);
     assert!(
         stderr.contains("--port 3000"),
-        "error should quote the ignored args, got:\n{stderr}"
+        "error should quote the rejected args, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--"),
+        "error should hint at the `--` passthrough syntax, got:\n{stderr}"
     );
     assert!(
         !stdout_of(&output).contains("MARKER"),

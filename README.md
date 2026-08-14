@@ -494,9 +494,16 @@ runx run dev
 runx run test --locked   # fail if runx.lock does not pin everything
 ```
 
-> Argument passthrough (`runx dev -- --port 3000`) is **not** supported yet.
-> Extra arguments are reported as an error rather than silently dropped. Add a
-> dedicated `[run]` key instead.
+Pass arguments through to the run command with `--`:
+
+```bash
+runx dev -- --port 3000
+runx run test -- --watch
+```
+
+Everything after `--` is appended to the underlying command, shell-quoted so
+spaces and special characters arrive intact. Without `--`, extra arguments are
+rejected rather than silently dropped.
 
 ## Project setup
 
@@ -822,6 +829,7 @@ the python and bun lookups; a weekly run uses a fraction of it.
 - ✅ Go
 - ✅ `runx self update` — checks the latest GitHub release, verifies the SHA-256
   checksum, and atomically swaps the binary
+- ✅ Argument passthrough (`runx dev -- --port 3000`)
 - 🚧 Signature verification (Sigstore/cosign path)
 
 ---
@@ -829,7 +837,6 @@ the python and bun lookups; a weekly run uses a fraction of it.
 ## v0.4 and later
 
 - 🚧 Deno, Java, .NET
-- 🚧 Argument passthrough (`runx dev -- --port 3000`)
 - 🚧 Monorepo / workspace support
 - 🚧 Pre/post run hooks
 - 🚧 Plugin system and runtime registry
