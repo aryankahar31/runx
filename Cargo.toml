@@ -1,6 +1,6 @@
 [package]
 name = "runx"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 license = "MIT"
 description = "A universal project launcher with local runtime caching"
