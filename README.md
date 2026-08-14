@@ -566,6 +566,7 @@ plus `SHA256SUMS` for `self update` to work.
 |----------|--------|
 | `RUNX_HOME` | Cache location (default `~/.runx`). Useful for CI caching and for isolating a cache without touching `HOME`. |
 | `RUNX_RESOLUTION` | `latest` (default) or `minimum` — see [Strict mode](#strict-mode). |
+| `GITHUB_TOKEN` | Optional. Authenticates the GitHub API version lookups (Bun, Deno, Python), raising the rate limit from 60 to 5000 requests/hour — useful for CI on a shared IP or heavy development. A classic PAT or fine-grained token with **no scopes** is enough for public release/tag data; runx sends it only to `api.github.com`, never to other hosts. |
 
 There is no telemetry, and runx makes no network requests beyond fetching
 runtime release metadata, archives, and their checksums.

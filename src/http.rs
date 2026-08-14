@@ -50,8 +50,30 @@ pub fn agent() -> &'static ureq::Agent {
 }
 
 /// Start a GET request with runx's standard timeouts and User-Agent.
+///
+/// Requests to the GitHub API (Bun, Deno and Python version lookups) get an
+/// `Authorization: Bearer` header when `GITHUB_TOKEN` is set, raising the
+/// unauthenticated 60 req/h cap to 5000. No other host ever receives the
+/// token.
 pub fn get(url: &str) -> ureq::Request {
-    agent().get(url)
+    let mut request = agent().get(url);
+    if let Some(header) = github_auth_header(url) {
+        request = request.set("Authorization", &header);
+    }
+    request
+}
+
+/// `Authorization: Bearer <token>` for api.github.com requests, from the
+/// optional `GITHUB_TOKEN` env var. `None` for every other host, so an
+/// exported token cannot leak to nodejs.org, go.dev or a GitHub CDN.
+fn github_auth_header(url: &str) -> Option<String> {
+    let host = url.split("://").nth(1)?.split(['/', '?', '#']).next()?;
+    if host != "api.github.com" {
+        return None;
+    }
+    std::env::var("GITHUB_TOKEN")
+        .ok()
+        .map(|token| format!("Bearer {token}"))
 }
 
 /// Total attempts before a download is abandoned.
@@ -165,6 +187,43 @@ mod tests {
     #[test]
     fn user_agent_tracks_the_crate_version() {
         assert_eq!(USER_AGENT, format!("runx/{}", env!("CARGO_PKG_VERSION")));
+    }
+
+    /// `GITHUB_TOKEN` is optional and must reach only api.github.com; no other
+    /// host may see it, and without the variable nothing changes.
+    ///
+    /// One test touches the variable so parallel tests cannot interleave
+    /// mutations; no other test reads it.
+    #[test]
+    fn github_token_is_attached_only_to_the_github_api() {
+        std::env::set_var("GITHUB_TOKEN", "secret-token");
+        assert_eq!(
+            github_auth_header("https://api.github.com/repos/oven-sh/bun/releases?per_page=100"),
+            Some("Bearer secret-token".to_string())
+        );
+        assert_eq!(
+            github_auth_header("https://nodejs.org/dist/index.json"),
+            None
+        );
+        assert_eq!(github_auth_header("https://go.dev/dl/?mode=json"), None);
+        // Release downloads are served by the GitHub CDN, not the API.
+        assert_eq!(
+            github_auth_header(
+                "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-darwin.zip"
+            ),
+            None
+        );
+        assert_eq!(
+            github_auth_header("https://api.github.com/"),
+            Some("Bearer secret-token".to_string())
+        );
+
+        std::env::remove_var("GITHUB_TOKEN");
+        assert_eq!(
+            github_auth_header("https://api.github.com/repos/denoland/deno/releases"),
+            None,
+            "without GITHUB_TOKEN the request must stay unauthenticated"
+        );
     }
 
     /// The agent must actually send our User-Agent, since python-build-standalone
