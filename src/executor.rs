@@ -125,6 +125,10 @@ mod tests {
     #[test]
     fn append_passthrough_leaves_command_untouched_when_empty() {
         assert_eq!(append_passthrough("echo hi", &[]), "echo hi");
-        assert_eq!(append_passthrough("echo hi", &["a".into()]), "echo hi 'a'");
+        let quoted = if cfg!(windows) { "\"a\"" } else { "'a'" };
+        assert_eq!(
+            append_passthrough("echo hi", &["a".into()]),
+            format!("echo hi {quoted}")
+        );
     }
 }
