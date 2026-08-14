@@ -121,6 +121,29 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Sigstore/cosign signature verification (graceful)
+# ---------------------------------------------------------------------------
+#
+# Since v0.4.2 every release asset carries a Sigstore bundle (`<asset>.sigstore.json`)
+# signed keylessly by the release workflow itself. `cosign` is not a hard
+# dependency: most installers will not have it, and the checksum above already
+# failed closed. So a missing `cosign` (or a release published before
+# signatures existed) prints a warning and the install continues — set
+# RUNX_REQUIRE_SIGNATURE=1 to make that a hard error instead. A signature that
+# is present but FAILS verification is always fatal: that is the tampered
+# release this feature exists to catch.
+sigstore_identity='^https://github\.com/aryankahar31/runx/\.github/workflows/release\.yml@refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)$'
+
+verify_signature() {
+  _file="$1"
+  _bundle="$2"
+  cosign verify-blob "$_file" \
+    --bundle "$_bundle" \
+    --certificate-identity-regexp "$sigstore_identity" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+}
+
+# ---------------------------------------------------------------------------
 # Download, verify, and install
 # ---------------------------------------------------------------------------
 
@@ -132,6 +155,39 @@ if [ -n "$sha256_cmd" ]; then
   echo "Downloading SHA256SUMS"
   curl -fsSL --retry 3 --retry-delay 1 "${base_url}/SHA256SUMS" -o "$tmp/SHA256SUMS"
   verify_checksum "$tmp/$asset" "$asset" "$tmp/SHA256SUMS"
+
+  # Signature verification. Skipping requires RUNX_SKIP_CHECKSUM=1, in which
+  # case skipping the signature too is the user's explicit risk-to-accept.
+  if command -v cosign >/dev/null 2>&1; then
+    if curl -fsSL --retry 3 --retry-delay 1 "${base_url}/${asset}.sigstore.json" \
+      -o "$tmp/$asset.sigstore.json" 2>/dev/null; then
+      if verify_signature "$tmp/$asset" "$tmp/$asset.sigstore.json"; then
+        echo "Signature verified."
+      else
+        cat >&2 <<'EOF'
+Error: signature verification FAILED for the downloaded archive.
+The Sigstore signature does not match the release workflow's identity or the
+artifact has been tampered with. Aborting.
+EOF
+        exit 1
+      fi
+    elif [ "${RUNX_REQUIRE_SIGNATURE:-0}" = "1" ]; then
+      echo "Error: RUNX_REQUIRE_SIGNATURE=1 but no signature bundle was published for this release." >&2
+      exit 1
+    else
+      echo "Warning: no signature bundle published for this release; signature verification skipped (checksum still verified)." >&2
+    fi
+  else
+    if [ "${RUNX_REQUIRE_SIGNATURE:-0}" = "1" ]; then
+      echo "Error: RUNX_REQUIRE_SIGNATURE=1 but cosign is not installed." >&2
+      exit 1
+    fi
+    cat >&2 <<'EOF'
+Warning: cosign not found — release signature verification skipped.
+The SHA-256 checksum was still verified and enforced. Install cosign
+(https://docs.sigstore.dev/cosign/installation/) to verify release signatures.
+EOF
+  fi
 else
   # Only reachable when RUNX_SKIP_CHECKSUM=1 was set deliberately.
   echo "Warning: skipping checksum verification (RUNX_SKIP_CHECKSUM=1)." >&2

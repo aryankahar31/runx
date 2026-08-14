@@ -8,6 +8,18 @@ on:
 permissions:
   contents: write
   actions: read
+  # Required for keyless signing: GitHub mints an OIDC token for the job,
+  # which cosign exchanges with Sigstore's Fulcio CA for a signing certificate.
+  id-token: write
+
+# The OIDC subject pinned by every verifier (install scripts, self-update,
+# and the CI self-check below). Only runs of this workflow on a v*.*.* tag
+# or main can sign. The regexp matches the `@refs/tags/vX.Y.Z` suffix that
+# tag-triggered runs embed in the certificate identity.
+env:
+  SIGNING_IDENTITY: &signing_identity '^https://github\.com/aryankahar31/runx/\.github/workflows/release\.yml@refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)$'
+
+jobs:
 
 jobs:
   verify-ci:
@@ -122,6 +134,22 @@ jobs:
           $hash = (Get-FileHash "dist\${{ matrix.artifact }}" -Algorithm SHA256).Hash.ToLower()
           "$hash  ${{ matrix.artifact }}" | Out-File -Encoding ascii "dist\${{ matrix.artifact }}.sha256"
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign archive with cosign (keyless)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes "dist/${{ matrix.artifact }}" \
+            --bundle "dist/${{ matrix.artifact }}.sigstore.json"
+          # Self-check: the pinned identity must match what the OIDC token
+          # of THIS run produced, or every consumer's verification will fail.
+          cosign verify-blob "dist/${{ matrix.artifact }}" \
+            --bundle "dist/${{ matrix.artifact }}.sigstore.json" \
+            --certificate-identity-regexp "$SIGNING_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
       - name: Upload packaged asset
         uses: actions/upload-artifact@v4
         with:
@@ -134,6 +162,13 @@ jobs:
         with:
           name: ${{ matrix.artifact }}.sha256
           path: dist/${{ matrix.artifact }}.sha256
+          if-no-files-found: error
+
+      - name: Upload signature bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}.sigstore.json
+          path: dist/${{ matrix.artifact }}.sigstore.json
           if-no-files-found: error
 
   publish:
@@ -156,6 +191,20 @@ jobs:
           cat *.sha256 | sort > SHA256SUMS
           echo "--- SHA256SUMS ---"
           cat SHA256SUMS
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign SHA256SUMS manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes "dist/SHA256SUMS" \
+            --bundle "dist/SHA256SUMS.sigstore.json"
+          cosign verify-blob "dist/SHA256SUMS" \
+            --bundle "dist/SHA256SUMS.sigstore.json" \
+            --certificate-identity-regexp "$SIGNING_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
       - name: Publish release
         uses: softprops/action-gh-release@v2

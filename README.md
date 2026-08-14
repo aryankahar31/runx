@@ -291,8 +291,27 @@ iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 | iex
 > Checksums confirm the download is intact and matches what the publisher
 > listed. They are fetched from the same origin as the artifact, so they are
 > not by themselves protection against a compromised release host.
-> `runx self update` verifies the same checksum before swapping the binary;
-> cryptographic signature verification is on the roadmap (Sigstore/cosign).
+>
+> **Signature verification (Sigstore/cosign).** Since v0.4.2 every release
+> archive and the `SHA256SUMS` manifest are additionally signed with
+> Sigstore/cosign *keyless* signing: the release workflow asks GitHub for an
+> OIDC token, and Sigstore's Fulcio CA issues a short-lived certificate bound
+> to that identity (the workflow path, repository, and triggering ref — no
+> private keys are stored anywhere). When `cosign` is installed, the install
+> scripts and `runx self update` verify each download against that signature
+> with the identity pinned to `aryankahar31/runx`'s `release.yml` on a `v*.*.*`
+> tag, so only a real run of the release workflow can have produced the file.
+> This closes the checksum gap: a compromised release host cannot forge a
+> signature without also compromising the signing identity.
+>
+> Verification degrades gracefully and honestly: if `cosign` is not installed
+> (or you are installing a release published before v0.4.2, which has no
+> signature), a warning is printed and the install proceeds on checksum
+> verification alone — the fail-closed checksum behavior above is unchanged.
+> Set `RUNX_REQUIRE_SIGNATURE=1` to make a missing `cosign` or signature an
+> error instead of a warning. A signature that is present but *fails*
+> verification is always fatal: that is the tamper case this feature exists
+> to catch. `runx self update` follows the same policy.
 
 Verify installation
 
@@ -567,6 +586,7 @@ plus `SHA256SUMS` for `self update` to work.
 | `RUNX_HOME` | Cache location (default `~/.runx`). Useful for CI caching and for isolating a cache without touching `HOME`. |
 | `RUNX_RESOLUTION` | `latest` (default) or `minimum` — see [Strict mode](#strict-mode). |
 | `GITHUB_TOKEN` | Optional. Authenticates the GitHub API version lookups (Bun, Deno, Python), raising the rate limit from 60 to 5000 requests/hour — useful for CI on a shared IP or heavy development. A classic PAT or fine-grained token with **no scopes** is enough for public release/tag data; runx sends it only to `api.github.com`, never to other hosts. |
+| `RUNX_REQUIRE_SIGNATURE` | `1` makes the installers and `runx self update` treat a missing `cosign` (or a release without a signature) as an error instead of a warning. See [Security](#security). |
 
 There is no telemetry, and runx makes no network requests beyond fetching
 runtime release metadata, archives, and their checksums.
@@ -839,7 +859,7 @@ the python and bun lookups; a weekly run uses a fraction of it.
 - ✅ `runx self update` — checks the latest GitHub release, verifies the SHA-256
   checksum, and atomically swaps the binary
 - ✅ Argument passthrough (`runx dev -- --port 3000`)
-- 🚧 Signature verification (Sigstore/cosign path)
+- ✅ Signature verification (Sigstore/cosign, keyless)
 
 ---
 

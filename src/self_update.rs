@@ -7,9 +7,11 @@
 //! removed — restoring the old binary on any failure.
 //!
 //! Release assets follow the convention documented in the README:
-//! `runx-{os}-{arch}.tar.gz` (or `.zip` on Windows) plus a `SHA256SUMS`
-//! manifest. Signed release artifacts (Sigstore/cosign) are not yet verified;
-//! see the README security section for the documented path.
+//! `runx-{os}-{arch}.tar.gz` (or `.zip` on Windows), a `SHA256SUMS` manifest,
+//! and since v0.4.2 a Sigstore bundle (`<archive>.sigstore.json`) signed
+//! keylessly by the release workflow. The signature, when `cosign` is
+//! available, is verified after the checksum; see [`verify_release_signature`]
+//! for the graceful-degradation policy.
 
 use crate::error::UserError;
 use anyhow::{Context, Result};
@@ -17,10 +19,19 @@ use serde::Deserialize;
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 /// Where runx publishes releases and their metadata.
 const RELEASES_LATEST_URL: &str = "https://api.github.com/repos/aryankahar31/runx/releases/latest";
+
+/// The OIDC subject of the signing workflow's certificates.
+///
+/// Only runs of `.github/workflows/release.yml` on a `v*.*.*` tag (or `main`)
+/// of `aryankahar31/runx` can produce a signature the verifier accepts.
+/// Regexp, not an exact string, because the subject embeds the triggering
+/// tag (`...@refs/tags/v0.4.2`).
+const SIGSTORE_IDENTITY_PATTERN: &str = "^https://github\\.com/aryankahar31/runx/\\.github/workflows/release\\.yml@refs/(tags/v[0-9]+\\.[0-9]+\\.[0-9]+|heads/main)$";
 
 /// The newest published release, as listed by the GitHub API.
 #[derive(Debug, Deserialize)]
@@ -63,15 +74,22 @@ pub fn update() -> Result<()> {
         return Ok(());
     }
 
-    let (archive_url, checksum_url) = select_assets(&release, token).ok_or_else(|| {
-        UserError::new(format!(
-            "Release {latest_version} does not publish the expected assets for \
+    let (archive_url, checksum_url, bundle_url) =
+        select_assets(&release, token).ok_or_else(|| {
+            UserError::new(format!(
+                "Release {latest_version} does not publish the expected assets for \
                  {token} (`runx-{token}.tar.gz`/`.zip` plus `SHA256SUMS`)."
-        ))
-    })?;
+            ))
+        })?;
 
     println!("Updating runx {current_version} -> {latest_version}");
     let download = crate::downloader::download_to_temp(&archive_url, &checksum_url, None)?;
+
+    if let Some(bundle_url) = bundle_url {
+        verify_release_signature(download.path(), &bundle_url)?;
+    } else {
+        degraded("this release was published without a Sigstore signature bundle")?;
+    }
 
     let extract_dir = tempfile::tempdir().context("Failed to create a temporary directory")?;
     // The release archives put the binary at the root; the runtime extractor
@@ -128,10 +146,13 @@ fn is_newer(latest: &str, current: &str) -> Result<bool> {
     Ok(latest > current)
 }
 
-/// Locate the archive and its checksum manifest in a release.
+/// Locate the archive, its checksum manifest, and its Sigstore bundle in a
+/// release.
 ///
-/// Returns `(archive_url, checksum_url)` for the current platform.
-fn select_assets(release: &LatestRelease, token: &str) -> Option<(String, String)> {
+/// Returns `(archive_url, checksum_url, bundle_url)` for the current platform.
+/// The bundle is `None` for releases published before signature support —
+/// callers degrade to a warning then.
+fn select_assets(release: &LatestRelease, token: &str) -> Option<(String, String, Option<String>)> {
     let archive = release.assets.iter().find(|asset| {
         asset.name == format!("runx-{token}.tar.gz") || asset.name == format!("runx-{token}.zip")
     })?;
@@ -139,10 +160,111 @@ fn select_assets(release: &LatestRelease, token: &str) -> Option<(String, String
         .assets
         .iter()
         .find(|asset| asset.name == "SHA256SUMS")?;
+    let bundle = release
+        .assets
+        .iter()
+        .find(|asset| {
+            asset.name == format!("runx-{token}.tar.gz.sigstore.json")
+                || asset.name == format!("runx-{token}.zip.sigstore.json")
+        })
+        .map(|asset| asset.browser_download_url.clone());
     Some((
         archive.browser_download_url.clone(),
         checksums.browser_download_url.clone(),
+        bundle,
     ))
+}
+
+/// Verify the release archive's Sigstore signature with `cosign`, keyless
+/// (OIDC) signing by the release workflow.
+///
+/// Graceful-degradation policy, mirroring the install scripts:
+///
+/// * `cosign` missing, or the release predating signature bundles → a warning
+///   and the update proceeds. The SHA-256 checksum already verified the
+///   archive and still fails closed on its own, and making `cosign` a hard
+///   dependency of self-update would break it for the majority of users who
+///   don't have it. `RUNX_REQUIRE_SIGNATURE=1` escalates either case into a
+///   hard error for environments that demand signatures.
+/// * `cosign` present and verification failing → always fatal. That is the
+///   tamper/compromise case the signature exists to detect; the update stops.
+///
+/// The identity and issuer pins tie the signature to a run of
+/// `release.yml` on `aryankahar31/runx` — never to any other workflow,
+/// repository, or OpenID provider.
+fn verify_release_signature(archive: &Path, bundle_url: &str) -> Result<()> {
+    if !cosign_available() {
+        return degraded("cosign is not installed");
+    }
+
+    let bundle = tempfile::Builder::new()
+        .prefix("runx-signature-")
+        .tempfile()
+        .context("Failed to create a temporary file for the signature bundle")?;
+    download_file(bundle_url, bundle.path())?;
+
+    println!("Verifying release signature with cosign...");
+    let output = Command::new("cosign")
+        .arg("verify-blob")
+        .arg(archive)
+        .args(["--bundle", bundle.path().to_str().unwrap()])
+        .args(["--certificate-identity-regexp", SIGSTORE_IDENTITY_PATTERN])
+        .args([
+            "--certificate-oidc-issuer",
+            "https://token.actions.githubusercontent.com",
+        ])
+        .output()
+        .context("Failed to run cosign")?;
+
+    if output.status.success() {
+        println!("Signature verified.");
+        return Ok(());
+    }
+
+    Err(UserError::new(format!(
+        "Signature verification FAILED for the release archive.\n{}\n{}\n\
+         This indicates a tampered or misattributed release. Aborting.",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+    .into())
+}
+
+/// True when a working `cosign` binary is on `PATH`.
+fn cosign_available() -> bool {
+    matches!(
+        Command::new("cosign").arg("--version").output(),
+        Ok(out) if out.status.success()
+    )
+}
+
+/// The graceful side of signature verification: warn and continue, unless
+/// `RUNX_REQUIRE_SIGNATURE=1` demands a hard stop.
+fn degraded(reason: &str) -> Result<()> {
+    if env::var("RUNX_REQUIRE_SIGNATURE").as_deref() == Ok("1") {
+        return Err(UserError::new(format!(
+            "{reason}; refusing to update because RUNX_REQUIRE_SIGNATURE=1"
+        ))
+        .into());
+    }
+    eprintln!(
+        "Warning: {reason} — release signature verification skipped; \
+         the SHA-256 checksum was still verified and enforced. \
+         Set RUNX_REQUIRE_SIGNATURE=1 to require signatures."
+    );
+    Ok(())
+}
+
+/// Download `url` into `path` with runx's standard client. Used for the
+/// signature bundle, which has no checksum entry of its own.
+fn download_file(url: &str, path: &Path) -> Result<()> {
+    let mut reader = crate::http::get(url)
+        .call()
+        .map_err(|err| UserError::new(format!("Failed to download the signature bundle: {err}")))?
+        .into_reader();
+    let mut file = fs::File::create(path).context("Failed to create the signature bundle file")?;
+    std::io::copy(&mut reader, &mut file).context("Failed to save the signature bundle")?;
+    Ok(())
 }
 
 /// Find the `runx` executable inside an extraction, a few levels deep at most.
@@ -247,15 +369,21 @@ mod tests {
             "assets": [
                 {"name": "runx-linux-x64.tar.gz", "browser_download_url": "https://x/linux.tgz"},
                 {"name": "runx-macos-arm64.tar.gz", "browser_download_url": "https://x/macos.tgz"},
-                {"name": "runx-macos-arm64.tar.gz.sig", "browser_download_url": "https://x/darwin.sig"},
+                {"name": "runx-macos-arm64.tar.gz.sigstore.json", "browser_download_url": "https://x/macos.tgz.sigstore.json"},
                 {"name": "SHA256SUMS", "browser_download_url": "https://x/SHA256SUMS"}
             ]
         }"#,
         );
 
-        let (url, checksums) = select_assets(&release, "macos-arm64").expect("assets found");
+        let (url, checksums, bundle) =
+            select_assets(&release, "macos-arm64").expect("assets found");
         assert_eq!(url, "https://x/macos.tgz");
         assert_eq!(checksums, "https://x/SHA256SUMS");
+        assert_eq!(
+            bundle.as_deref(),
+            Some("https://x/macos.tgz.sigstore.json"),
+            "the Sigstore bundle travels with its archive"
+        );
     }
 
     /// An exact filename match, never a prefix: `runx-macos-arm64.tar.gz`
@@ -283,6 +411,26 @@ mod tests {
         }"#,
         );
         assert_eq!(select_assets(&no_checksums, "macos-arm64"), None);
+    }
+
+    /// Releases published before signature support have no bundle; the
+    /// caller degrades to a warning instead of failing the update.
+    #[test]
+    fn pre_signature_releases_yield_no_bundle() {
+        let release = fixture(
+            r#"{
+            "tag_name": "v0.4.1",
+            "assets": [
+                {"name": "runx-macos-arm64.tar.gz", "browser_download_url": "https://x/macos.tgz"},
+                {"name": "SHA256SUMS", "browser_download_url": "https://x/SHA256SUMS"}
+            ]
+        }"#,
+        );
+        let (_, _, bundle) = select_assets(&release, "macos-arm64").expect("assets found");
+        assert_eq!(
+            bundle, None,
+            "no bundle asset means no verification attempt"
+        );
     }
 
     #[test]

@@ -165,6 +165,53 @@ try {
         exit 1
     }
 
+    # -----------------------------------------------------------------------
+    # Sigstore/cosign signature verification (graceful)
+    #
+    # Since v0.4.2 every release asset carries a Sigstore bundle signed
+    # keylessly by the release workflow. cosign is not a hard dependency: a
+    # missing cosign (or a pre-signature release) prints a warning and the
+    # install continues — checksum verification above already failed closed.
+    # RUNX_REQUIRE_SIGNATURE=1 makes that a hard error instead. A signature
+    # that is present but FAILS verification is always fatal.
+    # -----------------------------------------------------------------------
+    $SigstoreIdentity = '^https://github\.com/aryankahar31/runx/\.github/workflows/release\.yml@refs/(tags/v[0-9]+\.[0-9]+\.[0-9]+|heads/main)$'
+    $cosign = Get-Command cosign -ErrorAction SilentlyContinue
+    if ($cosign) {
+        $bundleFile = Join-Path $tmp "$asset.sigstore.json"
+        try {
+            Invoke-WebRequest -Uri "$baseUrl/$asset.sigstore.json" -OutFile $bundleFile -UseBasicParsing
+        } catch {
+            if ($env:RUNX_REQUIRE_SIGNATURE -eq "1") {
+                Write-Error "RUNX_REQUIRE_SIGNATURE=1 but no signature bundle was published for this release."
+                exit 1
+            }
+            Write-Warning "No signature bundle published for this release; signature verification skipped (checksum still verified)."
+            $bundleFile = $null
+        }
+        if ($bundleFile) {
+            & cosign verify-blob $archive `
+                --bundle $bundleFile `
+                --certificate-identity-regexp $SigstoreIdentity `
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error @"
+Error: signature verification FAILED for the downloaded archive.
+The Sigstore signature does not match the release workflow's identity or the
+artifact has been tampered with. Aborting.
+"@
+                exit 1
+            }
+            Write-Host "Signature verified."
+        }
+    } else {
+        if ($env:RUNX_REQUIRE_SIGNATURE -eq "1") {
+            Write-Error "RUNX_REQUIRE_SIGNATURE=1 but cosign is not installed."
+            exit 1
+        }
+        Write-Warning "cosign not found - release signature verification skipped. The SHA-256 checksum was still verified and enforced. Install cosign (https://docs.sigstore.dev/cosign/installation/) to verify release signatures."
+    }
+
     Expand-Archive -Path $archive -DestinationPath $tmp -Force
 
     $extracted = Join-Path $tmp "runx.exe"
