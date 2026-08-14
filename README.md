@@ -250,7 +250,9 @@ Pin the result with `runx lock` if you need that choice to stay fixed.
 - 💾 Cache management — `list`, `size`, `clean`, `prune`
 - 📌 `runx.lock` for reproducible installs across machines and CI
 - 🎯 Ranges resolve to the **newest** matching release (nvm/Volta/mise semantics)
-- 🛡 SHA-256 verification of every download, before extraction
+- 🛡 SHA-256 verification of every download, before extraction (Deno < 2.0.1
+  excepted — those releases publish no archive checksum, see *Supported
+  Runtimes*)
 - ⚛️ Atomic installs — an interrupted download can never corrupt the cache
 - 🔒 Isolated execution — global `PATH` and shell files are never touched
 - 🐚 **No shell integration required**, ever
@@ -470,6 +472,11 @@ No repeated downloads.
 | Bun | ✅ |
 | Go | ✅ |
 | Deno | ✅ |
+
+Deno releases from v2.0.1 publish a per-asset `.sha256sum` sidecar that runx
+verifies exactly like Node, Bun and Go. Older Deno releases (the 1.x line and
+v2.0.0) publish **no archive checksum**, so runx installs them with TLS-only
+verification and prints a warning at install time.
 | Java | 🚧 Planned |
 | .NET | 🚧 Planned |
 

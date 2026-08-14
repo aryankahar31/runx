@@ -228,6 +228,14 @@ fn verify_checksum(
     expected_sha256: Option<&str>,
     temp: &NamedTempFile,
 ) -> Result<String> {
+    // No checksum published by the publisher (e.g. Deno < 2.0.1): the TLS
+    // connection is the only guarantee. The digest is still recorded so the
+    // lockfile reflects what was actually installed.
+    if checksum_url.is_empty() && expected_sha256.is_none() {
+        println!("Note: no published checksum; verified by TLS only");
+        return compute_sha256(temp.path());
+    }
+
     // GitHub encodes `+` (and other characters) in asset URLs, but the
     // checksum manifests list the raw filenames, so decode before matching.
     let filename = percent_decode(url.rsplit('/').next().unwrap_or(url));
@@ -811,6 +819,31 @@ mod tests {
             &format!("{base}/SHASUMS256.txt"),
             None,
         )
+    }
+
+    /// A publisher with no checksum at all (e.g. Deno < 2.0.1) must download
+    /// without failing or attempting a checksum fetch: this server stops after
+    /// one request, so a second (checksum) request would fail the test.
+    #[test]
+    fn downloads_tls_only_when_no_checksum_is_published() {
+        let payload = payload_of(10_000);
+        let (base, _ranges, server) = scripted_server(payload.clone(), vec![Behavior::Serve], 1);
+
+        let download = download_to_temp(&format!("{base}/archive.zip"), "", None)
+            .expect("TLS-only download should succeed");
+
+        assert_eq!(
+            std::fs::read(download.path()).expect("read file"),
+            payload,
+            "the downloaded file must be intact"
+        );
+        assert_eq!(
+            download.sha256,
+            digest_of(&payload),
+            "the recorded digest must match the downloaded bytes"
+        );
+
+        server.join().ok();
     }
 
     /// A publisher that carries the digest in the release metadata rather than

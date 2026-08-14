@@ -612,12 +612,24 @@ fn deno_platform() -> Result<&'static str> {
 /// each containing a single executable at the archive root, plus a per-asset
 /// `.sha256sum` sidecar whose single `hash  filename` line the downloader
 /// already matches exactly.
+///
+/// The sidecar exists only from v2.0.1: the 1.x line and v2.0.0 ship no
+/// archive checksum (v2.0.0 carries a bare-binary hash, which cannot verify
+/// the zip pre-extraction), so those versions install TLS-only, with a
+/// warning from the downloader. Verified against the live release assets of
+/// 1.46.0, 2.0.0, 2.0.1 and 2.9.5.
 fn resolve_deno(version: &str) -> Result<RuntimeSpec> {
     let platform = deno_platform()?;
     let url = format!(
         "https://github.com/denoland/deno/releases/download/v{version}/deno-{platform}.zip"
     );
-    let checksum_url = format!("{url}.sha256sum");
+    let has_sidecar = crate::version::Version::parse(version)
+        .is_some_and(|v| v >= crate::version::Version::parse("2.0.1").expect("static min"));
+    let checksum_url = if has_sidecar {
+        format!("{url}.sha256sum")
+    } else {
+        String::new()
+    };
     Ok(RuntimeSpec {
         tool: "deno".to_string(),
         version: version.to_string(),
@@ -732,6 +744,28 @@ mod tests {
             assert!(
                 resolve_runtime("deno", bad).is_err(),
                 "{bad:?} must not resolve to a deno spec"
+            );
+        }
+    }
+
+    /// The per-asset sidecar exists only from v2.0.1; older releases must not
+    /// reference a sidecar that 404s (the v1.46.0 regression) and must fall
+    /// back to TLS-only instead.
+    #[test]
+    fn deno_legacy_versions_fall_back_to_tls_only() {
+        for legacy in ["1.46.0", "1.48.0", "2.0.0"] {
+            let spec = resolve_runtime("deno", legacy).expect("legacy deno resolves");
+            assert_eq!(
+                spec.checksum_url, "",
+                "{legacy} publishes no archive checksum and must not fetch one"
+            );
+        }
+        for modern in ["2.0.1", "2.9.6"] {
+            let spec = resolve_runtime("deno", modern).expect("modern deno resolves");
+            assert!(
+                spec.checksum_url.ends_with(".zip.sha256sum"),
+                "{modern} should verify against the sidecar, got {}",
+                spec.checksum_url
             );
         }
     }
