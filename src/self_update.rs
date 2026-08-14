@@ -232,8 +232,10 @@ fn verify_release_signature(archive: &Path, bundle_url: &str) -> Result<()> {
 
 /// True when a working `cosign` binary is on `PATH`.
 fn cosign_available() -> bool {
+    // `--version` was removed in modern cosign; the `version` subcommand is
+    // the portable check across the supported v2/v3 lines.
     matches!(
-        Command::new("cosign").arg("--version").output(),
+        Command::new("cosign").arg("version").output(),
         Ok(out) if out.status.success()
     )
 }
@@ -430,6 +432,65 @@ mod tests {
         assert_eq!(
             bundle, None,
             "no bundle asset means no verification attempt"
+        );
+    }
+
+    /// `RUNX_REQUIRE_SIGNATURE=1` turns the graceful warning into a hard
+    /// error; the default stays a warning. Single test touches the variable
+    /// so parallel tests cannot interleave mutations.
+    #[test]
+    fn require_signature_env_escalates_degradation() {
+        std::env::set_var("RUNX_REQUIRE_SIGNATURE", "1");
+        let escalated = degraded("cosign is not installed");
+        std::env::remove_var("RUNX_REQUIRE_SIGNATURE");
+
+        assert!(escalated.is_err(), "must refuse to proceed when required");
+        assert!(
+            degraded("cosign is not installed").is_ok(),
+            "default: warn and continue"
+        );
+    }
+
+    /// The real signature path against the real v0.4.2 release: download the
+    /// release archive and its Sigstore bundle from GitHub, verify with the
+    /// pinned identity, then tamper with the archive and confirm the same
+    /// verification fails. Requires `cosign` on PATH and the network; run
+    /// explicitly with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "downloads real release assets and requires cosign"]
+    fn real_release_signature_verifies_and_tampering_is_detected() {
+        let token = platform_token().expect("this platform publishes releases");
+        let kind = archive_kind(token);
+        let ext = if kind == crate::runtime::ArchiveKind::Zip {
+            "zip"
+        } else {
+            "tar.gz"
+        };
+        let asset = format!("runx-{token}.{ext}");
+        let base = format!("https://github.com/aryankahar31/runx/releases/download/v0.4.2/{asset}");
+
+        let archive = tempfile::NamedTempFile::new().expect("temp archive");
+        download_file(&format!("{base}.sigstore.json"), archive.path())
+            .expect("bundle pre-download sanity: URL resolves");
+        download_file(&base, archive.path()).expect("archive downloads");
+
+        verify_release_signature(archive.path(), &format!("{base}.sigstore.json"))
+            .expect("the real release signature must verify");
+
+        // Flip one byte in the archive: the same bundle must now fail.
+        {
+            use std::io::{Seek, Write};
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .open(archive.path())
+                .expect("archive open");
+            file.seek(std::io::SeekFrom::Start(500)).expect("seek");
+            file.write_all(b"X").expect("archive write");
+        }
+        let tampered = verify_release_signature(archive.path(), &format!("{base}.sigstore.json"));
+        assert!(
+            tampered.is_err(),
+            "a modified archive must fail signature verification"
         );
     }
 
