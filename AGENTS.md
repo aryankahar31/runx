@@ -21,6 +21,7 @@ Single-crate Rust project: one binary (`runx`) plus `src/` library modules. Targ
 - `src/version.rs`: `PartialEq` is manual (derived from `Ord` — do not re-derive). Bare partial versions (`"20"`) are X-ranges; only exact 3-part pins resolve offline.
 - Installs are atomic: extract into `.staging-*` dirs, then rename + write `.runx-complete.json` receipt (see `src/cache.rs`). Runtimes without a receipt but with a working executable are legacy installs, adopted on use — don't "fix" that.
 - `install.sh` / `install.ps1`: exact-match SHA-256, fail closed when no checksum tool is available (`RUNX_SKIP_CHECKSUM=1` to override). Keep both in sync.
+- Some ISPs block/throttle Fastly's CDN IP range (raw.githubusercontent.com); the README documents a jsDelivr mirror (`cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh`) as an alternative bootstrap. The scripts themselves only download from github.com release-asset hosts, which are unaffected — don't "fix" the mirror away.
 
 ## Conventions
 
