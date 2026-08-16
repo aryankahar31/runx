@@ -586,6 +586,24 @@ Everything after `--` is appended to the underlying command, shell-quoted so
 spaces and special characters arrive intact. Without `--`, extra arguments are
 rejected rather than silently dropped.
 
+## Working directory
+
+`runx dev` (and every `[run]` command) executes the project's command **in
+the directory you invoked it from** — never in an ancestor project the
+config-walk happened to find. A nested directory without its own project
+files still gets runtimes and commands from the nearest configured project,
+but the command runs in place, and runx prints a note naming the ancestor
+that supplied the configuration:
+
+```text
+$ cd swiss-v2 && runx dev
+Note: using runtimes and commands from /path/to/project (no project files in /path/to/project/swiss-v2).
+```
+
+This matches plain `npm run dev` semantics: tools like npm and Vite that
+discover their own project root by walking up behave exactly as they do when
+invoked manually from that directory.
+
 ## Project setup
 
 ```bash
