@@ -219,6 +219,50 @@ fn passthrough_works_with_explicit_run_subcommand() {
     }
 }
 
+/// `npm run <script>` eats its own flag-style args (`--port` is a real npm
+/// config key), so runx inserts npm's `--` separator before passthrough args.
+/// A fake `npm` planted next to the fake node prints its argv: the separator
+/// must sit between the script name and the forwarded args.
+#[cfg(unix)]
+#[test]
+fn npm_run_gets_the_double_dash_separator_before_passthrough_args() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_reporting_node(&home);
+    let spec = runx::runtime::resolve_runtime("node", "0.0.0").expect("offline spec");
+    let npm = home
+        .join("runtimes")
+        .join("node")
+        .join("0.0.0")
+        .join(&spec.bin_dirs[0])
+        .join("npm");
+    fs::write(&npm, "#!/bin/sh\necho \"NPM_FAKE|$@\"\n").expect("write fake npm");
+    fs::set_permissions(&npm, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("make fake npm executable");
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"npm run dev\"\n",
+    )
+    .expect("write runx.toml");
+
+    let output = runx_with_home(
+        dir.path(),
+        &home,
+        &["dev", "--", "--port", "4999", "-o", "out"],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("NPM_FAKE|run dev -- --port 4999 -o out"),
+        "npm must receive the `--` separator before passthrough args:\n{stdout}"
+    );
+}
+
 /// Without `--`, extra arguments are still rejected rather than silently
 /// dropped, with a hint pointing at the passthrough syntax.
 #[test]
