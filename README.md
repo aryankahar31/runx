@@ -312,12 +312,26 @@ Pin the result with `runx lock` if you need that choice to stay fixed.
 curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh | sh
 ```
 
+If the command above hangs or times out, your network may be blocking
+Fastly's CDN (`raw.githubusercontent.com`). Try the jsDelivr mirror instead:
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh
+```
+
 ---
 
 ## Windows PowerShell
 
 ```powershell
 iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 | iex
+```
+
+If the command above hangs or times out, your network may be blocking
+Fastly's CDN (`raw.githubusercontent.com`). Try the jsDelivr mirror instead:
+
+```powershell
+iwr https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.ps1 | iex
 ```
 
 ---
