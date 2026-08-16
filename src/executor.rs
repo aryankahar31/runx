@@ -10,7 +10,7 @@ use std::{
 pub fn execute(
     command: &str,
     runtimes: &[CachedRuntime],
-    project_dir: &Path,
+    run_dir: &Path,
     passthrough: &[String],
 ) -> Result<ExitStatus> {
     // RUNX_TIMINGS=1 mirrors mise's MISE_TIMINGS=1: an opt-in breakdown of the
@@ -23,7 +23,7 @@ pub fn execute(
 
     let mut child = shell_command(&command);
     child
-        .current_dir(project_dir)
+        .current_dir(run_dir)
         .env("PATH", path)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())

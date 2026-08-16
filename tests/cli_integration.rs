@@ -655,6 +655,180 @@ fn go_project_without_inferable_command_errors_clearly() {
     );
 }
 
+// ── Project working directory ────────────────────────────────────────────────
+//
+// Commands must execute in the directory the user invoked runx from. A
+// directory with no project files that happens to sit under a configured
+// ancestor must not silently run the ancestor's project — the regression
+// these tests pin: every `runx dev` in a nested static directory ran the
+// parent project's Vite app instead of staying put.
+//
+// The fake node binary doubles as the managed-runtime check: only runx's
+// cached runtime prints NODE_FAKE, so the output proves both the runtime
+// selection and the working directory.
+
+/// Canonicalize a tempdir path so `$PWD` comparisons survive macOS's
+/// `/var` → `/private/var` resolution.
+#[cfg(unix)]
+fn real_path(dir: &Path) -> String {
+    fs::canonicalize(dir)
+        .expect("canonicalize")
+        .display()
+        .to_string()
+}
+
+/// `dev = "node -e <anything>"`: the fake node prints its runtime marker, its
+/// working directory and its arguments.
+#[cfg(unix)]
+const FAKE_NODE_DEV: &str = "dev = \"node -e x\"\n";
+
+/// A cached fake node whose script reports `NODE_FAKE|<cwd>|<args>`.
+#[cfg(unix)]
+fn plant_reporting_node(home: &Path) {
+    plant_executable(home, "node", "0.0.0", "echo \"NODE_FAKE|$PWD|$@\"");
+}
+
+/// Test A — running from a project executes the child in that project.
+#[cfg(unix)]
+#[test]
+fn child_runs_in_the_project_directory() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_reporting_node(&home);
+    fs::write(
+        config_path(dir.path()),
+        format!("[runtimes]\nnode = \"0.0.0\"\n\n[run]\n{FAKE_NODE_DEV}"),
+    )
+    .expect("write runx.toml");
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("NODE_FAKE"),
+        "the managed runtime must run, not a system node:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(&real_path(dir.path())),
+        "child must run in the project directory:\n{stdout}"
+    );
+}
+
+/// Test B — sibling projects each run their own command in their own
+/// directory; the second execution never reuses the first project.
+#[cfg(unix)]
+#[test]
+fn sibling_projects_run_in_their_own_directories() {
+    let root = tmp();
+    let home = root.path().join("home");
+    plant_reporting_node(&home);
+    let projects = root.path().join("projects");
+    for name in ["project-a", "project-b"] {
+        let project = projects.join(name);
+        fs::create_dir_all(&project).expect("create project");
+        fs::write(
+            project.join("runx.toml"),
+            format!("[runtimes]\nnode = \"0.0.0\"\n\n[run]\n{FAKE_NODE_DEV}"),
+        )
+        .expect("write runx.toml");
+    }
+
+    for name in ["project-a", "project-b"] {
+        let project = projects.join(name);
+        let output = runx_with_home(&project, &home, &["dev"]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{name} stderr: {}",
+            stderr_of(&output)
+        );
+        assert!(
+            stdout_of(&output).contains(&real_path(&project)),
+            "{name} must run in its own directory:\n{}",
+            stdout_of(&output)
+        );
+    }
+}
+
+/// The core regression — a nested directory with no project files must not
+/// silently adopt the configured ancestor: the child stays in the nested
+/// directory and the ancestor sourcing is made explicit.
+#[cfg(unix)]
+#[test]
+fn nested_directory_without_project_files_runs_in_place() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_reporting_node(&home);
+    fs::write(
+        config_path(dir.path()),
+        format!("[runtimes]\nnode = \"0.0.0\"\n\n[run]\n{FAKE_NODE_DEV}"),
+    )
+    .expect("write runx.toml");
+    let nested = dir.path().join("nested");
+    fs::create_dir_all(&nested).expect("create nested dir");
+
+    let output = runx_with_home(&nested, &home, &["dev"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains(&format!("|{}|", real_path(&nested))),
+        "child must run in the invocation directory, not the ancestor:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains(&format!("|{}|", real_path(dir.path()))),
+        "must not run the ancestor's project:\n{stdout}"
+    );
+    assert!(
+        stderr_of(&output).contains("Note: using runtimes and commands from"),
+        "ancestor sourcing must be explicit:\n{}",
+        stderr_of(&output)
+    );
+}
+
+/// Test C — `runx dev -- --port 4000` forwards the arguments after the
+/// working-directory fix.
+#[cfg(unix)]
+#[test]
+fn passthrough_arguments_reach_the_child_in_the_project_directory() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_reporting_node(&home);
+    fs::write(
+        config_path(dir.path()),
+        format!("[runtimes]\nnode = \"0.0.0\"\n\n[run]\n{FAKE_NODE_DEV}"),
+    )
+    .expect("write runx.toml");
+
+    let output = runx_with_home(dir.path(), &home, &["dev", "--", "--port", "4000"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    for fragment in ["--port", "4000"] {
+        assert!(
+            stdout.contains(fragment),
+            "passthrough arg {fragment:?} must reach the child:\n{stdout}"
+        );
+    }
+    assert!(
+        stdout.contains(&real_path(dir.path())),
+        "child must still run in the project directory:\n{stdout}"
+    );
+}
+
 // ── Cache subcommands ────────────────────────────────────────────────────────
 //
 // These build a fake cache directly on disk rather than installing a real

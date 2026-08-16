@@ -280,8 +280,11 @@ struct Provisioned {
 /// Locate the project root and load its configuration.
 ///
 /// Shared by `run` and `lock` so both agree on which directory is the project
-/// and how auto-detection is reported.
-fn load_project() -> Result<(PathBuf, config::RunxConfig)> {
+/// and how auto-detection is reported. Returns the invocation directory, the
+/// resolved project root, and the config: the invocation directory is where
+/// project commands execute, while the root owns config, detection and the
+/// lockfile.
+fn load_project() -> Result<(PathBuf, PathBuf, config::RunxConfig)> {
     let cwd = env::current_dir().context("Failed to determine current directory")?;
 
     // Walk up parent directories to find the project root.
@@ -292,6 +295,18 @@ fn load_project() -> Result<(PathBuf, config::RunxConfig)> {
             cwd.display()
         ))
     })?;
+
+    // Commands execute in the invocation directory, never in an ancestor that
+    // the walk-up happened to find: a nested directory without project files
+    // must not silently run its parent's project. The ancestor still supplies
+    // runtimes and commands, which is made explicit here rather than assumed.
+    if project_dir != cwd {
+        eprintln!(
+            "Note: using runtimes and commands from {} (no project files in {}).",
+            project_dir.display(),
+            cwd.display()
+        );
+    }
 
     // Load config from runx.toml, or fall back to auto-detection.
     let resolved = config::load_or_detect(&project_dir)?;
@@ -304,7 +319,7 @@ fn load_project() -> Result<(PathBuf, config::RunxConfig)> {
         }
     }
 
-    Ok((project_dir, resolved.inner))
+    Ok((cwd, project_dir, resolved.inner))
 }
 
 /// Ensure every runtime the config asks for is installed, and return them.
@@ -443,7 +458,7 @@ fn run_command(command_key: &str, locked: bool, passthrough: &[String]) -> Resul
     let timings = env::var_os("RUNX_TIMINGS").is_some();
     let t0 = std::time::Instant::now();
 
-    let (project_dir, config) = load_project()?;
+    let (run_dir, project_dir, config) = load_project()?;
     warn_about_shadowed_keys(&config);
 
     // Resolve the command before installing anything, so a typo fails fast
@@ -469,7 +484,7 @@ fn run_command(command_key: &str, locked: bool, passthrough: &[String]) -> Resul
         eprintln!("runx timing: cache: {:?}", t2.duration_since(t1));
     }
 
-    let status = executor::execute(&command, &runtimes, &project_dir, passthrough)?;
+    let status = executor::execute(&command, &runtimes, &run_dir, passthrough)?;
     process::exit(status.code().unwrap_or(1));
 }
 
@@ -951,7 +966,7 @@ fn runx_shims_on_path(home: &Path) -> Vec<(String, PathBuf)> {
 /// it was actually verified, so locking without installing would mean writing
 /// hashes runx never checked.
 fn lock_command() -> Result<()> {
-    let (project_dir, config) = load_project()?;
+    let (_run_dir, project_dir, config) = load_project()?;
 
     if config.runtimes.is_empty() {
         return Err(
