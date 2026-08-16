@@ -65,6 +65,13 @@ fn append_passthrough(command: &str, passthrough: &[String]) -> String {
         return command.to_string();
     }
     let mut full = command.to_string();
+    // npm eats its own flag-style args (`--port` is a real npm config key),
+    // so script args need npm's `--` separator to survive. Only the `npm run`
+    // form runx itself generates is handled; other package managers forward
+    // args directly. ponytail: prefix match on `npm run `, not a parser.
+    if command.starts_with("npm run ") {
+        full.push_str(" --");
+    }
     for arg in passthrough {
         full.push(' ');
         full.push_str(&shell_quote(arg));
@@ -129,6 +136,53 @@ mod tests {
         assert_eq!(
             append_passthrough("echo hi", &["a".into()]),
             format!("echo hi {quoted}")
+        );
+    }
+
+    #[test]
+    fn append_passthrough_inserts_npm_separator_for_npm_run() {
+        let (q_flag, q_val) = if cfg!(windows) {
+            ("\"--port\"", "\"3000\"")
+        } else {
+            ("'--port'", "'3000'")
+        };
+        assert_eq!(
+            append_passthrough("npm run dev", &["--port".into(), "3000".into()]),
+            format!("npm run dev -- {q_flag} {q_val}")
+        );
+        assert_eq!(
+            append_passthrough("npm run dev", &["foo".into(), "bar".into()]),
+            if cfg!(windows) {
+                "npm run dev -- \"foo\" \"bar\""
+            } else {
+                "npm run dev -- 'foo' 'bar'"
+            }
+        );
+        assert_eq!(
+            append_passthrough("npm run build", &["--port".into(), "3000".into()]),
+            format!("npm run build -- {q_flag} {q_val}")
+        );
+        assert_eq!(
+            append_passthrough("npm run dev", &[]),
+            "npm run dev",
+            "no passthrough args means no separator"
+        );
+    }
+
+    #[test]
+    fn append_passthrough_does_not_insert_separator_for_other_commands() {
+        let (q_flag, q_val) = if cfg!(windows) {
+            ("\"--port\"", "\"3000\"")
+        } else {
+            ("'--port'", "'3000'")
+        };
+        assert_eq!(
+            append_passthrough("node serve.js 8085", &["--port".into(), "3000".into()]),
+            format!("node serve.js 8085 {q_flag} {q_val}")
+        );
+        assert_eq!(
+            append_passthrough("bun run dev", &["--port".into(), "3000".into()]),
+            format!("bun run dev {q_flag} {q_val}")
         );
     }
 }
