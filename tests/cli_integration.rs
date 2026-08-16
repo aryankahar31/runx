@@ -451,6 +451,210 @@ fn finds_config_in_a_parent_directory() {
     );
 }
 
+// ── Multi-runtime projects ────────────────────────────────────────────────────
+//
+// These plant *executable* fake runtimes (shell scripts) at the exact cache
+// layout `resolve_runtime` produces, so provisioning finds them cached and the
+// child process actually executes them. Everything stays offline: node and
+// bun specs are built purely from strings, and the fake versions (`0.0.0`)
+// are never resolved against a release index.
+
+/// Plant an executable fake runtime for `tool` at `home`, returning its root.
+///
+/// The body is a shell fragment run when the fake executable is invoked.
+#[cfg(unix)]
+fn plant_executable(home: &Path, tool: &str, version: &str, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let spec = runx::runtime::resolve_runtime(tool, version).expect("spec is offline");
+    let root = home.join("runtimes").join(tool).join(version);
+    // A "." bin dir (bun, deno) is the root itself; join() would keep the
+    // trailing dot, which create_dir_all rejects on macOS.
+    let bin = if spec.bin_dirs[0] == std::path::Path::new(".") {
+        root.clone()
+    } else {
+        root.join(&spec.bin_dirs[0])
+    };
+    fs::create_dir_all(&bin).expect("create bin dir");
+
+    let exe = bin.join(&spec.executable);
+    fs::write(&exe, format!("#!/bin/sh\n{body}\n")).expect("write fake executable");
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).expect("make executable");
+
+    let receipt = format!(
+        r#"{{"tool":"{tool}","version":"{version}","installed_at_secs":0,
+            "runx_version":"test","source_url":"https://example.invalid","sha256":null}}"#
+    );
+    fs::write(root.join(".runx-complete.json"), receipt).expect("write receipt");
+    root
+}
+
+/// The `npm run dev` failure mode, generalised: the run command invokes one
+/// runtime (node, standing in for npm) while a second runtime (bun) is only
+/// reached through the child's PATH. Both must be found.
+#[cfg(unix)]
+#[test]
+fn multi_runtime_command_reaches_every_runtime_on_the_child_path() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "echo FAKE_NODE");
+    plant_executable(&home, "bun", "0.0.0", "echo FAKE_BUN");
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\nbun = \"0.0.0\"\n\n\
+         [run]\ndev = \"node --version && bun --version\"\n",
+    )
+    .expect("write runx.toml");
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("FAKE_NODE"),
+        "node must be on the child PATH:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("FAKE_BUN"),
+        "bun must be on the child PATH even though the command only mentions node:\n{stdout}"
+    );
+}
+
+/// The combined PATH is prepended to, never replacing, the user's system
+/// PATH: system tools like git and make must keep working inside the child.
+#[cfg(unix)]
+#[test]
+fn child_path_prepends_runtime_bins_and_keeps_the_system_path() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let node_root = plant_executable(&home, "node", "0.0.0", "echo x");
+    let bun_root = plant_executable(&home, "bun", "0.0.0", "echo x");
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\nbun = \"0.0.0\"\n\n\
+         [run]\ndev = \"echo \\\"$PATH\\\"\"\n",
+    )
+    .expect("write runx.toml");
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+
+    let spec = runx::runtime::resolve_runtime("node", "0.0.0").expect("offline spec");
+    let node_bin = node_root.join(&spec.bin_dirs[0]);
+    assert!(
+        stdout.contains(&node_bin.display().to_string()),
+        "node bin dir must be on the child PATH:\n{stdout}"
+    );
+    let spec = runx::runtime::resolve_runtime("bun", "0.0.0").expect("offline spec");
+    let bun_bin = bun_root.join(&spec.bin_dirs[0]);
+    assert!(
+        stdout.contains(&bun_bin.display().to_string()),
+        "bun bin dir must be on the child PATH:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("/usr/bin") || stdout.contains("/bin"),
+        "the system PATH must survive intact:\n{stdout}"
+    );
+}
+
+// ── Auto-detection diagnostics ────────────────────────────────────────────────
+
+/// A modern Bun project (bun.lock, no other metadata) is detected and
+/// reported by doctor without touching the network.
+#[test]
+fn doctor_reports_auto_detected_project_runtimes() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts": {"dev": "next dev"}}"#,
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(stdout.contains("Project runtimes detected"), "{stdout}");
+    assert!(stdout.contains("bun"), "{stdout}");
+    assert!(stdout.contains("bun.lock"), "{stdout}");
+}
+
+/// A mixed Python + Bun project is reported with both requirements and their
+/// sources, plus a note that the open-ended Bun requirement resolves later.
+#[test]
+fn doctor_reports_multi_runtime_projects_with_sources() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(dir.path().join(".python-version"), "3.13\n").unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts": {"dev": "bun run spec"}}"#,
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(stdout.contains("Project runtimes detected"), "{stdout}");
+    assert!(stdout.contains("python"), "{stdout}");
+    assert!(stdout.contains(".python-version"), "{stdout}");
+    assert!(stdout.contains("bun"), "{stdout}");
+    assert!(stdout.contains("bun.lock"), "{stdout}");
+    assert!(
+        stdout.contains("resolves to a concrete version"),
+        "{stdout}"
+    );
+}
+
+/// Detection and command inference are separate: a Go project has a valid
+/// runtime requirement but no inferable command, and the error must say
+/// exactly that instead of complaining about a package.json.
+#[test]
+fn go_project_without_inferable_command_errors_clearly() {
+    let dir = tmp();
+    fs::write(dir.path().join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+
+    let output = runx(dir.path(), &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("go 1.22.5"),
+        "should name the detection:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Could not infer a run command"),
+        "should separate detection from inference:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("runx init"),
+        "should point at init:\n{stderr}"
+    );
+}
+
 // ── Cache subcommands ────────────────────────────────────────────────────────
 //
 // These build a fake cache directly on disk rather than installing a real

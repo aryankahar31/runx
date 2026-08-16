@@ -139,9 +139,10 @@ fn validate_version_format(tool: &str, version: &str) -> Result<()> {
 ///
 /// A directory qualifies if it contains a `runx.toml`, or any standard
 /// ecosystem version file (`.nvmrc`, `.node-version`, `.python-version`,
-/// `package.json`, `pyproject.toml`, `go.mod`). Returns `None` if the
-/// filesystem root is reached without a match. This mirrors how cargo/npm/git
-/// locate their config.
+/// `package.json`, `pyproject.toml`, `go.mod`, `.go-version`, `bun.lock`,
+/// `bun.lockb`, `.bun-version`, `bunfig.toml`, `.dvmrc`, `.deno-version`).
+/// Returns `None` if the filesystem root is reached without a match. This
+/// mirrors how cargo/npm/git locate their config.
 pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
     let mut current = start;
     loop {
@@ -153,9 +154,16 @@ pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
             ".nvmrc",
             ".node-version",
             ".python-version",
+            ".go-version",
+            ".bun-version",
+            ".dvmrc",
+            ".deno-version",
             "package.json",
             "pyproject.toml",
             "go.mod",
+            "bun.lock",
+            "bun.lockb",
+            "bunfig.toml",
         ]
         .iter()
         .any(|f| current.join(f).exists());
@@ -208,10 +216,14 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
         let Some(runtime) = slot.as_ref().and_then(detect::Detected::found) else {
             continue;
         };
-        detection_lines.push(format!(
-            "  {tool} {} (from {})",
-            runtime.requirement, runtime.source
-        ));
+        // An open-ended requirement (`*`, from a lockfile with no version)
+        // reads better without the star: `bun (from bun.lock)`.
+        let requirement = if runtime.requirement == "*" {
+            String::new()
+        } else {
+            format!(" {}", runtime.requirement)
+        };
+        detection_lines.push(format!("  {tool}{requirement} (from {})", runtime.source));
     }
 
     let runtimes = detect::detected_runtimes_map(&detected);
@@ -241,14 +253,32 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
         .into());
     }
 
-    // Determine the run command.
+    // Determine the run command. Detection and command inference are separate
+    // problems: a project can have a perfectly valid runtime requirement with
+    // no inferable `dev` command. When inference fails, the error names what
+    // was detected and why no command follows — never a bare "nothing found".
     let Some(dev_command) = detected.inferred_dev_command else {
+        let detected_block = if detection_lines.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Detected runtimes from project files:\n{}\n",
+                detection_lines.join("\n")
+            )
+        };
+        let reason = if dir.join("package.json").is_file() {
+            "this project's package.json has no `dev` script".to_string()
+        } else {
+            "runx only infers a run command from a `dev` script in package.json, \
+             and this project has none"
+                .to_string()
+        };
         return Err(UserError::new(format!(
             "No runx.toml found in {dir}.\n\
-             Detected runtimes from project files but could not infer a run command \
-             (no `dev` script in package.json).\n\
-             Hint: run `runx init` to create a runx.toml with the detected runtimes, \
-             or add a `dev` script to package.json.",
+             {detected_block}\
+             Could not infer a run command: {reason}.\n\
+             Hint: run `runx init` to create a runx.toml and define a `dev` command \
+             under [run], or add a `dev` script to package.json.",
             dir = dir.display()
         ))
         .into());
@@ -268,10 +298,11 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
 pub fn starter_config() -> &'static str {
     r#"[runtimes]
 node = "20.11.0"
+bun = "1.2.3"
 
 [run]
-dev = "node --version"
-build = "node --version"
+dev = "npm run dev"
+build = "npm run build"
 "#
 }
 
@@ -492,5 +523,129 @@ test = "npm test"
         let resolved = load_or_detect(dir.path()).expect("should auto-detect");
         assert_eq!(resolved.inner.runtimes["go"], "1.22.5");
         assert_eq!(resolved.inner.run["dev"], "npm run dev");
+    }
+
+    // ── Multi-runtime auto-detection ────────────────────────────────────────
+
+    /// A mixed project is detected as a collection of requirements, not a
+    /// single winner: Python from `.python-version`, Bun from `bun.lock`.
+    #[test]
+    fn auto_detects_python_and_bun_together() {
+        let dir = tmp();
+        fs::write(dir.path().join(".python-version"), "3.13\n").unwrap();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"dev": "bun run spec"}}"#,
+        )
+        .unwrap();
+
+        let resolved = load_or_detect(dir.path()).expect("should auto-detect");
+        assert_eq!(resolved.inner.runtimes["python"], "3.13");
+        assert_eq!(resolved.inner.runtimes["bun"], "*");
+        assert_eq!(
+            resolved.inner.run["dev"], "bun run dev",
+            "a bun.lock project infers `bun run dev`"
+        );
+    }
+
+    /// The detection banner renders an open-ended lockfile requirement without
+    /// the star: `bun (from bun.lock)`, not `bun * (from bun.lock)`.
+    #[test]
+    fn detection_lines_omit_the_open_ended_star() {
+        let dir = tmp();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"dev": "next dev"}}"#,
+        )
+        .unwrap();
+
+        let resolved = load_or_detect(dir.path()).expect("should auto-detect");
+        assert_eq!(resolved.detection_lines, vec!["  bun (from bun.lock)"]);
+    }
+
+    /// A Go project with no package.json has a valid runtime requirement but
+    /// no inferable command. The error must name what was detected, say why
+    /// no command follows, and point at `runx init` — it must not claim a
+    /// `dev` script is missing from a package.json that does not exist.
+    #[test]
+    fn go_project_without_command_inference_errors_clearly() {
+        let dir = tmp();
+        fs::write(dir.path().join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+
+        let err = load_or_detect(dir.path()).expect_err("no command can be inferred");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("go 1.22.5"),
+            "should name the detection: {message}"
+        );
+        assert!(
+            message.contains("dev` script"),
+            "should explain inference: {message}"
+        );
+        assert!(
+            message.contains("runx init"),
+            "should point at init: {message}"
+        );
+    }
+
+    /// Same separation for a package.json without a `dev` script.
+    #[test]
+    fn package_json_without_dev_script_errors_clearly() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"node": ">=20"}, "scripts": {"build": "node build.js"}}"#,
+        )
+        .unwrap();
+
+        let err = load_or_detect(dir.path()).expect_err("no dev script to infer from");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("node"),
+            "should name the detection: {message}"
+        );
+        assert!(
+            message.contains("no `dev` script"),
+            "should point at the missing script: {message}"
+        );
+    }
+
+    /// `bun.lock` marks a project root even when nothing else does.
+    #[test]
+    fn bun_lock_marks_a_project_root() {
+        let dir = tmp();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+
+        let root = find_project_dir(&dir.path().join("src")).expect("bun.lock marks the root");
+        assert_eq!(root, dir.path());
+    }
+
+    /// `.go-version` marks a project root too.
+    #[test]
+    fn go_version_file_marks_a_project_root() {
+        let dir = tmp();
+        fs::write(dir.path().join(".go-version"), "1.23.4\n").unwrap();
+
+        let root = find_project_dir(dir.path()).expect(".go-version marks the root");
+        assert_eq!(root, dir.path());
+    }
+
+    /// `runx.toml` still wins over a bun.lock's open-ended requirement.
+    #[test]
+    fn toml_wins_over_lockfile_only_bun() {
+        let dir = tmp();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+        fs::write(
+            dir.path().join(CONFIG_FILE),
+            "[runtimes]\nbun = \"1.3.14\"\n\n[run]\ndev = \"bun run dev\"\n",
+        )
+        .unwrap();
+
+        let resolved = load_or_detect(dir.path()).expect("should load");
+        assert_eq!(resolved.inner.runtimes["bun"], "1.3.14");
+        assert!(resolved.detection_lines.is_empty());
     }
 }

@@ -84,18 +84,58 @@ configuration always wins over auto-detection, with no merging.
 
 | Priority | File | Notes |
 |----------|------|-------|
-| 1 | `package.json` → `engines.bun` | JSON, range resolved |
-| 2 | `package.json` → `packageManager` | `bun@1.1.0` form; the `+sha512.…` digest is ignored |
+| 1 | `.bun-version` | Plain text, leading `v` stripped |
+| 2 | `package.json` → `engines.bun` | JSON, range resolved |
+| 3 | `package.json` → `packageManager` | `bun@1.1.0` form; the `+sha512.…` digest is ignored |
+| 4 | `bun.lock`, `bun.lockb`, `bunfig.toml` | Authoritative Bun markers with no version — resolves to the newest release |
+
+A generic `package.json` is **not** a Bun indicator: Node projects contain
+one without using Bun. Only the files above mark a project as Bun-managed.
 
 ### Go (first match wins)
 
 | Priority | File | Notes |
 |----------|------|-------|
-| 1 | `go.mod` → `go` directive | Plain text; the `toolchain` directive is ignored |
+| 1 | `.go-version` | Plain text (mise/asdf convention) |
+| 2 | `go.mod` → `go` directive | Plain text; the `toolchain` directive is ignored |
 
-A `go.mod` also marks a project root for auto-detection, alongside
-`package.json`, `.nvmrc`, `.node-version`, `.python-version`, `pyproject.toml`,
-`.dvmrc`, `.deno-version`, `.git` and `runx.toml`.
+A detected version file also marks a project root for auto-detection,
+alongside `runx.toml`: `.nvmrc`, `.node-version`, `.python-version`,
+`.go-version`, `.bun-version`, `.dvmrc`, `.deno-version`, `package.json`,
+`pyproject.toml`, `go.mod`, `bun.lock`, `bun.lockb` and `bunfig.toml`.
+
+## Multiple runtimes per project
+
+Detection is a **collection**, not a single winner. A project may require
+several runtimes at once — say Python for its tooling and Bun for its front
+end — and runx resolves, installs and caches every one of them, then builds
+**one isolated environment** containing all of their `bin` directories.
+Anything the project's command spawns — even `npm run dev` internally
+calling `bun run …` — finds every runtime on its PATH.
+
+```
+No runx.toml found — detected from project files:
+  python 3.13 (from .python-version)
+  bun (from bun.lock)
+Resolved python `3.13` to 3.13.15
+Resolved bun `*` to 1.3.14
+Installing python 3.13.15
+Installing bun 1.3.14
+✓ Checksums verified
+Running `bun run dev`
+```
+
+The same works from `runx.toml` — just list both runtimes:
+
+```toml
+[runtimes]
+python = "3.13"
+bun = "1.3.14"
+
+[run]
+dev = "npm run dev"
+build = "npm run build"
+```
 
 ## Semver range resolution
 
@@ -193,9 +233,10 @@ baffling to debug.
 ## Run-command inference
 
 For the inferred `dev` command runx checks whether `package.json` contains
-a `"dev"` script and runs `npm run dev` if so.  No other commands are
+a `"dev"` script and runs `bun run dev` when the project is Bun-managed
+(see the Bun table above), `npm run dev` otherwise.  No other commands are
 guessed.  If a dev command cannot be inferred, runx prints a clear error
-and suggests running `runx init`.
+listing what was detected and suggests running `runx init`.
 
 ## Example output
 
@@ -556,7 +597,7 @@ unless you pass `--yes`.
 ```bash
 runx --version
 runx --help
-runx doctor           # diagnose problems with the cache and PATH
+runx doctor           # diagnose problems with the cache, PATH and detection
 ```
 
 ## Shell completions
@@ -865,6 +906,15 @@ the python and bun lookups; a weekly run uses a fraction of it.
 
 ## v0.4 and later
 
+- ✅ Bun detection from `bun.lock` / `bun.lockb` / `bunfig.toml` and `.bun-version`
+- ✅ Go detection from `.go-version`
+- ✅ Multi-runtime projects — every detected runtime is resolved, installed
+  and cached, and all of them are placed on one isolated child `PATH`
+- ✅ Command inference separated from detection — detection reports *what* a
+  project needs; only a `dev` script in `package.json` triggers command
+  inference (`bun run dev` for Bun-managed projects, `npm run dev` otherwise)
+- ✅ `runx doctor` reports auto-detected runtimes and their cache status
+  without touching the network
 - 🚧 Java, .NET
 - 🚧 Monorepo / workspace support
 - 🚧 Pre/post run hooks
