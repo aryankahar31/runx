@@ -12,11 +12,18 @@
 //! 2. `pyproject.toml` → `[project].requires-python`
 //!
 //! **Bun**
-//! 1. `package.json` → `engines.bun`
-//! 2. `package.json` → `packageManager` (`"bun@1.1.0"`, corepack-style)
+//! 1. `.bun-version`
+//! 2. `package.json` → `engines.bun`
+//! 3. `package.json` → `packageManager` (`"bun@1.1.0"`, corepack-style)
+//! 4. `bun.lock`, legacy `bun.lockb`, or `bunfig.toml` (no version →
+//!    open-ended `*`, resolved to the newest published release)
+//!
+//! A generic `package.json` alone is **not** a Bun indicator: a Node project
+//! can contain one without using Bun. Only the files above are authoritative.
 //!
 //! **Go**
-//! 1. `go.mod` → `go` directive (`go 1.22.0`)
+//! 1. `.go-version`
+//! 2. `go.mod` → `go` directive (`go 1.22.0`)
 //!
 //! **Deno**
 //! 1. `.dvmrc` (the dvm convention, also adopted by mise and bob)
@@ -87,8 +94,9 @@ pub struct DetectionResult {
     pub go: Option<Detected>,
     pub deno: Option<Detected>,
     /// Shell command inferred from `package.json` `scripts.dev`, if present.
-    /// Currently only `"npm run dev"` is inferred — no other heuristics are
-    /// attempted, per the v0.2 scope.
+    /// `"npm run dev"` for npm-style projects, `"bun run dev"` for
+    /// Bun-managed ones. No other heuristics are attempted, per the v0.2
+    /// scope.
     pub inferred_dev_command: Option<String>,
 }
 
@@ -185,40 +193,78 @@ fn detect_python_from_pyproject(dir: &Path) -> Option<Detected> {
 
 // ── Bun detection ─────────────────────────────────────────────────────────────
 
-fn detect_bun(dir: &Path) -> Option<Detected> {
-    let raw = read_file_to_string_lossy(&dir.join("package.json"))?;
-    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+/// Authoritative Bun project indicators, in priority order.
+///
+/// `bun.lock` (the modern text lockfile), the legacy binary `bun.lockb`, and
+/// `bunfig.toml` (Bun's own config file) all mean "this project is managed by
+/// Bun" — and none of them carries a version, so the requirement is
+/// open-ended (`*`) and resolves to the newest published release.
+const BUN_INDICATORS: &[&str] = &["bun.lock", "bun.lockb", "bunfig.toml"];
 
-    // Priority 1: engines.bun, mirroring engines.node.
-    if let Some(range) = json
-        .get("engines")
-        .and_then(|engines| engines.get("bun"))
-        .and_then(|value| value.as_str())
-    {
-        return Some(record_hint(range, "package.json (engines.bun)"));
+fn detect_bun(dir: &Path) -> Option<Detected> {
+    // Priority 1: .bun-version — the Bun analogue of .nvmrc.
+    if let Some(raw) = read_plain_version_file(dir, ".bun-version") {
+        return Some(record_hint(&raw, ".bun-version"));
     }
 
-    // Priority 2: the corepack-style packageManager field ("bun@1.1.0").
-    let manager = json
-        .get("packageManager")
-        .and_then(|value| value.as_str())?;
+    if let Some(raw) = read_file_to_string_lossy(&dir.join("package.json")) {
+        let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+
+        // Priority 2: engines.bun, mirroring engines.node.
+        if let Some(range) = json
+            .get("engines")
+            .and_then(|engines| engines.get("bun"))
+            .and_then(|value| value.as_str())
+        {
+            return Some(record_hint(range, "package.json (engines.bun)"));
+        }
+
+        // Priority 3: the corepack-style packageManager field ("bun@1.1.0").
+        if let Some(requirement) = bun_from_package_manager(&json) {
+            return Some(record_hint(&requirement, "package.json (packageManager)"));
+        }
+    }
+
+    // Priority 4: a lockfile or bunfig.toml with no version information at
+    // all. `*` parses as an open-ended requirement and resolves to the newest
+    // published release, exactly like a bare `20` does for Node.
+    for indicator in BUN_INDICATORS {
+        if dir.join(indicator).is_file() {
+            return Some(record_hint("*", indicator));
+        }
+    }
+
+    None
+}
+
+/// The requirement from the corepack-style `packageManager` field, if it
+/// names Bun. `"bun@1.1.0+sha512.…"` -> `"1.1.0"`; other managers (`pnpm@9`)
+/// yield nothing.
+fn bun_from_package_manager(json: &serde_json::Value) -> Option<String> {
+    let manager = json.get("packageManager")?.as_str()?;
     let requirement = manager
         .strip_prefix("bun@")?
         // Corepack appends a digest as `bun@1.1.0+sha512.…`; the digest is not
         // part of the version.
         .split('+')
         .next()?;
-
-    Some(record_hint(requirement, "package.json (packageManager)"))
+    Some(requirement.to_string())
 }
 
 // ── Go detection ──────────────────────────────────────────────────────────────
 
-/// Detect the Go version from the `go` directive in `go.mod`.
+/// Detect the Go version from `.go-version` (the mise/asdf convention) or the
+/// `go` directive in `go.mod`.
 ///
 /// Only the first `go` directive is read (there is exactly one in a valid
 /// module); the `toolchain go1.22.5` directive is deliberately ignored.
 fn detect_go(dir: &Path) -> Option<Detected> {
+    // Priority 1: .go-version.
+    if let Some(raw) = read_plain_version_file(dir, ".go-version") {
+        return Some(record_hint(&raw, ".go-version"));
+    }
+
+    // Priority 2: go.mod.
     let raw = read_file_to_string_lossy(&dir.join("go.mod"))?;
 
     for line in raw.lines() {
@@ -252,9 +298,11 @@ fn detect_deno(dir: &Path) -> Option<Detected> {
 
 // ── Run-command inference ─────────────────────────────────────────────────────
 
-/// Return `Some("npm run dev")` if `package.json` has a `"dev"` script.
-/// No other commands are inferred — this is the only well-defined heuristic
-/// in v0.2 scope.
+/// Return `Some("bun run dev")` for Bun-managed projects and
+/// `Some("npm run dev")` for npm-style ones, when `package.json` has a `"dev"`
+/// script. No other commands are inferred — this is the only well-defined
+/// heuristic in scope, and inventing commands for other ecosystems (Go, Rust,
+/// Python) would be guessing.
 fn infer_dev_command(dir: &Path) -> Option<String> {
     let raw = read_file_to_string_lossy(&dir.join("package.json"))?;
     let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -262,7 +310,25 @@ fn infer_dev_command(dir: &Path) -> Option<String> {
         .get("scripts")
         .and_then(|scripts| scripts.get("dev"))
         .is_some();
-    has_dev.then(|| "npm run dev".to_string())
+    if !has_dev {
+        return None;
+    }
+    if is_bun_managed(dir, &json) {
+        Some("bun run dev".to_string())
+    } else {
+        Some("npm run dev".to_string())
+    }
+}
+
+/// True when the project's package manager is Bun: a Bun lockfile exists, or
+/// `packageManager` names Bun. A generic `package.json` is never Bun by
+/// itself.
+fn is_bun_managed(dir: &Path, package_json: &serde_json::Value) -> bool {
+    BUN_INDICATORS.iter().any(|file| dir.join(file).is_file())
+        || package_json
+            .get("packageManager")
+            .and_then(|value| value.as_str())
+            .is_some_and(|manager| manager.starts_with("bun@"))
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
@@ -891,6 +957,174 @@ mod tests {
         assert!(detect_runtimes(dir.path()).bun.is_none());
     }
 
+    // ── Modern Bun project indicators ───────────────────────────────────────
+
+    /// The modern `bun.lock` (a text lockfile, replacing the binary
+    /// `bun.lockb`) is an authoritative Bun indicator. It carries no version,
+    /// so the requirement is open-ended and resolves to the newest release.
+    #[test]
+    fn detects_bun_from_bun_lock() {
+        let dir = tmp();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let bun = result
+            .bun
+            .as_ref()
+            .expect("bun should be detected from bun.lock")
+            .found()
+            .expect("bun hint should parse");
+        assert_eq!(bun.requirement, "*");
+        assert_eq!(bun.source, "bun.lock");
+        assert!(bun.is_range, "a lockfile carries no version");
+    }
+
+    /// The legacy binary lockfile is still an authoritative Bun indicator.
+    #[test]
+    fn detects_bun_from_bun_lockb() {
+        let dir = tmp();
+        fs::write(dir.path().join("bun.lockb"), b"BunLock\x00\x01").unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let bun = result
+            .bun
+            .as_ref()
+            .expect("bun should be detected")
+            .found()
+            .expect("hint should parse");
+        assert_eq!(bun.source, "bun.lockb");
+    }
+
+    /// `bunfig.toml` is Bun's own config file and marks a Bun project.
+    #[test]
+    fn detects_bun_from_bunfig_toml() {
+        let dir = tmp();
+        fs::write(dir.path().join("bunfig.toml"), "[install]\n").unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let bun = result
+            .bun
+            .as_ref()
+            .expect("bun should be detected")
+            .found()
+            .expect("hint should parse");
+        assert_eq!(bun.source, "bunfig.toml");
+    }
+
+    /// A lockfile marks a Bun project even when there is no package.json at
+    /// all — the failure mode of modern Bun-only repos.
+    #[test]
+    fn bun_lock_is_detected_without_package_json() {
+        let dir = tmp();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+
+        assert!(detect_runtimes(dir.path()).bun.is_some());
+    }
+
+    /// An explicit `.bun-version` pin wins over a lockfile's open-endedness.
+    #[test]
+    fn bun_version_file_wins_over_bun_lock() {
+        let dir = tmp();
+        fs::write(dir.path().join(".bun-version"), "1.2.3").unwrap();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let bun = result
+            .bun
+            .as_ref()
+            .expect("bun should be detected")
+            .found()
+            .expect("hint should parse");
+        assert_eq!(bun.requirement, "1.2.3");
+        assert_eq!(bun.source, ".bun-version");
+        assert!(!bun.is_range);
+    }
+
+    /// Version metadata beats the lockfile's open-endedness.
+    #[test]
+    fn engines_bun_wins_over_bun_lock() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"bun": ">=1.1.0"}}"#,
+        )
+        .unwrap();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let bun = result
+            .bun
+            .as_ref()
+            .expect("bun should be detected")
+            .found()
+            .expect("hint should parse");
+        assert_eq!(bun.requirement, ">=1.1.0");
+        assert_eq!(bun.source, "package.json (engines.bun)");
+    }
+
+    /// A plain `package.json` is a Node project, not a Bun one. Detecting Bun
+    /// from every package.json would tag every Node repo with a bogus runtime.
+    #[test]
+    fn package_json_alone_is_not_bun() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"dev": "next dev"}}"#,
+        )
+        .unwrap();
+
+        assert!(detect_runtimes(dir.path()).bun.is_none());
+    }
+
+    // ── Bun-aware run-command inference ─────────────────────────────────────
+
+    #[test]
+    fn infers_bun_run_dev_for_bun_managed_projects() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"dev": "vocs dev"}}"#,
+        )
+        .unwrap();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+
+        assert_eq!(
+            detect_runtimes(dir.path()).inferred_dev_command.as_deref(),
+            Some("bun run dev"),
+            "a bun.lock project should run its dev script with bun"
+        );
+    }
+
+    #[test]
+    fn infers_bun_run_dev_from_package_manager_field() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"packageManager": "bun@1.3.14", "scripts": {"dev": "next dev"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            detect_runtimes(dir.path()).inferred_dev_command.as_deref(),
+            Some("bun run dev")
+        );
+    }
+
+    #[test]
+    fn infers_npm_run_dev_for_node_projects() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"dev": "node index.js"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            detect_runtimes(dir.path()).inferred_dev_command.as_deref(),
+            Some("npm run dev")
+        );
+    }
+
     // ── Go detection ─────────────────────────────────────────────────────────
 
     #[test]
@@ -959,6 +1193,25 @@ mod tests {
         assert!(detect_runtimes(dir.path()).go.is_none());
     }
 
+    /// `.go-version` (the mise/asdf convention) is a first-class Go version
+    /// file and wins over the go.mod directive.
+    #[test]
+    fn detects_go_from_go_version_file() {
+        let dir = tmp();
+        fs::write(dir.path().join(".go-version"), "1.23.4\n").unwrap();
+        fs::write(dir.path().join("go.mod"), "module m\n\ngo 1.22.0\n").unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let go = result
+            .go
+            .as_ref()
+            .expect("go should be detected")
+            .found()
+            .expect("go hint should parse");
+        assert_eq!(go.requirement, "1.23.4");
+        assert_eq!(go.source, ".go-version");
+    }
+
     // ── Map building ──────────────────────────────────────────────────────────
 
     #[test]
@@ -986,6 +1239,19 @@ mod tests {
         let map = detected_runtimes_map(&detect_runtimes(dir.path()));
         assert_eq!(map.get("bun").map(String::as_str), Some("1.3.14"));
         assert_eq!(map.get("go").map(String::as_str), Some("1.22.5"));
+    }
+
+    /// A mixed project's lockfile-only Bun requirement is carried as the
+    /// open-ended `*` requirement, alongside the Python pin.
+    #[test]
+    fn runtimes_map_carries_lockfile_only_bun_alongside_python() {
+        let dir = tmp();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+        fs::write(dir.path().join(".python-version"), "3.13\n").unwrap();
+
+        let map = detected_runtimes_map(&detect_runtimes(dir.path()));
+        assert_eq!(map.get("bun").map(String::as_str), Some("*"));
+        assert_eq!(map.get("python").map(String::as_str), Some("3.13"));
     }
 
     /// An unusable Bun hint is reported with its tool and source, not silently

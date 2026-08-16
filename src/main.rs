@@ -1,6 +1,7 @@
 // The library crate (lib.rs) owns all modules.  The binary just imports them.
 use runx::cache;
 use runx::config;
+use runx::detect;
 use runx::downloader;
 use runx::error;
 use runx::executor;
@@ -779,6 +780,7 @@ fn doctor_command() -> Result<()> {
     // from one — the direct answer to "why is the wrong version running".
     if let Ok(cwd) = env::current_dir() {
         if let Some(project_dir) = config::find_project_dir(&cwd) {
+            print_project_detection(&project_dir, &mut notes)?;
             let resolved = config::load_or_detect(&project_dir)?;
             print_resolved_paths(&project_dir, &resolved.inner)?;
         }
@@ -805,6 +807,65 @@ fn doctor_command() -> Result<()> {
         if broken.len() == 1 { "" } else { "s" }
     ))
     .into())
+}
+
+/// Report what auto-detection would find in the current project, so a
+/// multi-runtime project's requirements are visible at a glance.
+///
+/// Fully offline: presence is checked directly against the cache layout
+/// (`runtimes/<tool>/<version>`), never through `resolve_runtime`, which can
+/// fetch a release index. Ranges and open-ended requirements are noted as
+/// resolving on the next run rather than resolved here.
+fn print_project_detection(project_dir: &Path, notes: &mut Vec<String>) -> Result<()> {
+    let detected = detect::detect_runtimes(project_dir);
+    let found: Vec<(&str, &detect::DetectedRuntime)> = [
+        ("node", &detected.node),
+        ("python", &detected.python),
+        ("bun", &detected.bun),
+        ("go", &detected.go),
+        ("deno", &detected.deno),
+    ]
+    .into_iter()
+    .filter_map(|(tool, slot)| {
+        slot.as_ref()
+            .and_then(detect::Detected::found)
+            .map(|runtime| (tool, runtime))
+    })
+    .collect();
+
+    if found.is_empty() {
+        return Ok(());
+    }
+
+    println!("Project runtimes detected in {}:", project_dir.display());
+    let home = cache::runx_home()?;
+    for (tool, runtime) in &found {
+        let requirement = if runtime.requirement == "*" {
+            "latest".to_string()
+        } else {
+            runtime.requirement.clone()
+        };
+        println!("  {tool} {requirement} ({})", runtime.source);
+
+        if version::validate_concrete(tool, &runtime.requirement).is_err() {
+            notes.push(format!(
+                "{tool} {requirement}: requirement resolves to a concrete version on the next run"
+            ));
+        } else if !cache::is_complete(&cache::runtime_root_in(&home, tool, &runtime.requirement)) {
+            notes.push(format!(
+                "{tool} {requirement}: detected but not cached — installed on the next `runx dev`"
+            ));
+        }
+    }
+
+    if detected.inferred_dev_command.is_none() {
+        notes.push(
+            "no inferable run command (no `dev` script in package.json); \
+             define one in runx.toml"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// Print the exact PATH runx would prepend for the current project's runtimes.
