@@ -546,13 +546,13 @@ No repeated downloads.
 | Bun | ✅ |
 | Go | ✅ |
 | Deno | ✅ |
+| Java | 🚧 Planned |
+| .NET | 🚧 Planned |
 
 Deno releases from v2.0.1 publish a per-asset `.sha256sum` sidecar that runx
 verifies exactly like Node, Bun and Go. Older Deno releases (the 1.x line and
 v2.0.0) publish **no archive checksum**, so runx installs them with TLS-only
 verification and prints a warning at install time.
-| Java | 🚧 Planned |
-| .NET | 🚧 Planned |
 
 ---
 
