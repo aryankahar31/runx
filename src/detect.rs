@@ -364,8 +364,10 @@ fn read_file_to_string_lossy(path: &Path) -> Option<String> {
 /// and silently fell through to the next detection source.
 fn decode_utf16(bytes: &[u8], to_u16: fn([u8; 2]) -> u16) -> Option<String> {
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|chunk| to_u16([chunk[0], chunk[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| to_u16(*chunk))
         .collect();
     Some(String::from_utf16_lossy(&units))
 }
