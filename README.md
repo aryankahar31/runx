@@ -46,12 +46,14 @@ Run projects with the exact runtime versions they require — **without installi
 
 Runx runs any project with the exact runtime version it already declares — no global installs, no shell hooks, no manual version switching.
 
+```
 $ runx dev
 No runx.toml found — detected from project files:
   node 20.11.0 (from .nvmrc)
 Installing node 20.11.0
 ✓ Checksum verified
 Running `npm run dev`
+```
 
 Runx reads what your project already has (.nvmrc, package.json engines, pyproject.toml, go.mod, bun.lock, bun.lockb and bunfig.toml), resolves the right runtime, downloads and verifies it, and runs your command inside an isolated environment — nothing global, nothing left behind.
 
