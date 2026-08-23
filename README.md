@@ -12,6 +12,8 @@ Run projects with reproducible, isolated runtimes — no global installations, n
 [![Rust](https://img.shields.io/badge/Built%20with-Rust-orange?logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)](https://github.com/aryankahar31/runx)
 
+**🌐 [runx-cli.vercel.app](https://runx-cli.vercel.app/)**
+
 </div>
 
 ```text
@@ -305,6 +307,7 @@ There is no telemetry, and runx makes no network requests beyond fetching runtim
 
 ## Documentation
 
+- [Website](https://runx-cli.vercel.app/) — overview, quick start, benchmarks
 - [Zero-Config Detection](docs/zero-config.md) — every detected file, priority order, inference rules
 - [Runtime Resolution](docs/runtime-resolution.md) — range semantics, strict mode, registry freshness
 - [Lockfiles](docs/lockfile.md) — format, platform artifacts, CI enforcement
