@@ -17,35 +17,53 @@ Run projects with the exact runtime versions they require — **without installi
 
 ⭐ Star the repository if you find it useful.
 
-</div>
+---
+
+## Table of Contents
+
+- [Why Runx?](#-why-runx)
+- [What Runx is not](#-what-runx-is-not)
+- [Zero-Config Mode](#-zero-config-mode)
+- [Supported Runtimes](#-supported-runtimes)
+- [CLI Commands](#-cli-commands)
+- [Installation](#-installation)
+- [Quick Start](#-quick-start)
+- [Example](#-example)
+- [Runtime Cache](#-runtime-cache)
+- [Features](#-features)
+- [Comparison](#-comparison)
+- [Why runx has near-zero shell overhead](#-why-runx-has-near-zero-shell-overhead)
+- [Registry freshness: no third-party sync](#-registry-freshness-no-third-party-sync)
+- [Roadmap](#-roadmap)
+- [Contributing](#-contributing)
+- [License](#-license)
+
+<div align="center">
 
 ---
 
 # Why Runx?
 
-Modern development often requires multiple runtime versions.
+Runx runs any project with the exact runtime version it already declares — no global installs, no shell hooks, no manual version switching.
 
-One project needs:
+$ runx dev
+No runx.toml found — detected from project files:
+  node 20.11.0 (from .nvmrc)
+Installing node 20.11.0
+✓ Checksum verified
+Running `npm run dev`
 
-- Node.js 20
-- Python 3.11
+Runx reads what your project already has (.nvmrc, package.json engines, pyproject.toml, go.mod, bun.lock, bun.lockb and bunfig.toml), resolves the right runtime, downloads and verifies it, and runs your command inside an isolated environment — nothing global, nothing left behind.
 
-Another needs:
+---
 
-- Node.js 18
-- Python 3.10
+## What Runx is not
+Runx is not an IDE, build system, or language-specific package manager. It provisions and isolates the runtimes your project's commands run with — nothing more.
 
-Installing and managing these globally quickly becomes difficult.
+- VS Code / any editor → terminal or task runner → `runx dev` → node/python/go/bun/deno → your app
+- Android Studio → Gradle / Android SDK → (optionally) runx providing the underlying JVM/Node runtime
 
-**Runx solves this problem.**
-
-Runx automatically downloads the exact runtime versions required by a project, stores them in a local cache, and runs commands inside an isolated environment.
-
-No global installations.
-
-No PATH pollution.
-
-No version managers.
+If your workflow needs full IDE tooling, build orchestration, or platform-specific SDKs, those tools still own that job. Runx's job is narrower: resolve, verify, cache, isolate, and run the exact runtime version a project declares.
 
 ---
 
@@ -274,7 +292,7 @@ Installing node 22.11.0
 
 Pin the result with `runx lock` if you need that choice to stay fixed.
 
-## Opt-in-by-absence guarantee
+## Configuration Precedence
 
 - If `runx.toml` exists → it is the sole source of truth. Auto-detection
   is never consulted, and the file is never modified.
