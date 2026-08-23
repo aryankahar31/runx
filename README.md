@@ -4,7 +4,7 @@
 
 ### Universal Project Launcher with Portable Runtimes
 
-Run projects with the exact runtime versions they require — **without installing Node.js, Python, or other runtimes globally.**
+Run projects with reproducible, isolated runtimes — no global installations, no shell integration.
 
 [![CI](https://github.com/aryankahar31/runx/actions/workflows/ci.yml/badge.svg)](https://github.com/aryankahar31/runx/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/aryankahar31/runx?label=Release)](https://github.com/aryankahar31/runx/releases)
@@ -12,54 +12,63 @@ Run projects with the exact runtime versions they require — **without installi
 [![Rust](https://img.shields.io/badge/Built%20with-Rust-orange?logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)](https://github.com/aryankahar31/runx)
 
+</div>
 
-**One command. Any runtime. Any project.**
-
-⭐ Star the repository if you find it useful.
-
----
-
-## Table of Contents
-
-- [Why Runx?](#-why-runx)
-- [What Runx is not](#-what-runx-is-not)
-- [Zero-Config Mode](#-zero-config-mode)
-- [Supported Runtimes](#-supported-runtimes)
-- [CLI Commands](#-cli-commands)
-- [Installation](#-installation)
-- [Quick Start](#-quick-start)
-- [Example](#-example)
-- [Runtime Cache](#-runtime-cache)
-- [Features](#-features)
-- [Comparison](#-comparison)
-- [Why runx has near-zero shell overhead](#-why-runx-has-near-zero-shell-overhead)
-- [Registry freshness: no third-party sync](#-registry-freshness-no-third-party-sync)
-- [Roadmap](#-roadmap)
-- [Contributing](#-contributing)
-- [License](#-license)
-
-<div align="center">
-
----
-
-# Why Runx?
-
-Runx runs any project with the exact runtime version it already declares — no global installs, no shell hooks, no manual version switching.
-
-```
+```text
 $ runx dev
 No runx.toml found — detected from project files:
   node 20.11.0 (from .nvmrc)
 Installing node 20.11.0
+Downloading https://nodejs.org/dist/v20.11.0/node-v20.11.0-linux-x64.tar.xz
 ✓ Checksum verified
 Running `npm run dev`
 ```
 
-Runx reads what your project already has (.nvmrc, package.json engines, pyproject.toml, go.mod, bun.lock, bun.lockb and bunfig.toml), resolves the right runtime, downloads and verifies it, and runs your command inside an isolated environment — nothing global, nothing left behind.
+Second run — everything is already cached:
+
+```text
+$ runx dev
+No runx.toml found — detected from project files:
+  node 20.11.0 (from .nvmrc)
+Using cached node 20.11.0 at /home/user/.runx/runtimes/node/20.11.0
+Running `npm run dev`
+```
 
 ---
 
+## Contents
+
+- [Why Runx?](#why-runx)
+- [What Runx is not](#what-runx-is-not)
+- [Quick Start](#quick-start)
+- [Features](#features)
+- [Supported Runtimes](#supported-runtimes)
+- [Zero-Config Detection](#zero-config-detection)
+- [Runtime Resolution](#runtime-resolution)
+- [Lockfiles](#lockfiles)
+- [Security](#security)
+- [Comparison](#comparison)
+- [Benchmarks](#benchmarks)
+- [Architecture](#architecture)
+- [CLI Reference](#cli-reference)
+- [Roadmap](#roadmap)
+- [Documentation](#documentation)
+
+---
+
+## Why Runx?
+
+Modern projects pin runtime versions per project; your machine has one global `PATH`. Runx closes that gap:
+
+- **No global runtime installations** — runtimes live in a local cache (`~/.runx`), not in your system
+- **Project-driven detection** — reads `.nvmrc`, `package.json` `engines`, `pyproject.toml`, `go.mod`, Bun/Deno version files that your project *already* declares
+- **Isolated execution** — each command runs with exactly the declared runtime versions on its child `PATH`
+- **Multi-runtime projects** — Node + Python + Go in one project? All resolved and placed on one `PATH`
+- **Reproducible environments** — exact pins resolve offline; ranges resolve to the newest matching release; `runx.lock` freezes both
+- **Editor-independent** — works the same from any terminal, any editor, any CI runner
+
 ## What Runx is not
+
 Runx is not an IDE, build system, or language-specific package manager. It provisions and isolates the runtimes your project's commands run with — nothing more.
 
 - VS Code / any editor → terminal or task runner → `runx dev` → node/python/go/bun/deno → your app
@@ -67,392 +76,32 @@ Runx is not an IDE, build system, or language-specific package manager. It provi
 
 If your workflow needs full IDE tooling, build orchestration, or platform-specific SDKs, those tools still own that job. Runx's job is narrower: resolve, verify, cache, isolate, and run the exact runtime version a project declares.
 
----
+## Quick Start
 
-# 🔍 Zero-Config Mode
-
-Runx works **without a `runx.toml`** if standard version files are already
-present in your project.
-
-## How it works
-
-When you run `runx dev` and no `runx.toml` is found, runx automatically
-scans the project directory for well-known ecosystem files and infers the
-runtime versions from them.
-
-If a `runx.toml` *does* exist it is **always used exclusively** — explicit
-configuration always wins over auto-detection, with no merging.
-
-## Detected files and priority order
-
-### Node.js (first match wins)
-
-| Priority | File | Notes |
-|----------|------|-------|
-| 1 | `.nvmrc` | Plain text, leading `v` stripped |
-| 2 | `.node-version` | Plain text, leading `v` stripped |
-| 3 | `package.json` → `engines.node` | JSON, range resolved (see below) |
-
-### Python (first match wins)
-
-| Priority | File | Notes |
-|----------|------|-------|
-| 1 | `.python-version` | Plain text, leading `v` stripped |
-| 2 | `pyproject.toml` → `[project].requires-python` | TOML, range resolved (see below) |
-
-### Bun (first match wins)
-
-| Priority | File | Notes |
-|----------|------|-------|
-| 1 | `.bun-version` | Plain text, leading `v` stripped |
-| 2 | `package.json` → `engines.bun` | JSON, range resolved |
-| 3 | `package.json` → `packageManager` | `bun@1.1.0` form; the `+sha512.…` digest is ignored |
-| 4 | `bun.lock`, `bun.lockb`, `bunfig.toml` | Authoritative Bun markers with no version — resolves to the newest release |
-
-A generic `package.json` is **not** a Bun indicator: Node projects contain
-one without using Bun. Only the files above mark a project as Bun-managed.
-
-### Go (first match wins)
-
-| Priority | File | Notes |
-|----------|------|-------|
-| 1 | `.go-version` | Plain text (mise/asdf convention) |
-| 2 | `go.mod` → `go` directive | Plain text; the `toolchain` directive is ignored |
-
-A detected version file also marks a project root for auto-detection,
-alongside `runx.toml`: `.nvmrc`, `.node-version`, `.python-version`,
-`.go-version`, `.bun-version`, `.dvmrc`, `.deno-version`, `package.json`,
-`pyproject.toml`, `go.mod`, `bun.lock`, `bun.lockb` and `bunfig.toml`.
-
-## Multiple runtimes per project
-
-Detection is a **collection**, not a single winner. A project may require
-several runtimes at once — say Python for its tooling and Bun for its front
-end — and runx resolves, installs and caches every one of them, then builds
-**one isolated environment** containing all of their `bin` directories.
-Anything the project's command spawns — even `npm run dev` internally
-calling `bun run …` — finds every runtime on its PATH.
-
-```
-No runx.toml found — detected from project files:
-  python 3.13 (from .python-version)
-  bun (from bun.lock)
-Resolved python `3.13` to 3.13.15
-Resolved bun `*` to 1.3.14
-Installing python 3.13.15
-Installing bun 1.3.14
-✓ Checksums verified
-Running `bun run dev`
-```
-
-The same works from `runx.toml` — just list both runtimes:
-
-```toml
-[runtimes]
-python = "3.13"
-bun = "1.3.14"
-
-[run]
-dev = "npm run dev"
-build = "npm run build"
-```
-
-## Semver range resolution
-
-When a version file contains a range rather than an exact version, runx
-resolves it to the **newest published release that satisfies the
-constraint** — the same behaviour as nvm, Volta and mise.
-
-| Input | Resolves to |
-|-------|-------------|
-| `>=20` | newest release ≥ 20 |
-| `^20` | newest `20.x` |
-| `~20.11` | newest `20.11.x` |
-| `<20` | newest release below 20 |
-| `20` | newest `20.x` (a bare partial version is an X-range) |
-| `18 \|\| >=20` | newest release matching either branch |
-| `>=3.11` | newest release ≥ 3.11 |
-| `~=3.11` | newest `3.x` ≥ 3.11 (PEP 440) |
-| `20.11.0` | `20.11.0` (exact pin, never changed) |
-
-Runx always prints which concrete version a range resolved to, so there
-are no silent surprises.
-
-**Exact pins never touch the network.** Resolving a range needs the
-published release list, which is cached for 6 hours; if it cannot be
-fetched, runx falls back to the lowest satisfying version and says so, so
-offline machines keep working.
-
-### Strict mode
-
-Set `RUNX_RESOLUTION=minimum` to resolve ranges to the *lowest* satisfying
-version instead. This is fully offline and time-independent, but note that
-`>=20` then means "the oldest Node 20 ever published", which carries known
-CVEs. Exact pins are unaffected by this setting.
-
-For reproducibility across machines and CI, prefer `runx lock` (below) over
-strict mode: it pins the exact version that was resolved, rather than
-re-deriving one.
-
----
-
-# 🔒 Reproducible installs with `runx.lock`
-
-Ranges resolve against the current release list, so the same project can
-pick up a newer runtime next month. When that is not wanted — CI, a team,
-a release branch — generate a lockfile:
-
-```bash
-runx lock
-```
-
-This installs the runtimes, then writes `runx.lock` pinning exactly what
-was resolved. Commit it.
-
-```toml
-version = 1
-
-[runtimes.node]
-version = "20.11.0"
-requirement = ">=20"
-
-[runtimes.node.artifacts.macos-aarch64]
-url = "https://nodejs.org/dist/v20.11.0/node-v20.11.0-darwin-arm64.tar.gz"
-sha256 = "94e443d007e2882f8e5aecc85d978f7591520dc3b642adc7583b3cb0b3fc37d7"
-```
-
-Artifacts are keyed by platform because runtime archives *are*
-platform-specific: Node 20.11.0 on macOS/arm64 is a different file with a
-different digest than on Linux/x64. The **version** pin is shared across
-platforms; the digest is a per-platform integrity check on top. Running
-`runx lock` on macOS does not discard a teammate's Linux entry.
-
-## Enforcing the lockfile in CI
-
-```bash
-runx run test --locked
-```
-
-`--locked` fails rather than resolving anything the lockfile does not
-already pin, mirroring `cargo build --locked`. It fails when a runtime is
-missing from the lockfile, or when `runx.toml` asks for a requirement the
-lockfile does not record.
-
-A missing entry for *your platform* is deliberately not fatal, even under
-`--locked`: the version is still pinned, and the download is still verified
-against the publisher's own checksums. A mixed-OS team is not blocked by a
-lockfile generated elsewhere.
-
-## Precedence
-
-`runx.toml` always wins. If someone bumps a version there without
-re-running `runx lock`, runx uses the config and warns that the lockfile is
-stale — a lockfile that silently overrode an explicit version bump would be
-baffling to debug.
-
-## Run-command inference
-
-For the inferred `dev` command runx checks whether `package.json` contains
-a `"dev"` script and runs `bun run dev` when the project is Bun-managed
-(see the Bun table above), `npm run dev` otherwise.  No other commands are
-guessed.  If a dev command cannot be inferred, runx prints a clear error
-listing what was detected and suggests running `runx init`.
-
-## Example output
-
-With only a `.nvmrc` pinning `v20.11.0` and a `package.json` that has a
-`dev` script:
-
-```
-No runx.toml found — detected from project files:
-  node 20.11.0 (from .nvmrc)
-Installing node 20.11.0
-Downloading https://nodejs.org/dist/v20.11.0/node-v20.11.0-linux-x64.tar.xz
-✓ Checksum verified
-Extracting to /home/user/.runx/runtimes/node/.staging-20.11.0-4127-...
-Running `npm run dev`
-```
-
-On subsequent runs the cached runtime is reused:
-
-```
-No runx.toml found — detected from project files:
-  node 20.11.0 (from .nvmrc)
-Using cached node 20.11.0 at /home/user/.runx/runtimes/node/20.11.0
-Running `npm run dev`
-```
-
-When the project declares a **range** — say `"engines": { "node": ">=20" }` —
-runx reports which concrete release it picked:
-
-```
-No runx.toml found — detected from project files:
-  node >=20 (from package.json (engines.node))
-Resolved node `>=20` to 22.11.0
-Installing node 22.11.0
-```
-
-Pin the result with `runx lock` if you need that choice to stay fixed.
-
-## Configuration Precedence
-
-- If `runx.toml` exists → it is the sole source of truth. Auto-detection
-  is never consulted, and the file is never modified.
-- Auto-detection is the fallback *only* when no `runx.toml` is present.
-- Auto-detection **never writes to disk**. To persist a detected
-  configuration, run `runx init` which creates a starter `runx.toml`.
-
----
-
-# ✨ Features
-
-- 🚀 Zero global runtime installation
-- 📦 Automatic downloads with retry, exponential backoff and **resume**
-- 💾 Cache management — `list`, `size`, `clean`, `prune`
-- 📌 `runx.lock` for reproducible installs across machines and CI
-- 🎯 Ranges resolve to the **newest** matching release (nvm/Volta/mise semantics)
-- 🛡 SHA-256 verification of every download, before extraction (Deno < 2.0.1
-  excepted — those releases publish no archive checksum, see *Supported
-  Runtimes*)
-- ⚛️ Atomic installs — an interrupted download can never corrupt the cache
-- 🔒 Isolated execution — global `PATH` and shell files are never touched
-- 🐚 **No shell integration required**, ever
-- ⚡ Exact version pins resolve offline and instantly
-- 🖥 Cross-platform (Linux, macOS, Windows)
-- ⚙ Zero-config auto-detection, or an explicit `runx.toml`
-- 🦀 Built with Rust, no telemetry
-
----
-
-# Installation
-
-## macOS / Linux
+Install (macOS / Linux):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh | sh
 ```
 
-If the command above hangs or times out, your network may be blocking
-Fastly's CDN (`raw.githubusercontent.com`). Try the jsDelivr mirror instead:
+> Behind a network that blocks Fastly (`raw.githubusercontent.com`)? Use the jsDelivr mirror:
+> `curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh`
 
-```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh
-```
-
----
-
-## Windows PowerShell
+Windows PowerShell:
 
 ```powershell
 iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 | iex
 ```
 
-If the command above hangs or times out, your network may be blocking
-Fastly's CDN (`raw.githubusercontent.com`). Try the jsDelivr mirror instead:
+Both scripts verify the downloaded binary against its published SHA-256 checksum before installing — see [Security](#security).
 
-```powershell
-iwr https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.ps1 | iex
-```
-
----
-
-> **🛡 Security:** Both install scripts verify the downloaded binary against
-> the SHA-256 checksum published with each release, and abort without
-> extracting or installing anything if it does not match. They also **fail
-> closed**: if no SHA-256 tool is available (`sha256sum`, `shasum`, or
-> `openssl`), the install stops rather than silently proceeding unverified.
-> Set `RUNX_SKIP_CHECKSUM=1` to override that deliberately.
->
-> Checksums confirm the download is intact and matches what the publisher
-> listed. They are fetched from the same origin as the artifact, so they are
-> not by themselves protection against a compromised release host.
->
-> **Signature verification (Sigstore/cosign).** Since v0.4.2 every release
-> archive and the `SHA256SUMS` manifest are additionally signed with
-> Sigstore/cosign *keyless* signing: the release workflow asks GitHub for an
-> OIDC token, and Sigstore's Fulcio CA issues a short-lived certificate bound
-> to that identity (the workflow path, repository, and triggering ref — no
-> private keys are stored anywhere). When `cosign` is installed, the install
-> scripts and `runx self update` verify each download against that signature
-> with the identity pinned to `aryankahar31/runx`'s `release.yml` on a `v*.*.*`
-> tag, so only a real run of the release workflow can have produced the file.
-> This closes the checksum gap: a compromised release host cannot forge a
-> signature without also compromising the signing identity.
->
-> Verification degrades gracefully and honestly: if `cosign` is not installed
-> (or you are installing a release published before v0.4.2, which has no
-> signature), a warning is printed and the install proceeds on checksum
-> verification alone — the fail-closed checksum behavior above is unchanged.
-> Set `RUNX_REQUIRE_SIGNATURE=1` to make a missing `cosign` or signature an
-> error instead of a warning. A signature that is present but *fails*
-> verification is always fatal: that is the tamper case this feature exists
-> to catch. `runx self update` follows the same policy.
-
-Verify installation
-
-```bash
-runx --version
-```
-
-Expected output
-
-```
-runx <version>
-```
-
-It prints the exact version you installed.
-
----
-
-# Verifying a Release Manually
-
-If you download a binary directly from
-[GitHub Releases](https://github.com/aryankahar31/runx/releases) instead of
-using the install script, you can verify it manually.
-
-## Linux / macOS
-
-```bash
-# Download the archive and the SHA256SUMS file
-curl -fsSLO https://github.com/aryankahar31/runx/releases/latest/download/runx-linux-x64.tar.gz
-curl -fsSLO https://github.com/aryankahar31/runx/releases/latest/download/SHA256SUMS
-
-# Verify (prints OK if the checksum matches)
-sha256sum -c SHA256SUMS --ignore-missing
-# or on macOS:
-shasum -a 256 -c SHA256SUMS --ignore-missing
-```
-
-## Windows PowerShell
-
-```powershell
-# Download the archive and the per-file checksum
-Invoke-WebRequest -Uri https://github.com/aryankahar31/runx/releases/latest/download/runx-windows-x64.zip -OutFile runx-windows-x64.zip
-Invoke-WebRequest -Uri https://github.com/aryankahar31/runx/releases/latest/download/runx-windows-x64.zip.sha256 -OutFile runx-windows-x64.zip.sha256
-
-# Compare
-$expected = (Get-Content .\runx-windows-x64.zip.sha256).Split(' ')[0]
-$computed = (Get-FileHash .\runx-windows-x64.zip -Algorithm SHA256).Hash
-if ($expected -ieq $computed) { Write-Host "OK" } else { Write-Error "MISMATCH" }
-```
-
----
-
-# Quick Start
-
-Initialize a project
+Initialize a project:
 
 ```bash
 runx init
 ```
 
-This creates
-
-```text
-runx.toml
-```
-
-Configure your project
+This creates a starter `runx.toml`:
 
 ```toml
 [runtimes]
@@ -465,99 +114,38 @@ build = "npm run build"
 test = "npm test"
 ```
 
-Run your application
+Run:
 
 ```bash
 runx dev
 ```
 
----
+Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproject.toml`, or similar, just run `runx dev` ([detection rules](#zero-config-detection)).
 
-# Example
+## Features
 
-Project
+### Runtime management
 
-```
-my-project/
-│
-├── package.json
-├── runx.toml
-└── src/
-```
+- Node.js, Python, Bun, Go, Deno
+- Automatic downloads with retry, exponential backoff and **resume**
+- Semver/range resolution to the newest matching release
+- Shared runtime cache across all projects
 
-package.json
+### Reproducibility & security
 
-```json
-{
-  "scripts": {
-    "dev": "node index.js"
-  }
-}
-```
+- [`runx.lock`](docs/lockfile.md) pins resolved versions for CI and teams
+- `--locked` fails on anything the lockfile doesn't pin
+- SHA-256 verification of every download, plus Sigstore/cosign signatures since v0.4.2
+- Atomic installs — an interrupted download can never corrupt the cache
 
-index.js
+### Developer experience
 
-```javascript
-console.log("Hello from Runx!");
-```
+- Zero-config auto-detection, or explicit `runx.toml`
+- No shell integration required, ever — nothing happens until you type `runx`
+- Cross-platform: Linux, macOS, Windows
+- `runx doctor`, cache management (`list`/`size`/`clean`/`prune`), `self update`, shell completions
 
-Run
-
-```bash
-runx dev
-```
-
-Output
-
-```
-Installing node 20.11.0
-Downloading...
-Extracting...
-
-Running npm run dev
-
-Hello from Runx!
-```
-
-Second run
-
-```
-Using cached node 20.11.0
-
-Running npm run dev
-
-Hello from Runx!
-```
-
----
-
-# Runtime Cache
-
-Downloaded runtimes are stored in
-
-```
-~/.runx/runtimes/
-```
-
-Example
-
-```
-~/.runx/runtimes/
-
-node/
-└──20.11.0/
-
-python/
-└──3.11.7/
-```
-
-Runx automatically reuses cached runtimes.
-
-No repeated downloads.
-
----
-
-# Supported Runtimes
+## Supported Runtimes
 
 | Runtime | Status |
 |----------|--------|
@@ -569,480 +157,185 @@ No repeated downloads.
 | Java | 🚧 Planned |
 | .NET | 🚧 Planned |
 
-Deno releases from v2.0.1 publish a per-asset `.sha256sum` sidecar that runx
-verifies exactly like Node, Bun and Go. Older Deno releases (the 1.x line and
-v2.0.0) publish **no archive checksum**, so runx installs them with TLS-only
-verification and prints a warning at install time.
+## Zero-Config Detection
 
----
+Runx automatically detects runtimes from files your project already uses — `.nvmrc`, `.python-version`, `package.json` `engines`, `pyproject.toml`, `go.mod`, and Bun/Deno version files. Multiple runtimes are detected together and share one isolated environment.
 
-# CLI Commands
+Detection never writes to disk and never merges with an existing `runx.toml`; explicit configuration always wins.
 
-## Running project commands
+**[View full detection rules →](docs/zero-config.md)**
 
-Any word that is not a built-in subcommand is treated as a key from `[run]`:
+## Runtime Resolution
 
-```bash
-runx dev            # runs the `dev` key
-runx build          # runs the `build` key
-runx test           # runs the `test` key
-```
+Ranges (`>=20`, `^20`, `~20.11`) resolve against each vendor's own release index to the newest matching release; exact pins (`20.11.0`) never touch the network and never change. Resolution results are cached for at most 6 hours — there is no third-party registry in the path.
 
-Use the explicit form when a key collides with a built-in name:
+**[View resolution internals & registry freshness →](docs/runtime-resolution.md)**
+
+## Lockfiles
 
 ```bash
-runx run dev
-runx run test --locked   # fail if runx.lock does not pin everything
+runx lock
 ```
 
-Pass arguments through to the run command with `--`:
+Installs the declared runtimes and writes `runx.lock`, pinning the exact resolved version (with per-platform checksums) so every machine and CI runner gets identical runtimes. Enforce it with `runx run <key> --locked`.
 
-```bash
-runx dev -- --port 3000
-runx run test -- --watch
-```
+**[View lockfile format & CI usage →](docs/lockfile.md)**
 
-Everything after `--` is appended to the underlying command, shell-quoted so
-spaces and special characters arrive intact. Without `--`, extra arguments are
-rejected rather than silently dropped.
+## Security
 
-## Working directory
+Every install is verified before it touches your disk:
 
-`runx dev` (and every `[run]` command) executes the project's command **in
-the directory you invoked it from** — never in an ancestor project the
-config-walk happened to find. A nested directory without its own project
-files still gets runtimes and commands from the nearest configured project,
-but the command runs in place, and runx prints a note naming the ancestor
-that supplied the configuration:
+- SHA-256 checksum verification of every download, before extraction
+- Sigstore/cosign keyless signature verification on release archives (opt-in strict mode via `RUNX_REQUIRE_SIGNATURE=1`)
+- Atomic installs into staging directories — a failed or interrupted install leaves nothing behind
+- Strict validation of every version string at a single chokepoint (path-traversal safe by construction)
+- Installers fail closed when no checksum tool is available
 
-```text
-$ cd swiss-v2 && runx dev
-Note: using runtimes and commands from /path/to/project (no project files in /path/to/project/swiss-v2).
-```
+**[Read the full security model →](docs/security.md)**
 
-This matches plain `npm run dev` semantics: tools like npm and Vite that
-discover their own project root by walking up behave exactly as they do when
-invoked manually from that directory.
+## Comparison
 
-## Project setup
+What runx combines in one editor-independent workflow:
 
-```bash
-runx init           # create a starter runx.toml
-runx lock           # install runtimes and write runx.lock
-```
+| Capability | Runx |
+| :--- | :---: |
+| Project launcher | ✅ |
+| Multiple runtimes per project | ✅ |
+| Zero-config detection from existing files | ✅ |
+| Isolated child `PATH` | ✅ |
+| No shell integration required | ✅ |
+| Lockfile with per-platform checksums | ✅ |
 
-## Cache management
+Traditional version managers (nvm, Volta, pyenv, asdf, mise) each cover parts of this list differently — several require shell hooks or shims, and none read `package.json` `engines` / `pyproject.toml` directly today. Runx does not claim to reinvent runtime management; its focus is combining provisioning, detection, isolation, verification, and execution into one workflow.
 
-```bash
-runx cache list     # every cached runtime, with size and last use
-runx cache size     # total disk usage
-runx cache clean    # remove all runtimes      (dry run without --yes)
-runx cache prune    # remove runtimes unused for 30+ days
-runx cache prune --older-than 7 --yes
-```
+**[View the detailed per-tool comparison →](docs/comparison.md)**
 
-Both `clean` and `prune` print what they *would* delete and change nothing
-unless you pass `--yes`.
+## Benchmarks
 
-## Information
-
-```bash
-runx --version
-runx --help
-runx doctor           # diagnose problems with the cache, PATH and detection
-```
-
-## Shell completions
-
-```bash
-runx completions bash         # or: zsh, fish, powershell
-runx completions zsh > "$ZDOTDIR/.zfunc/_runx"
-```
-
-## Self update
-
-```bash
-runx self update
-```
-
-Checks the latest GitHub release, verifies it against the release `SHA256SUMS`,
-and atomically swaps the current binary (the previous one is kept as
-`runx.old` until the new one runs). The binary needs write access to its own
-directory — update from a local `cargo install` location manually instead.
-Releases must publish a platform archive (`runx-{linux|macos|windows}-{x64|arm64}.tar.gz` or `.zip`)
-plus `SHA256SUMS` for `self update` to work.
-
-## Environment variables
-
-| Variable | Effect |
-|----------|--------|
-| `RUNX_HOME` | Cache location (default `~/.runx`). Useful for CI caching and for isolating a cache without touching `HOME`. |
-| `RUNX_RESOLUTION` | `latest` (default) or `minimum` — see [Strict mode](#strict-mode). |
-| `GITHUB_TOKEN` | Optional. Authenticates the GitHub API version lookups (Bun, Deno, Python), raising the rate limit from 60 to 5000 requests/hour — useful for CI on a shared IP or heavy development. A classic PAT or fine-grained token with **no scopes** is enough for public release/tag data; runx sends it only to `api.github.com`, never to other hosts. |
-| `RUNX_REQUIRE_SIGNATURE` | `1` makes the installers and `runx self update` treat a missing `cosign` (or a release without a signature) as an error instead of a warning. See [Security](#security). |
-
-There is no telemetry, and runx makes no network requests beyond fetching
-runtime release metadata, archives, and their checksums.
-
----
-
-# Build From Source
-
-Clone
-
-```bash
-git clone https://github.com/aryankahar31/runx.git
-
-cd runx
-```
-
-Build
-
-```bash
-cargo build --release
-```
-
-Binary
-
-Linux/macOS
-
-```
-target/release/runx
-```
-
-Windows
-
-```
-target\release\runx.exe
-```
-
----
-
-# Architecture
-
-```
-                    runx
-                      │
-          ┌───────────┴───────────┐
-          │                       │
-          ▼                       ▼
-    Parse runx.toml        Resolve runtimes
-          │
-          ▼
-     Check local cache
-          │
-     ┌────┴────┐
-     │         │
- Cache Hit   Cache Miss
-     │         │
-     │     Download Runtime
-     │         │
-     │     Extract Archive
-     │         │
-     └────┬────┘
-          │
-          ▼
-  Build isolated PATH
-          │
-          ▼
- Execute project command
-```
-
----
-
-# How It Works
-
-1. Read `runx.toml`
-2. Resolve runtime versions
-3. Check local cache
-4. Download missing runtime
-5. Extract portable runtime
-6. Build isolated PATH
-7. Execute command
-
----
-
-# Isolation
-
-Runx never modifies:
-
-- Your global `PATH`
-- Shell startup files (`.bashrc`, `.zshrc`, profiles)
-- System-installed runtimes
-- Anything outside `~/.runx` and your project directory
-
-Every command runs with the cached runtime's `bin` directories **prepended**
-to `PATH`, so the project's versions take priority over anything installed
-system-wide. The existing `PATH` is then **appended**, so ordinary tools
-(`git`, `make`, `curl`, Homebrew) keep working — runx isolates *runtime
-versions*, not the entire environment.
-
-Because the change is scoped to the child process, **no shell integration is
-required**: no `eval "$(… init)"` line, no shim directory, no directory
-hooks. Nothing about your shell changes until you type `runx`.
-
----
-
-# Comparison
-
-| Feature | Runx | nvm | Volta | pyenv | asdf | mise |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| Node.js | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| Python | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Multiple runtimes | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| Runtime cache | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Project launcher | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Cross-platform | ✅ | ⚠️ | ✅ | ⚠️ | ✅ | ✅ |
-| **No shell integration required** | ✅ | ❌ | ✅ (shims) | ❌ | ❌ | ⚠️ (optional; needed for ambient switching) |
-| Reads `package.json` `engines` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Reads `pyproject.toml` `requires-python` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Zero-config from existing files | ✅ | ⚠️ (`.nvmrc`) | ⚠️ (`volta` field) | ⚠️ (`.python-version`) | ❌ (needs `.tool-versions`) | ⚠️ (`.nvmrc`, `.python-version`) |
-| Ranges resolve to newest match | ✅ | ✅ | ✅ | ❌ (exact only) | ❌ (exact only) | ✅ |
-| Checksum verification | ✅ | ⚠️ | ✅ | ⚠️ | ⚠️ (plugin-dependent) | ✅ |
-| Resumable downloads | ✅ | ❌ | ❌ | ❌ | ❌ | ⚠️ |
-| Atomic installs | ✅ | ⚠️ | ✅ | ⚠️ | ⚠️ | ✅ |
-| Cache size / prune commands | ✅ | ❌ | ❌ | ❌ | ❌ | ⚠️ |
-| No telemetry | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ |
-
-Where runx genuinely differs: it reads the version constraints your project
-*already* declares (`package.json` `engines`, `pyproject.toml`
-`requires-python`) instead of requiring its own file, and it needs **no shell
-integration at all** — no `eval` in your profile, no shims on `PATH`, no
-directory hooks.
-
-> Comparisons reflect each tool's documented default behaviour and are
-> best-effort; these projects move quickly, so check their current docs before
-> relying on a row. Corrections via PR are welcome.
-
----
-
-# Why runx has near-zero shell overhead
-
-mise, asdf and nvm hook into your shell. `mise activate` runs a hook on
-**every prompt render** — every command you type pays its cost, forever, for
-the life of the session. asdf's shims pay on every command lookup instead.
-runx does none of that: there is no activation line, no shim directory, no
-directory hook. **Nothing happens until you type `runx <key>`, and the
-overhead is paid once per invocation — not per prompt.**
-
-Measured on macOS 26.5 (Apple silicon, zsh 5.9, hyperfine 1.20, mise
-2026.7.18, `--warmup 3 --runs 20`; full method in
-[`benchmarks/README.md`](benchmarks/README.md)):
+Headline numbers on warm cache (macOS, Apple silicon, zsh — full method in [docs/benchmarks.md](docs/benchmarks.md)):
 
 | Measurement | Mean |
 | :-- | --: |
-| zsh startup, no hooks (baseline) | 23.2 ms |
-| zsh startup + `mise activate` (per prompt) | 38.4 ms — **+15.2 ms per prompt** |
-| `runx <key>` total, warm cache | 5.9 ms |
-| — runx pre-child work (`RUNX_TIMINGS=1`): config | 0.07 ms |
-| — cache lookup | 0.02 ms |
-| — PATH build + spawn | 0.14 ms |
+| Complete `runx <key>` run, warm cache | 5.9 ms |
+| Runx overhead before your command starts | ~0.2 ms, **once per invocation** |
+| Shell-hook alternative (`mise activate`) | +15.2 ms **per prompt render** |
 
-runx's entire contribution before your command starts is **~0.2 ms, once**.
-`mise activate` adds **15.2 ms to every prompt** on the same machine (mise's
-own discussion #6279 reports ~80–97 ms first-prompt lag in some
-configurations — heavier shells only make it worse). A complete `runx <key>`
-run — process spawn, config read, PATH construction, child start — is
-**6.6× faster than rendering one mise-activated prompt**, and runx pays
-nothing on the prompts before and after.
+Because runx adds no shell hook, prompts without `runx` pay nothing at all.
 
-There is a second, related difference: shim-based tools (asdf, and mise's
-shim mode) have had real bugs in the Windows/WSL boundary, where shim files
-were misinterpreted as executable scripts under `/mnt/c/...` path semantics.
-That is a known class of shim-related fragility that runx's architecture
-avoids **by construction** — runx creates no shims of any kind.
+**[View full benchmark methodology →](docs/benchmarks.md)**
 
-These are directional numbers on one machine, not a universal guarantee; the
-structural claim — *no shell hook, so no per-prompt cost* — does not depend
-on any particular measurement.
+## Architecture
 
----
+```text
+runx
+ │
+ ▼
+Parse runx.toml / detect project files
+ │
+ ▼
+Resolve runtime versions
+ │
+ ▼
+Check local cache ─── hit ──┐
+ │ miss                     │
+ ▼                          │
+Download + verify           │
+(atoms: staging → rename)   │
+ └──────────────────────────┘
+ │
+ ▼
+Build isolated PATH
+ │
+ ▼
+Execute project command
+```
 
-# Registry freshness: no third-party sync
+Runtimes are cached under `~/.runx/runtimes/<tool>/<version>/` and reused across all projects.
 
-runx resolves version ranges **directly against each vendor's own release
-index** — `nodejs.org/dist/index.json` for Node, the
-`astral-sh/python-build-standalone` GitHub releases for Python, GitHub
-releases for Bun, and `go.dev/dl` for Go. Results are cached locally for at
-most 6 hours (`INDEX_TTL_SECS` in `src/registry.rs`); after that, the next
-range resolution refetches from the vendor. There is no sync service, mirror,
-or intermediate registry in the path.
+**[View isolation guarantees & implementation notes →](docs/architecture.md)**
 
-That is the structural difference from mise's version registry, which
-depends on a third-party sync pipeline: per
-[mise's own discussion #7468](https://github.com/jdx/mise/discussions/7468),
-its index refreshes roughly every 15 minutes but is rate-limited, so
-`mise latest <tool>` can report a version that is **days behind** the actual
-latest upstream release. runx's worst case is its own 6-hour cache window —
-bounded and self-healing, not unbounded by someone else's rate limit.
+## CLI Reference
 
-**Falsifiable and continuously checked:** `benchmarks/registry-freshness.sh`
-fetches the latest version from each vendor's canonical source with plain
-`curl`, then has runx resolve a fresh `*` range in an isolated cache, and
-compares the two. A weekly CI run
-([`registry-freshness` workflow](.github/workflows/registry-freshness.yml))
-keeps the claim verified over time;
-![registry-freshness status](https://github.com/aryankahar31/runx/actions/workflows/registry-freshness.yml/badge.svg)
+```bash
+runx dev              # run a key from [run] (any non-builtin word works)
+runx build            # same
+runx test --locked    # enforce the lockfile
+runx init             # create a starter runx.toml
+runx lock             # write runx.lock
+runx doctor           # diagnose cache, PATH and detection issues
+runx cache list       # also: size, clean, prune (--older-than N)
+runx self update      # verified atomic binary swap
+runx completions zsh  # bash, zsh, fish, powershell
+```
 
-Latest verified run (`benchmarks/registry-results.json`):
+Pass arguments through with `--`: `runx dev -- --port 3000`. Without `--`, extra arguments are rejected rather than silently dropped.
 
-| Runtime | Vendor latest | runx resolved | Status |
-| :-- | :-- | :-- | :--: |
-| node | 26.7.0 | 26.7.0 | ✅ |
-| go | 1.26.5 | 1.26.5 | ✅ |
-| bun | 1.3.14 | 1.3.14 | ✅ |
-| python | 3.14.7 | 3.14.7 | ✅ |
+### Environment variables
 
-Honest caveats: the python index is heavy (10 pages of
-python-build-standalone releases, ~15 MB each), so the weekly CI run exercises
-it on GitHub's own network, which is the environment runx users in CI hit —
-it passes there even when it is too slow for a laptop. The
-6-hour cache means a release published within the last 6 hours may not yet
-appear in runx's resolution; rerun after the window for a clean check. The
-unauthenticated GitHub API (60 requests/hour/IP) is the practical ceiling for
-the python and bun lookups; a weekly run uses a fraction of it.
+| Variable | Effect |
+|----------|--------|
+| `RUNX_HOME` | Cache location (default `~/.runx`). Useful for CI caching and isolation. |
+| `RUNX_RESOLUTION` | `latest` (default) or `minimum` — see [strict mode](docs/runtime-resolution.md#strict-mode). |
+| `GITHUB_TOKEN` | Optional. Raises GitHub API rate limits for Bun/Deno/Python lookups (60 → 5000 req/hour). Sent only to `api.github.com`. |
+| `RUNX_REQUIRE_SIGNATURE` | `1` makes a missing cosign signature an error instead of a warning. |
 
----
+There is no telemetry, and runx makes no network requests beyond fetching runtime release metadata, archives, and their checksums.
 
-# Roadmap
+## Roadmap
 
-## v0.1
+**Current** (v0.5)
 
-- ✅ Node.js
-- ✅ Python
-- ✅ Runtime cache
-- ✅ GitHub Releases
-- ✅ Cross-platform installers
-- ✅ GitHub Actions CI/CD
-- ✅ SHA-256 checksum verification (v0.1.1)
+- Node.js, Python, Bun, Go, Deno
+- `runx.lock` + `--locked`, Sigstore/cosign signing
+- Cache management, `doctor`, `self update`, completions
+- Multi-runtime detection and isolated multi-runtime `PATH`
 
----
+**Next**
 
-## v0.2
+- Java, .NET
+- Monorepo / workspace support
+- Pre/post run hooks
 
-- ✅ Zero-config auto-detection (Node.js + Python from `.nvmrc`, `.node-version`, `package.json`, `.python-version`, `pyproject.toml`)
-- ✅ Bun (from `engines.bun` / `packageManager`, or `runx.toml`)
-- ✅ Go (from the `go.mod` `go` directive, or `runx.toml`)
+**Future**
 
----
+- Plugin system and runtime registry
+- VS Code extension
+- Homebrew, Scoop, Winget, Chocolatey
+- Stable API
 
-## v0.3
+## Documentation
 
-**Correctness and safety**
-
-- ✅ Strict version validation (closes a path-traversal → cache-deletion / `PATH`-hijack chain)
-- ✅ Archive extraction hardening (symlink escape, exec bits preserved)
-- ✅ Exact checksum matching (no substring or fall-open matches)
-- ✅ Atomic installs — an interrupted download cannot corrupt the cache
-- ✅ Connect and idle-read timeouts on every request
-- ✅ `cargo clippy -D warnings` enforced in CI
-
-**Features**
-
-- ✅ Correct semver resolution — ranges resolve to the newest matching release
-- ✅ `runx.lock` + `--locked` for reproducible installs
-- ✅ Cache management (`list`, `size`, `clean`, `prune`)
-- ✅ Retry with exponential backoff and resumable downloads
-- ✅ `RUNX_HOME` for cache relocation
-- ✅ `runx doctor` — diagnose broken cache, corrupt runtimes, `PATH` conflicts
-- ✅ Shell completions (bash, zsh, fish, PowerShell)
-- ✅ Bun
-- ✅ Go
-- ✅ Deno (from `.dvmrc` / `.deno-version`, or `runx.toml`)
-- ✅ `runx self update` — checks the latest GitHub release, verifies the SHA-256
-  checksum, and atomically swaps the binary
-- ✅ Argument passthrough (`runx dev -- --port 3000`)
-- ✅ Signature verification (Sigstore/cosign, keyless)
+- [Zero-Config Detection](docs/zero-config.md) — every detected file, priority order, inference rules
+- [Runtime Resolution](docs/runtime-resolution.md) — range semantics, strict mode, registry freshness
+- [Lockfiles](docs/lockfile.md) — format, platform artifacts, CI enforcement
+- [Security](docs/security.md) — verification model, manual release verification
+- [Architecture](docs/architecture.md) — isolation guarantees, atomic installs
+- [Benchmarks](docs/benchmarks.md) — shell-overhead methodology, freshness checks
+- [Comparison](docs/comparison.md) — per-tool matrix vs nvm/Volta/pyenv/asdf/mise
 
 ---
 
-## v0.4 and later
+## Contributing
 
-- ✅ Bun detection from `bun.lock` / `bun.lockb` / `bunfig.toml` and `.bun-version`
-- ✅ Go detection from `.go-version`
-- ✅ Multi-runtime projects — every detected runtime is resolved, installed
-  and cached, and all of them are placed on one isolated child `PATH`
-- ✅ Command inference separated from detection — detection reports *what* a
-  project needs; only a `dev` script in `package.json` triggers command
-  inference (`bun run dev` for Bun-managed projects, `npm run dev` otherwise)
-- ✅ `runx doctor` reports auto-detected runtimes and their cache status
-  without touching the network
-- 🚧 Java, .NET
-- 🚧 Monorepo / workspace support
-- 🚧 Pre/post run hooks
-- 🚧 Plugin system and runtime registry
-
----
-
-## v1.0
-
-- 🚧 Stable API
-- 🚧 VS Code Extension
-- 🚧 Homebrew
-- 🚧 Scoop
-- 🚧 Winget
-- 🚧 Chocolatey
-
----
-
-# Contributing
-
-Contributions are welcome.
-
-Please ensure:
+Contributions are welcome. Please ensure:
 
 - Runtime installers remain portable
 - Downloads are deterministic
-- Existing tests continue to pass
-- New features include tests
+- Existing tests continue to pass; new features include tests
 - Documentation is updated
 
-Clone the project
-
 ```bash
-git clone https://github.com/aryankahar31/runx.git
-
-cd runx
+git clone https://github.com/aryankahar31/runx.git && cd runx
+cargo test            # full suite
+cargo build --release # produce target/release/runx
 ```
 
-Run tests
+## License
 
-```bash
-cargo test
-```
-
-Build
-
-```bash
-cargo build --release
-```
-
----
-
-# License
-
-This project is licensed under the MIT License.
-
-See the `LICENSE` file for details.
-
----
+MIT — see the [LICENSE](LICENSE) file.
 
 <div align="center">
 
-## 🦀 Built with Rust
-
-Portable runtimes.
-
-Deterministic environments.
-
-Zero global installations.
-
----
-
 ⭐ **If Runx helped you, consider giving the repository a star!**
-
-**GitHub**
-
-https://github.com/aryankahar31/runx
 
 </div>
