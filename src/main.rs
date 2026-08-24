@@ -6,6 +6,7 @@ use runx::downloader;
 use runx::error;
 use runx::executor;
 use runx::extractor;
+use runx::flags;
 use runx::lock;
 use runx::registry;
 use runx::runtime;
@@ -51,6 +52,23 @@ const RESERVED_COMMANDS: &[&str] = &[
                   subcommand name."
 )]
 struct Cli {
+    /// Emit machine-readable output: command results as JSON on stdout,
+    /// errors as one JSON object on stderr. runx's own progress lines move to
+    /// stderr so stdout stays parseable.
+    #[arg(long, global = true)]
+    json: bool,
+
+    /// Suppress informational output and progress bars; warnings and errors
+    /// still print.
+    #[arg(long, global = true)]
+    quiet: bool,
+
+    /// Refuse any network access. Cached and pinned runtimes keep working;
+    /// anything that would download or resolve a range against a release
+    /// index fails with an explicit error.
+    #[arg(long, global = true)]
+    offline: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -86,7 +104,13 @@ enum Command {
     },
 
     /// Diagnose problems with the cache and PATH.
-    Doctor,
+    Doctor {
+        /// Also verify each runtime's executable against the digest recorded
+        /// at install time. Slower (hashes every entry-point binary) but
+        /// detects at-rest corruption that the fast check cannot see.
+        #[arg(long)]
+        verify: bool,
+    },
 
     /// Print a shell completion script for the given shell.
     Completions {
@@ -142,15 +166,27 @@ enum CacheAction {
 }
 
 fn main() {
-    if let Err(err) = run() {
-        eprintln!("Error: {err:#}");
+    let cli = Cli::parse();
+    flags::init(cli.json, cli.quiet, cli.offline);
+
+    if let Err(err) = run(cli) {
+        if flags::json() {
+            // One JSON object on stderr: the top-level message plus the full
+            // context chain (root cause first), so scripts can match either.
+            let chain: Vec<String> = err.chain().map(|cause| cause.to_string()).collect();
+            let payload = serde_json::json!({
+                "error": chain[0],
+                "chain": chain,
+            });
+            eprintln!("{payload}");
+        } else {
+            eprintln!("Error: {err:#}");
+        }
         process::exit(1);
     }
 }
 
-fn run() -> Result<()> {
-    let cli = Cli::parse();
-
+fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Init) => init_config(),
         Some(Command::Run {
@@ -165,7 +201,7 @@ fn run() -> Result<()> {
             CacheAction::Clean { yes } => cache_clean(yes),
             CacheAction::Prune { older_than, yes } => cache_prune(older_than, yes),
         },
-        Some(Command::Doctor) => doctor_command(),
+        Some(Command::Doctor { verify }) => doctor_command(verify),
         Some(Command::Completions { shell }) => completions_command(shell),
         Some(Command::Self_ { action }) => match action {
             SelfAction::Update => self_update::update(),
@@ -313,9 +349,9 @@ fn load_project() -> Result<(PathBuf, PathBuf, config::RunxConfig)> {
 
     // Print the transparency banner when auto-detection was used.
     if !resolved.detection_lines.is_empty() {
-        println!("No runx.toml found — detected from project files:");
+        flags::info("No runx.toml found — detected from project files:");
         for line in &resolved.detection_lines {
-            println!("{line}");
+            flags::info(line);
         }
     }
 
@@ -367,16 +403,24 @@ fn provision(
                 eprintln!("Note: {}: {note}", entry.tool);
             }
             if chosen.was_range {
-                println!(
+                flags::info(&format!(
                     "Resolved {} `{}` to {}",
                     entry.tool, entry.version, chosen.version
-                );
+                ));
             }
             chosen.version
         };
 
-        let spec = runtime::resolve_runtime(&entry.tool, &version)
+        let mut spec = runtime::resolve_runtime(&entry.tool, &version)
             .with_context(|| format!("Failed to resolve runtime {} {version}", entry.tool))?;
+        // A recorded artifact makes the digest itself the integrity
+        // constraint: verify against the bytes the lockfile captured rather
+        // than whatever the vendor's checksum document lists right now, so a
+        // vendor-side mutation of a published archive cannot flow into an
+        // install that is supposed to be reproducible.
+        if let Some(digest) = &entry.pinned_sha256 {
+            spec.pin_digest(digest);
+        }
         specs.push((spec, requirement));
     }
 
@@ -386,12 +430,12 @@ fn provision(
     for (spec, requirement) in specs {
         match cache::cached_runtime(&spec)? {
             Some(cached) => {
-                println!(
+                flags::info(&format!(
                     "Using cached {} {} at {}",
                     spec.tool,
                     spec.version,
                     cached.root.display()
-                );
+                ));
                 provisioned.push(Provisioned {
                     spec,
                     cached,
@@ -408,12 +452,28 @@ fn provision(
         .map(|(spec, requirement)| {
             let home = home.clone();
             std::thread::spawn(move || -> Result<Provisioned> {
-                println!("Installing {} {}", spec.tool, spec.version);
+                flags::info(&format!("Installing {} {}", spec.tool, spec.version));
                 let download = downloader::download_to_temp(
                     &spec.url,
                     &spec.checksum_url,
                     spec.expected_sha256.as_deref(),
-                )?;
+                )
+                .map_err(|err| {
+                    // Distinguish "the bytes differ from what was locked"
+                    // from every other download failure, so a vendor-side
+                    // mutation reads as the lockfile conflict it is.
+                    let mismatch = format!("{err:#}").contains("SHA-256 mismatch");
+                    if mismatch && spec.checksum_url.is_empty() {
+                        err.context(format!(
+                            "the downloaded artifact does not match the SHA-256 \
+                             recorded in runx.lock for {} {} — the release was \
+                             mutated upstream or the lockfile is stale",
+                            spec.tool, spec.version
+                        ))
+                    } else {
+                        err.context(format!("Failed to install {} {}", spec.tool, spec.version))
+                    }
+                })?;
                 let staging = cache::staging_dir(&home, &spec)?;
 
                 // Record the digest that was actually verified, so `runx.lock`
@@ -505,6 +565,25 @@ fn cache_list() -> Result<()> {
     let home = cache::runx_home()?;
     let entries = cache::list_cached(&home)?;
     let runtimes = cache::runtimes_dir(&home);
+    let staging = cache::list_staging(&home)?;
+
+    if flags::json() {
+        let now = cache::now_secs();
+        let payload = serde_json::json!({
+            "runtimes": entries.iter().map(|entry| serde_json::json!({
+                "tool": entry.tool,
+                "version": entry.version,
+                "size_bytes": entry.size_bytes,
+                "complete": entry.complete,
+                "last_used_secs": entry.last_used_secs,
+                "age_days": entry.age_days(now),
+            })).collect::<Vec<_>>(),
+            "incomplete_downloads": staging.len(),
+            "cache_dir": runtimes.display().to_string(),
+        });
+        println!("{payload}");
+        return Ok(());
+    }
 
     if entries.is_empty() {
         println!("No cached runtimes in {}.", runtimes.display());
@@ -528,7 +607,6 @@ fn cache_list() -> Result<()> {
         );
     }
 
-    let staging = cache::list_staging(&home)?;
     if !staging.is_empty() {
         println!(
             "\n{} incomplete download{} taking up space; run `runx cache prune` to clear.",
@@ -547,6 +625,18 @@ fn cache_size() -> Result<()> {
 
     let staging = cache::list_staging(&home)?;
     let staging_bytes: u64 = staging.iter().map(|path| cache::directory_size(path)).sum();
+
+    if flags::json() {
+        let payload = serde_json::json!({
+            "runtime_count": entries.len(),
+            "runtime_bytes": runtime_bytes,
+            "staging_count": staging.len(),
+            "staging_bytes": staging_bytes,
+            "total_bytes": runtime_bytes + staging_bytes,
+        });
+        println!("{payload}");
+        return Ok(());
+    }
 
     println!(
         "{count} runtime{plural}: {size}",
@@ -581,12 +671,12 @@ fn remove_all(entries: &[cache::CacheEntry]) -> Result<()> {
 
     for entry in entries {
         match cache::remove_entry(&entry.root) {
-            Ok(()) => println!(
+            Ok(()) => flags::info(&format!(
                 "Removed {} {} ({})",
                 entry.tool,
                 entry.version,
                 cache::format_size(entry.size_bytes)
-            ),
+            )),
             Err(err) => failures.push(format!("  {} {}: {err:#}", entry.tool, entry.version)),
         }
     }
@@ -720,18 +810,31 @@ fn cache_prune(older_than_days: u64, confirmed: bool) -> Result<()> {
 /// abandoned staging directories, and stray files; and checks PATH for stale
 /// shims pointing into the runx cache.
 ///
-/// Exits non-zero when something needs fixing.
-fn doctor_command() -> Result<()> {
+/// With `verify`, each complete runtime's entry-point binary is additionally
+/// hashed against the digest recorded at install time, so replaced or
+/// corrupted bytes are caught. Exits non-zero when something needs fixing.
+fn doctor_command(verify: bool) -> Result<()> {
     let home = cache::runx_home()?;
     let runtimes = cache::runtimes_dir(&home);
     let stale = cache::stale_staging(&home)?;
     let mut broken: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
+    // Structured results for `--json`; ignored in human mode.
+    let mut entries_json: Vec<serde_json::Value> = Vec::new();
+    let mut entry = |tool: &str, version: &str, status: &str| {
+        entries_json.push(serde_json::json!({
+            "tool": tool,
+            "version": version,
+            "status": status,
+        }));
+    };
 
-    println!("runx doctor — checking {}", runtimes.display());
+    if !flags::json() {
+        println!("runx doctor — checking {}", runtimes.display());
+    }
 
     if !runtimes.exists() {
-        println!("  ✓ no cache yet — nothing to diagnose");
+        flags::info("  ✓ no cache yet — nothing to diagnose");
     } else {
         for tool_dir in read_dir_sorted(&runtimes)? {
             let tool = file_name_of(&tool_dir);
@@ -760,7 +863,44 @@ fn doctor_command() -> Result<()> {
 
                 let spec = runtime::resolve_runtime(&tool, &name).ok();
                 if cache::is_complete(&version_dir) {
-                    println!("  ✓ {tool} {name}");
+                    if verify {
+                        match spec
+                            .as_ref()
+                            .map(|s| cache::verify_integrity(&version_dir, s))
+                        {
+                            Some(cache::Integrity::Verified) => {
+                                entry(&tool, &name, "verified");
+                                if !flags::json() {
+                                    println!("  ✓ {tool} {name} (verified)");
+                                }
+                            }
+                            Some(cache::Integrity::Corrupt { expected, actual }) => {
+                                broken.push(format!(
+                                    "{tool} {name}: executable does not match the digest \
+                                     recorded at install time (expected {expected}, got {actual}) \
+                                     — reinstall by running its project command again"
+                                ));
+                                entry(&tool, &name, "corrupt");
+                            }
+                            // No recorded digest: pre-dating integrity
+                            // recording. Reported, not failed.
+                            _ => {
+                                notes.push(format!(
+                                    "{tool} {name}: complete but has no recorded \
+                                     executable digest to verify against"
+                                ));
+                                entry(&tool, &name, "unverifiable");
+                                if !flags::json() {
+                                    println!("  ✓ {tool} {name}");
+                                }
+                            }
+                        }
+                    } else {
+                        entry(&tool, &name, "ok");
+                        if !flags::json() {
+                            println!("  ✓ {tool} {name}");
+                        }
+                    }
                 } else if spec
                     .as_ref()
                     .is_some_and(|s| cache::has_expected_executable(&version_dir, s))
@@ -769,12 +909,15 @@ fn doctor_command() -> Result<()> {
                     notes.push(format!(
                         "{tool} {name}: legacy install without a receipt; will be adopted on next use"
                     ));
+                    entry(&tool, &name, "legacy");
                 } else if read_dir_sorted(&version_dir)?.is_empty() {
                     broken.push(format!("empty orphan directory {tool}/{name}"));
+                    entry(&tool, &name, "orphan");
                 } else {
                     broken.push(format!(
                         "{tool} {name}: incomplete — missing the expected executable"
                     ));
+                    entry(&tool, &name, "incomplete");
                 }
             }
             if !saw_runtime {
@@ -789,6 +932,29 @@ fn doctor_command() -> Result<()> {
             "`{tool}` on PATH points into the runx cache ({}) — stale shim, remove it",
             shim.display()
         ));
+    }
+
+    if flags::json() {
+        // Structured report on stdout; a failing doctor still exits non-zero
+        // with its summary as a JSON error on stderr (via the top-level
+        // handler), so scripts can detect failure without parsing this body.
+        let payload = serde_json::json!({
+            "healthy": broken.is_empty(),
+            "cache_dir": runtimes.display().to_string(),
+            "runtimes": entries_json,
+            "notes": notes,
+            "broken": broken,
+        });
+        println!("{payload}");
+        if broken.is_empty() {
+            return Ok(());
+        }
+        return Err(error::UserError::new(format!(
+            "runx doctor found {} issue{}.",
+            broken.len(),
+            if broken.len() == 1 { "" } else { "s" }
+        ))
+        .into());
     }
 
     // Show the exact PATH runx would prepend for the current project, if run
@@ -833,20 +999,14 @@ fn doctor_command() -> Result<()> {
 /// resolving on the next run rather than resolved here.
 fn print_project_detection(project_dir: &Path, notes: &mut Vec<String>) -> Result<()> {
     let detected = detect::detect_runtimes(project_dir);
-    let found: Vec<(&str, &detect::DetectedRuntime)> = [
-        ("node", &detected.node),
-        ("python", &detected.python),
-        ("bun", &detected.bun),
-        ("go", &detected.go),
-        ("deno", &detected.deno),
-    ]
-    .into_iter()
-    .filter_map(|(tool, slot)| {
-        slot.as_ref()
-            .and_then(detect::Detected::found)
-            .map(|runtime| (tool, runtime))
-    })
-    .collect();
+    let found: Vec<(&str, &detect::DetectedRuntime)> = detected
+        .slots()
+        .into_iter()
+        .filter_map(|(tool, slot)| {
+            slot.and_then(detect::Detected::found)
+                .map(|runtime| (tool, runtime))
+        })
+        .collect();
 
     if found.is_empty() {
         return Ok(());
@@ -873,10 +1033,10 @@ fn print_project_detection(project_dir: &Path, notes: &mut Vec<String>) -> Resul
         }
     }
 
-    if detected.inferred_dev_command.is_none() {
+    if detected.inferred_commands.is_empty() {
         notes.push(
-            "no inferable run command (no `dev` script in package.json); \
-             define one in runx.toml"
+            "no inferable run commands (no scripts in package.json); \
+             define some in runx.toml"
                 .to_string(),
         );
     }
@@ -936,7 +1096,15 @@ fn file_name_of(path: &Path) -> String {
 }
 
 /// Managed tool names that could be shimmed on the user's PATH.
-const MANAGED_TOOLS: &[&str] = &["node", "python", "python3", "bun", "go"];
+///
+/// Derived from the runtime table plus `python3` (which python-build-standalone
+/// installs alongside `python`), so a new runtime is checked automatically.
+fn managed_tools() -> Vec<&'static str> {
+    let mut ids: Vec<&'static str> = runtime::RUNTIME_IDS.to_vec();
+    ids.push("python3");
+    ids.sort_unstable();
+    ids
+}
 
 /// Find PATH entries resolving to one of the managed tools *inside* the runx
 /// cache. Such a shim survives `runx cache clean` and then silently runs
@@ -947,7 +1115,7 @@ fn runx_shims_on_path(home: &Path) -> Vec<(String, PathBuf)> {
         if dir == Path::new("") {
             continue;
         }
-        for tool in MANAGED_TOOLS {
+        for tool in managed_tools() {
             let candidate = dir.join(tool);
             if candidate.is_file() {
                 let real = fs::canonicalize(&candidate).unwrap_or(candidate);
@@ -995,15 +1163,21 @@ fn lock_command() -> Result<()> {
         );
 
         match &sha256 {
-            Some(_) => println!("Locked {} {}", entry.spec.tool, entry.spec.version),
-            None => println!(
+            Some(_) => flags::info(&format!(
+                "Locked {} {}",
+                entry.spec.tool, entry.spec.version
+            )),
+            None => flags::info(&format!(
                 "Locked {} {} (version only — no recorded checksum for this install)",
                 entry.spec.tool, entry.spec.version
-            ),
+            )),
         }
     }
 
     lockfile.save(&project_dir)?;
-    println!("Wrote {}", lock::lock_path(&project_dir).display());
+    flags::info(&format!(
+        "Wrote {}",
+        lock::lock_path(&project_dir).display()
+    ));
     Ok(())
 }

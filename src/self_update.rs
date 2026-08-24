@@ -48,6 +48,7 @@ struct Asset {
 
 /// Replace the running binary with the newest release, if one is newer.
 pub fn update() -> Result<()> {
+    crate::flags::ensure_network("check for updates")?;
     let current_version = env!("CARGO_PKG_VERSION");
     let token = platform_token()?;
 

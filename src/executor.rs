@@ -19,7 +19,7 @@ pub fn execute(
     let start = std::time::Instant::now();
     let path = isolated_path(runtimes)?;
     let command = append_passthrough(command, passthrough);
-    println!("Running `{command}`");
+    crate::flags::info(&format!("Running `{command}`"));
 
     let mut child = shell_command(&command);
     child

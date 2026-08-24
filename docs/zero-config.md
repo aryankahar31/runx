@@ -24,6 +24,7 @@ If a `runx.toml` *does* exist it is **always used exclusively** — explicit con
 |----------|------|-------|
 | 1 | `.python-version` | Plain text, leading `v` stripped |
 | 2 | `pyproject.toml` → `[project].requires-python` | TOML, range resolved |
+| 3 | `Pipfile` → `[requires].python_version` | TOML; a bare minor like `3.11` is an X-range resolving to the newest 3.11.x |
 
 ### Bun (first match wins)
 
@@ -49,7 +50,7 @@ Detected from `.dvmrc` / `.deno-version`, or an explicit entry in `runx.toml`.
 
 ### Project-root markers
 
-A detected version file also marks a project root for auto-detection, alongside `runx.toml`: `.nvmrc`, `.node-version`, `.python-version`, `.go-version`, `.bun-version`, `.dvmrc`, `.deno-version`, `package.json`, `pyproject.toml`, `go.mod`, `bun.lock`, `bun.lockb` and `bunfig.toml`.
+A detected version file also marks a project root for auto-detection, alongside `runx.toml`: `.nvmrc`, `.node-version`, `.python-version`, `.go-version`, `.bun-version`, `.dvmrc`, `.deno-version`, `package.json`, `pyproject.toml`, `Pipfile`, `go.mod`, `bun.lock`, `bun.lockb` and `bunfig.toml`.
 
 ## Multiple runtimes per project
 
@@ -81,7 +82,9 @@ build = "npm run build"
 
 ## Run-command inference
 
-For the inferred `dev` command runx checks whether `package.json` contains a `"dev"` script and runs `bun run dev` when the project is Bun-managed (see the Bun table above), `npm run dev` otherwise. No other commands are guessed. If a dev command cannot be inferred, runx prints a clear error listing what was detected and suggests running `runx init`.
+Every script in `package.json` becomes a run command keyed by its script name: `npm run <script>` for npm-style projects, `bun run <script>` for Bun-managed ones (see the Bun table above). That means `runx dev`, but also `runx test`, `runx build`, `runx lint` — whatever your package.json declares — work without any runx.toml. No other commands are guessed: Go, Python and Rust-only projects have no inferable command and get a clear error listing what was detected plus a pointer to `runx init`.
+
+An explicit `[run]` table in `runx.toml` always replaces inference entirely (see [Configuration Precedence](#configuration-precedence)).
 
 ## Example output
 

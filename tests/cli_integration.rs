@@ -690,7 +690,7 @@ fn go_project_without_inferable_command_errors_clearly() {
         "should name the detection:\n{stderr}"
     );
     assert!(
-        stderr.contains("Could not infer a run command"),
+        stderr.contains("Could not infer any run command"),
         "should separate detection from inference:\n{stderr}"
     );
     assert!(
@@ -1334,4 +1334,389 @@ fn doctor_flags_abandoned_staging_downloads() {
         "stdout:\n{}",
         stdout_of(&output)
     );
+}
+
+// ── doctor --verify ──────────────────────────────────────────────────────────
+
+/// A runtime whose executable matches the digest recorded in its receipt must
+/// pass `doctor --verify` explicitly, not just the presence check.
+#[test]
+fn doctor_verify_confirms_untouched_runtimes() {
+    let dir = tmp();
+    let home = tmp();
+    let root = plant_runtime(home.path(), "node", "20.11.0", true);
+
+    // Rewrite the receipt with a digest of the actual planted bytes.
+    use sha2::{Digest as _, Sha256};
+    let exe_path = if cfg!(windows) {
+        root.join("node.exe")
+    } else {
+        root.join("bin/node")
+    };
+    let digest = {
+        let bytes = fs::read(&exe_path).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    };
+    fs::write(
+        root.join(".runx-complete.json"),
+        format!(
+            r#"{{"tool":"node","version":"20.11.0","installed_at_secs":0,
+                "runx_version":"test","source_url":"","sha256":null,
+                "executable_sha256":"{digest}"}}"#
+        ),
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), home.path(), &["doctor", "--verify"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(stdout.contains("(verified)"), "stdout:\n{stdout}");
+}
+
+/// Bytes replaced after install must fail `doctor --verify` — this is the
+/// corruption case the fast check cannot see.
+#[test]
+fn doctor_verify_catches_tampered_executables() {
+    let dir = tmp();
+    let home = tmp();
+    let root = plant_runtime(home.path(), "node", "20.11.0", true);
+
+    // Record the digest of the original 4096 zero bytes…
+    use sha2::{Digest as _, Sha256};
+    let exe_path = if cfg!(windows) {
+        root.join("node.exe")
+    } else {
+        root.join("bin/node")
+    };
+    let original = {
+        let bytes = fs::read(&exe_path).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    };
+    fs::write(
+        root.join(".runx-complete.json"),
+        format!(
+            r#"{{"tool":"node","version":"20.11.0","installed_at_secs":0,
+                "runx_version":"test","source_url":"","sha256":null,
+                "executable_sha256":"{original}"}}"#
+        ),
+    )
+    .unwrap();
+
+    // …then swap the bytes.
+    fs::write(&exe_path, b"tampered").unwrap();
+
+    let output = runx_with_home(dir.path(), home.path(), &["doctor", "--verify"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a tampered runtime must fail doctor --verify; stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("does not match the digest"),
+        "stdout:\n{stdout}"
+    );
+}
+
+/// Legacy receipts without an executable digest are reported as unverifiable
+/// (a note), never as corruption.
+#[test]
+fn doctor_verify_reports_legacy_receipts_without_failing() {
+    let dir = tmp();
+    let home = tmp();
+    plant_runtime(home.path(), "node", "20.11.0", true); // receipt has no digest field
+
+    let output = runx_with_home(dir.path(), home.path(), &["doctor", "--verify"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("no recorded executable digest"),
+        "stdout:\n{stdout}"
+    );
+}
+
+/// Plain `doctor` stays fast and does NOT hash anything: a tampered runtime
+/// with a valid marker still passes the default check (that is exactly why
+/// `--verify` exists).
+#[test]
+fn plain_doctor_does_not_hash_executables() {
+    let dir = tmp();
+    let home = tmp();
+    let root = plant_runtime(home.path(), "node", "20.11.0", true);
+
+    use sha2::{Digest as _, Sha256};
+    let exe_path = if cfg!(windows) {
+        root.join("node.exe")
+    } else {
+        root.join("bin/node")
+    };
+    let original = {
+        let bytes = fs::read(&exe_path).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    };
+    fs::write(
+        root.join(".runx-complete.json"),
+        format!(
+            r#"{{"tool":"node","version":"20.11.0","installed_at_secs":0,
+                "runx_version":"test","source_url":"","sha256":null,
+                "executable_sha256":"{original}"}}"#
+        ),
+    )
+    .unwrap();
+    fs::write(&exe_path, b"tampered").unwrap();
+
+    let output = runx_with_home(dir.path(), home.path(), &["doctor"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "plain doctor checks structure only; stderr: {}",
+        stderr_of(&output)
+    );
+}
+
+// ── --json / --quiet / --offline ─────────────────────────────────────────────
+
+/// `--json` errors must be a single JSON object on stderr with an "error"
+/// field, so CI can detect failure without parsing prose.
+#[test]
+fn json_mode_emits_machine_readable_errors() {
+    let dir = tmp();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"echo hi\"\n").unwrap();
+    let output = runx_with_home(dir.path(), dir.path(), &["--json", "nosuchkey"]);
+    assert_eq!(output.status.code(), Some(1));
+
+    let stderr = stderr_of(&output);
+    let parsed: serde_json::Value = serde_json::from_str(&stderr)
+        .unwrap_or_else(|err| panic!("stderr must be one JSON object ({err}):\n{stderr}"));
+    let message = parsed["error"].as_str().expect("error must be a string");
+    assert!(
+        message.contains("nosuchkey"),
+        "the error should name the bad key, got: {message}"
+    );
+}
+
+/// `cache list --json` must emit valid JSON on stdout even when runx prints
+/// informational lines elsewhere.
+#[test]
+fn json_cache_list_reports_runtimes() {
+    let dir = tmp();
+    let home = tmp();
+    plant_runtime(home.path(), "node", "20.11.0", true);
+
+    let output = runx_with_home(dir.path(), home.path(), &["--json", "cache", "list"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+
+    let stdout = stdout_of(&output);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|err| panic!("stdout must be JSON ({err}):\n{stdout}"));
+    let runtimes = parsed["runtimes"].as_array().expect("runtimes array");
+    assert_eq!(runtimes.len(), 1);
+    assert_eq!(runtimes[0]["tool"], "node");
+    assert_eq!(runtimes[0]["version"], "20.11.0");
+    assert_eq!(runtimes[0]["complete"], true);
+}
+
+/// `doctor --json --verify` must report per-runtime verification status as
+/// structured data, and stay healthy for untouched installs.
+#[test]
+fn json_doctor_verify_reports_statuses() {
+    let dir = tmp();
+    let home = tmp();
+    let root = plant_runtime(home.path(), "node", "20.11.0", true);
+
+    use sha2::{Digest as _, Sha256};
+    let exe_path = if cfg!(windows) {
+        root.join("node.exe")
+    } else {
+        root.join("bin/node")
+    };
+    let digest = {
+        let bytes = fs::read(&exe_path).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    };
+    fs::write(
+        root.join(".runx-complete.json"),
+        format!(
+            r#"{{"tool":"node","version":"20.11.0","installed_at_secs":0,
+                "runx_version":"test","source_url":"","sha256":null,
+                "executable_sha256":"{digest}"}}"#
+        ),
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), home.path(), &["--json", "doctor", "--verify"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+
+    let stdout = stdout_of(&output);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|err| panic!("stdout must be JSON ({err}):\n{stdout}"));
+    assert_eq!(parsed["healthy"], true);
+    assert_eq!(parsed["runtimes"][0]["status"], "verified");
+}
+
+/// A corrupted runtime must surface in `doctor --json --verify` both as
+/// status "corrupt" and as a non-zero exit with a JSON error on stderr.
+#[test]
+fn json_doctor_verify_flags_corruption_and_fails() {
+    let dir = tmp();
+    let home = tmp();
+    let root = plant_runtime(home.path(), "node", "20.11.0", true);
+
+    use sha2::{Digest as _, Sha256};
+    let exe_path = if cfg!(windows) {
+        root.join("node.exe")
+    } else {
+        root.join("bin/node")
+    };
+    let original = {
+        let bytes = fs::read(&exe_path).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    };
+    fs::write(
+        root.join(".runx-complete.json"),
+        format!(
+            r#"{{"tool":"node","version":"20.11.0","installed_at_secs":0,
+                "runx_version":"test","source_url":"","sha256":null,
+                "executable_sha256":"{original}"}}"#
+        ),
+    )
+    .unwrap();
+    fs::write(&exe_path, b"tampered").unwrap();
+
+    let output = runx_with_home(dir.path(), home.path(), &["--json", "doctor", "--verify"]);
+    assert_eq!(output.status.code(), Some(1));
+
+    let body = serde_json::Value::Object(
+        [(
+            "body".to_string(),
+            serde_json::Value::String(stdout_of(&output)),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    drop(body);
+    let stdout_parsed: serde_json::Value = serde_json::from_str(&stdout_of(&output))
+        .unwrap_or_else(|err| panic!("stdout must be JSON ({err})"));
+    assert_eq!(stdout_parsed["healthy"], false);
+    assert_eq!(stdout_parsed["runtimes"][0]["status"], "corrupt");
+
+    let stderr = stderr_of(&output);
+    let stderr_parsed: serde_json::Value = serde_json::from_str(&stderr)
+        .unwrap_or_else(|err| panic!("stderr must be JSON ({err}):\n{stderr}"));
+    assert!(
+        stderr_parsed["error"]
+            .as_str()
+            .is_some_and(|m| m.contains("1 issue")),
+        "stderr error should summarize the failure: {stderr}"
+    );
+}
+
+/// `--quiet` suppresses runx's own lines but not the command's output or
+/// exit code.
+#[test]
+fn quiet_mode_silences_banners_but_not_the_command() {
+    let dir = tmp();
+    let home = tmp();
+    plant_runtime(home.path(), "node", "20.11.0", true);
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"20.11.0\"\n\n[run]\ndev = \"echo CHILD_OUTPUT\"\n",
+    )
+    .unwrap();
+
+    let loud = runx_with_home(dir.path(), home.path(), &["run", "dev"]);
+    assert!(
+        stdout_of(&loud).contains("Using cached"),
+        "human mode keeps the banner:\n{}",
+        stdout_of(&loud)
+    );
+
+    let quiet = runx_with_home(dir.path(), home.path(), &["--quiet", "run", "dev"]);
+    assert_eq!(quiet.status.code(), Some(0));
+    let stdout = stdout_of(&quiet);
+    assert!(
+        !stdout.contains("Using cached") && !stdout.contains("Running"),
+        "quiet mode must drop banners:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("CHILD_OUTPUT"),
+        "quiet mode keeps child output:\n{stdout}"
+    );
+}
+
+/// `--offline` must allow cached exact pins to run untouched.
+#[test]
+fn offline_mode_runs_cached_exact_pins() {
+    let dir = tmp();
+    let home = tmp();
+    plant_runtime(home.path(), "node", "20.11.0", true);
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"20.11.0\"\n\n[run]\ndev = \"echo OFFLINE_OK\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), home.path(), &["--offline", "run", "dev"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(stdout_of(&output).contains("OFFLINE_OK"));
+}
+
+/// `--offline` must fail fast and clearly for anything that would need the
+/// network — here, an uncached runtime whose download is refused before any
+/// HTTP happens.
+#[test]
+fn offline_mode_refuses_downloads() {
+    let dir = tmp();
+    let home = tmp();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"20.11.0\"\n\n[run]\ndev = \"echo unreachable\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), home.path(), &["--offline", "run", "dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let combined = format!("{}{}", stderr_of(&output), stdout_of(&output));
+    assert!(
+        combined.contains("--offline"),
+        "the error must name the flag that caused it:\n{combined}"
+    );
+    // The refusal must happen before any download attempt.
+    assert!(!combined.contains("Downloading"));
 }
