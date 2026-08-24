@@ -45,7 +45,8 @@ pub fn download_to_temp(
     checksum_url: &str,
     expected_sha256: Option<&str>,
 ) -> Result<Download> {
-    println!("Downloading {url}");
+    crate::flags::ensure_network(&format!("download {url}"))?;
+    crate::flags::info(&format!("Downloading {url}"));
 
     let mut temp = NamedTempFile::new().context("Failed to create temporary download file")?;
     let mut have: u64 = 0;
@@ -171,9 +172,11 @@ fn fetch_into(url: &str, temp: &mut NamedTempFile, resume_from: u64) -> Result<(
     let remaining = response
         .header("Content-Length")
         .and_then(|value| value.parse::<u64>().ok());
-    let progress = match remaining {
-        Some(bytes) => ProgressBar::new(start + bytes),
-        None => ProgressBar::new_spinner(),
+    let hidden = crate::flags::hide_progress();
+    let progress = match (remaining, hidden) {
+        (_, true) => ProgressBar::hidden(),
+        (Some(bytes), false) => ProgressBar::new(start + bytes),
+        (None, false) => ProgressBar::new_spinner(),
     };
     progress.set_style(
         ProgressStyle::with_template(
@@ -232,7 +235,7 @@ fn verify_checksum(
     // connection is the only guarantee. The digest is still recorded so the
     // lockfile reflects what was actually installed.
     if checksum_url.is_empty() && expected_sha256.is_none() {
-        println!("Note: no published checksum; verified by TLS only");
+        crate::flags::info("Note: no published checksum; verified by TLS only");
         return compute_sha256(temp.path());
     }
 
@@ -254,7 +257,7 @@ fn verify_checksum(
     if !actual.eq_ignore_ascii_case(&expected) {
         anyhow::bail!("SHA-256 mismatch for {filename}: expected {expected}, got {actual}");
     }
-    println!("✓ Checksum verified");
+    crate::flags::info("✓ Checksum verified");
     Ok(actual)
 }
 
@@ -357,6 +360,14 @@ fn percent_decode(raw: &str) -> String {
 }
 
 /// Compute the lowercase hex SHA-256 digest of the file at `path`.
+///
+/// `None` when the file cannot be opened (missing or unreadable) — callers
+/// decide whether that is an error or a "cannot verify" report.
+pub fn sha256_file(path: &Path) -> Option<String> {
+    compute_sha256(path).ok()
+}
+
+/// Fallible core of [`sha256_file`], with error context for download paths.
 fn compute_sha256(path: &Path) -> Result<String> {
     let mut file = File::open(path)
         .with_context(|| format!("Failed to open {} for hashing", path.display()))?;

@@ -18,6 +18,7 @@
 //!   rather than being unable to resolve a range at all.
 
 use crate::cache;
+use crate::error::UserError;
 use crate::version::Version;
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -259,7 +260,29 @@ pub fn resolve_requirement(tool: &str, requirement: &str, mode: Resolution) -> R
         return choose_version(requirement, mode, None);
     }
 
+    // A range normally degrades to its lowest bound when the release list
+    // cannot be fetched. Under --offline that degradation would silently
+    // install an older runtime than "newest satisfying" promises, so it is
+    // refused instead: pin an exact version or commit runx.lock.
+    if crate::flags::offline() {
+        return Err(UserError::new(format!(
+            "--offline was given but `{requirement}` is a range: choosing a \
+             version from it needs the {tool} release list.\n\
+             Hint: pin an exact version in runx.toml, commit runx.lock, and \
+             use `runx run <key> --locked`."
+        ))
+        .into());
+    }
+
     let platform = crate::runtime::registry_platform(tool)?;
+    // Route through the runtime table so a new runtime only needs a `RuntimeDef`
+    // entry (plus, for python-style requirement-aware tools, a special case here).
+    let Some(def) = crate::runtime::find(tool) else {
+        return Err(
+            UserError::new(format!("No release index available for runtime `{tool}`")).into(),
+        );
+    };
+
     // Python's release metadata is heavy (~15MB per page of release assets),
     // so its fetch is requirement-aware and stops at the first page that can
     // satisfy the range (see `python_available_versions`). The other tools'
@@ -267,7 +290,7 @@ pub fn resolve_requirement(tool: &str, requirement: &str, mode: Resolution) -> R
     let available = if tool == "python" {
         python_available_versions(requirement, &platform).ok()
     } else {
-        available_versions(tool, &platform).ok()
+        def.index.and_then(|fetch| fetch().ok())
     };
     choose_version(requirement, mode, available.as_deref())
 }
@@ -288,17 +311,22 @@ pub fn available_versions(tool: &str, platform: &str) -> Result<Vec<Version>> {
         return Ok(versions);
     }
 
-    let versions = match tool {
-        "node" => fetch_node_versions()?,
-        "bun" => fetch_bun_versions()?,
-        "go" => fetch_go_versions()?,
-        "deno" => fetch_deno_versions()?,
-        // Python resolution is requirement-aware and short-circuits on the
-        // first satisfying page; going through this generic path would pull
-        // the full ~150MB index even for a trivial range.
-        "python" => anyhow::bail!("python resolution is requirement-aware; not supported here"),
-        other => anyhow::bail!("No release index available for runtime `{other}`"),
+    crate::flags::ensure_network(&format!(
+        "fetch the {tool} release index (a cached or pinned version needs none)"
+    ))?;
+
+    let Some(def) = crate::runtime::find(tool) else {
+        return Err(
+            UserError::new(format!("No release index available for runtime `{tool}`")).into(),
+        );
     };
+    // Python resolution is requirement-aware and short-circuits on the first
+    // satisfying page; going through this generic path would pull the full
+    // ~150MB index even for a trivial range.
+    let fetch = def.index.ok_or_else(|| {
+        anyhow::anyhow!("python resolution is requirement-aware; not supported here")
+    })?;
+    let versions = fetch()?;
 
     write_cache(&path, &versions);
     Ok(versions)
@@ -326,6 +354,10 @@ pub fn python_available_versions(requirement: &str, platform: &str) -> Result<Ve
     if let Some(versions) = read_cache(&path, now_secs()) {
         return Ok(versions);
     }
+
+    crate::flags::ensure_network(
+        "fetch the python-build-standalone release index (a pinned version needs none)",
+    )?;
 
     let req = crate::version::Req::parse(requirement)
         .ok_or_else(|| anyhow::anyhow!("`{requirement}` is not a recognised version or range"))?;
@@ -433,7 +465,7 @@ fn index_cache_path(tool: &str, platform: &str) -> Result<PathBuf> {
         .join(format!("{tool}-{platform}.json")))
 }
 
-fn fetch_node_versions() -> Result<Vec<Version>> {
+pub fn fetch_node_versions() -> Result<Vec<Version>> {
     let body = crate::http::get(NODE_INDEX_URL)
         .call()
         .with_context(|| format!("Failed to fetch the Node release index from {NODE_INDEX_URL}"))?
@@ -496,7 +528,7 @@ fn python_version_from_asset(name: &str) -> Option<Version> {
 /// Bun publishes every supported platform for every release, so the platform
 /// does not need to filter the list. Canary and pre-release tags
 /// (`bun-v1.3.14-canary.x`) fail to parse as versions and are skipped.
-fn fetch_bun_versions() -> Result<Vec<Version>> {
+pub fn fetch_bun_versions() -> Result<Vec<Version>> {
     let mut found: Vec<Version> = Vec::new();
 
     for page in 1..=BUN_PAGES {
@@ -529,7 +561,7 @@ fn fetch_bun_versions() -> Result<Vec<Version>> {
 /// Deno publishes every supported platform for every release, so the platform
 /// does not need to filter the list. RC and canary tags fail to parse as
 /// exact three-part versions and are skipped.
-fn fetch_deno_versions() -> Result<Vec<Version>> {
+pub fn fetch_deno_versions() -> Result<Vec<Version>> {
     let mut found: Vec<Version> = Vec::new();
 
     for page in 1..=DENO_PAGES {
@@ -575,7 +607,7 @@ fn version_from_deno_tag(tag: &str) -> Option<Version> {
 /// Only plain `goMAJOR.MINOR.PATCH` stable releases count: pre-releases
 /// (`go1.27rc1`) and the two-part aliases Go lists alongside full releases
 /// (`go1.25`) are not installable downloads runx resolves to.
-fn fetch_go_versions() -> Result<Vec<Version>> {
+pub fn fetch_go_versions() -> Result<Vec<Version>> {
     let body = crate::http::get(GO_INDEX_URL)
         .call()
         .with_context(|| format!("Failed to fetch the Go release index from {GO_INDEX_URL}"))?

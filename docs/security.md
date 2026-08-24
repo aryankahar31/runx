@@ -3,10 +3,12 @@
 ## Summary of hardening guarantees
 
 - **SHA-256 verification** of every download, before extraction
+- **Locked installs verify against `runx.lock` itself** — when a lock entry records an artifact for your platform, its digest (not the vendor's live checksum document) is the integrity constraint
 - **Sigstore/cosign signature verification** (keyless) on release archives and `SHA256SUMS`
 - **Atomic installs** — extraction happens in `.staging-*` directories and is renamed into place only after verification; an interrupted download can never corrupt the cache
 - **Strict version validation at a single chokepoint** (`src/runtime.rs::resolve_runtime`) — version strings become filesystem paths and download URLs, so path traversal is rejected before anything else happens
 - **Archive extraction hardening** — symlink escape rejected, exec bits preserved
+- **At-rest integrity checking** — every install records a SHA-256 of the runtime's entry-point binary in its receipt; `runx doctor --verify` hashes the current bytes against it and reports replaced or corrupted executables (legacy receipts without a recorded digest are reported as unverifiable, never as corrupt)
 - **Fail-closed installers** — no checksum tool available means no install
 
 ## Install-script verification

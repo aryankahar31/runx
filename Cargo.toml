@@ -21,3 +21,6 @@ toml = "0.8"
 ureq = { version = "2.10", features = ["json"] }
 xz2 = "0.1"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+sha2 = "0.10"

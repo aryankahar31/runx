@@ -10,6 +10,8 @@
 //! **Python**
 //! 1. `.python-version`
 //! 2. `pyproject.toml` → `[project].requires-python`
+//! 3. `Pipfile` → `[requires].python_version` (a bare minor like `3.11`,
+//!    treated as an X-range resolving to the newest 3.11.x)
 //!
 //! **Bun**
 //! 1. `.bun-version`
@@ -93,35 +95,46 @@ pub struct DetectionResult {
     pub bun: Option<Detected>,
     pub go: Option<Detected>,
     pub deno: Option<Detected>,
-    /// Shell command inferred from `package.json` `scripts.dev`, if present.
-    /// `"npm run dev"` for npm-style projects, `"bun run dev"` for
-    /// Bun-managed ones. No other heuristics are attempted, per the v0.2
-    /// scope.
-    pub inferred_dev_command: Option<String>,
+    /// Shell commands inferred from `package.json` `scripts`, keyed by script
+    /// name: `"npm run <script>"` for npm-style projects, `"bun run <script>"`
+    /// for Bun-managed ones. Every script becomes a command so `runx test`
+    /// and `runx build` work on detected-only projects; explicit `[run]`
+    /// tables in `runx.toml` always take precedence.
+    pub inferred_commands: BTreeMap<String, String>,
 }
 
 impl DetectionResult {
+    /// Every runtime slot as `(id, hint)` pairs, in a stable display order.
+    ///
+    /// This is the single list of detected runtimes: banner rendering,
+    /// doctor's project report, and the runtimes map all iterate it, so a new
+    /// runtime slots into detection output by adding one tuple here (plus its
+    /// detector fn and struct field).
+    pub fn slots(&self) -> [(&'static str, Option<&Detected>); 5] {
+        [
+            ("node", self.node.as_ref()),
+            ("python", self.python.as_ref()),
+            ("bun", self.bun.as_ref()),
+            ("go", self.go.as_ref()),
+            ("deno", self.deno.as_ref()),
+        ]
+    }
+
     /// Every hint that was found but could not be resolved, as printable lines.
     pub fn unresolvable(&self) -> Vec<String> {
-        [
-            ("node", &self.node),
-            ("python", &self.python),
-            ("bun", &self.bun),
-            ("go", &self.go),
-            ("deno", &self.deno),
-        ]
-        .into_iter()
-        .filter_map(|(tool, slot)| match slot.as_ref()? {
-            Detected::Unresolvable {
-                source,
-                requirement,
-                reason,
-            } => Some(format!(
-                "  {tool} `{requirement}` (from {source}) — {reason}"
-            )),
-            Detected::Found(_) => None,
-        })
-        .collect()
+        self.slots()
+            .into_iter()
+            .filter_map(|(tool, slot)| match slot? {
+                Detected::Unresolvable {
+                    source,
+                    requirement,
+                    reason,
+                } => Some(format!(
+                    "  {tool} `{requirement}` (from {source}) — {reason}"
+                )),
+                Detected::Found(_) => None,
+            })
+            .collect()
     }
 }
 
@@ -139,7 +152,7 @@ pub fn detect_runtimes(dir: &Path) -> DetectionResult {
         bun: detect_bun(dir),
         go: detect_go(dir),
         deno: detect_deno(dir),
-        inferred_dev_command: infer_dev_command(dir),
+        inferred_commands: infer_commands(dir),
     }
 }
 
@@ -177,7 +190,12 @@ fn detect_python(dir: &Path) -> Option<Detected> {
     }
 
     // Priority 2: pyproject.toml [project].requires-python
-    detect_python_from_pyproject(dir)
+    if let Some(found) = detect_python_from_pyproject(dir) {
+        return Some(found);
+    }
+
+    // Priority 3: Pipfile [requires].python_version
+    detect_python_from_pipfile(dir)
 }
 
 fn detect_python_from_pyproject(dir: &Path) -> Option<Detected> {
@@ -189,6 +207,20 @@ fn detect_python_from_pyproject(dir: &Path) -> Option<Detected> {
         .and_then(|value| value.as_str())?;
 
     Some(record_hint(requires, "pyproject.toml (requires-python)"))
+}
+
+fn detect_python_from_pipfile(dir: &Path) -> Option<Detected> {
+    let raw = read_file_to_string_lossy(&dir.join("Pipfile"))?;
+    let doc: toml::Value = toml::from_str(&raw).ok()?;
+    // A Pipfile records a bare minor ("3.11"), which the requirement parser
+    // treats as an X-range — the same "newest 3.11.x" behaviour pipenv users
+    // expect from the field.
+    let version = doc
+        .get("requires")
+        .and_then(|requires| requires.get("python_version"))
+        .and_then(|value| value.as_str())?;
+
+    Some(record_hint(version, "Pipfile (python_version)"))
 }
 
 // ── Bun detection ─────────────────────────────────────────────────────────────
@@ -298,26 +330,34 @@ fn detect_deno(dir: &Path) -> Option<Detected> {
 
 // ── Run-command inference ─────────────────────────────────────────────────────
 
-/// Return `Some("bun run dev")` for Bun-managed projects and
-/// `Some("npm run dev")` for npm-style ones, when `package.json` has a `"dev"`
-/// script. No other commands are inferred — this is the only well-defined
-/// heuristic in scope, and inventing commands for other ecosystems (Go, Rust,
-/// Python) would be guessing.
-fn infer_dev_command(dir: &Path) -> Option<String> {
-    let raw = read_file_to_string_lossy(&dir.join("package.json"))?;
-    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let has_dev = json
-        .get("scripts")
-        .and_then(|scripts| scripts.get("dev"))
-        .is_some();
-    if !has_dev {
-        return None;
-    }
-    if is_bun_managed(dir, &json) {
-        Some("bun run dev".to_string())
+/// Infer run commands from `package.json` `scripts`, keyed by script name.
+///
+/// `"npm run <script>"` for npm-style projects, `"bun run <script>"` for
+/// Bun-managed ones. Exposing every script (not just `dev`) is what makes
+/// `runx test` / `runx build` work without a `runx.toml`; the shell string
+/// still comes from npm/bun, so nothing here invents commands.
+fn infer_commands(dir: &Path) -> BTreeMap<String, String> {
+    let Some(raw) = read_file_to_string_lossy(&dir.join("package.json")) else {
+        return BTreeMap::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return BTreeMap::new();
+    };
+    let Some(scripts) = json.get("scripts").and_then(|scripts| scripts.as_object()) else {
+        return BTreeMap::new();
+    };
+
+    let runner = if is_bun_managed(dir, &json) {
+        "bun"
     } else {
-        Some("npm run dev".to_string())
-    }
+        "npm"
+    };
+
+    scripts
+        .iter()
+        .filter(|(_, value)| value.is_string())
+        .map(|(name, _)| (name.clone(), format!("{runner} run {name}")))
+        .collect()
 }
 
 /// True when the project's package manager is Bun: a Bun lockfile exists, or
@@ -429,19 +469,14 @@ fn normalise_requirement(raw: &str) -> String {
 /// Build the map form expected by `RunxConfig::runtimes`, keyed tool to
 /// *requirement*, including only hints that parsed.
 pub fn detected_runtimes_map(result: &DetectionResult) -> BTreeMap<String, String> {
-    [
-        ("node", &result.node),
-        ("python", &result.python),
-        ("bun", &result.bun),
-        ("go", &result.go),
-        ("deno", &result.deno),
-    ]
-    .into_iter()
-    .filter_map(|(tool, slot)| {
-        let found = slot.as_ref()?.found()?;
-        Some((tool.to_string(), found.requirement.clone()))
-    })
-    .collect()
+    result
+        .slots()
+        .into_iter()
+        .filter_map(|(tool, slot)| {
+            let found = slot?.found()?;
+            Some((tool.to_string(), found.requirement.clone()))
+        })
+        .collect()
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -625,6 +660,54 @@ mod tests {
         );
     }
 
+    /// The Pipfile `[requires].python_version` field is the third detection
+    /// source: a bare minor like "3.11" is kept as an X-range so it resolves
+    /// to the newest 3.11.x release.
+    #[test]
+    fn detects_python_from_pipfile() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("Pipfile"),
+            "[requires]\npython_version = \"3.11\"\n",
+        )
+        .unwrap();
+
+        let result = detect_runtimes(dir.path());
+        let python = python_of(&result);
+        assert_eq!(python.requirement, "3.11");
+        assert_eq!(python.source, "Pipfile (python_version)");
+        assert!(
+            python.is_range,
+            "a bare minor must stay resolvable to newest 3.11.x"
+        );
+    }
+
+    #[test]
+    fn pipfile_loses_to_pyproject_and_python_version() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("Pipfile"),
+            "[requires]\npython_version = \"3.9\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nrequires-python = \">=3.12\"\n",
+        )
+        .unwrap();
+
+        let result = detect_runtimes(dir.path());
+        assert_eq!(python_of(&result).requirement, ">=3.12");
+    }
+
+    /// A Pipfile without the [requires] section is not a Python hint at all.
+    #[test]
+    fn pipfile_without_requires_is_not_a_hint() {
+        let dir = tmp();
+        fs::write(dir.path().join("Pipfile"), "[packages]\nrequests = \"*\"\n").unwrap();
+        assert!(detect_runtimes(dir.path()).python.is_none());
+    }
+
     // ── Run-command inference ─────────────────────────────────────────────────
 
     #[test]
@@ -637,27 +720,70 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            detect_runtimes(dir.path()).inferred_dev_command.as_deref(),
+            detect_runtimes(dir.path())
+                .inferred_commands
+                .get("dev")
+                .map(String::as_str),
             Some("npm run dev")
         );
     }
 
+    /// Every script becomes a command, not just `dev`: `runx test` and
+    /// `runx build` must work on detected-only projects.
     #[test]
-    fn no_inferred_command_when_no_dev_script() {
+    fn infers_every_script_as_a_command() {
         let dir = tmp();
         fs::write(
             dir.path().join("package.json"),
-            r#"{"scripts": {"build": "node build.js"}}"#,
+            r#"{"scripts": {"dev": "vite", "test": "vitest run", "build": "vite build", "lint": "eslint ."}}"#,
         )
         .unwrap();
 
-        assert!(detect_runtimes(dir.path()).inferred_dev_command.is_none());
+        let commands = detect_runtimes(dir.path()).inferred_commands;
+        for script in ["dev", "test", "build", "lint"] {
+            assert_eq!(
+                commands.get(script).map(String::as_str),
+                Some(format!("npm run {script}").as_str()),
+                "script {script:?} must be exposed"
+            );
+        }
+        assert_eq!(commands.len(), 4, "no phantom commands");
+    }
+
+    /// Non-string script values (npm allows them in the JSON model) are
+    /// skipped rather than producing a broken command.
+    #[test]
+    fn skips_non_string_scripts() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"dev": "vite", "weird": 42}}"#,
+        )
+        .unwrap();
+
+        let commands = detect_runtimes(dir.path()).inferred_commands;
+        assert_eq!(commands.get("dev").map(String::as_str), Some("npm run dev"));
+        assert!(!commands.contains_key("weird"));
+    }
+
+    #[test]
+    fn no_inferred_command_when_no_scripts_object() {
+        let dir = tmp();
+        fs::write(dir.path().join("package.json"), r#"{"name": "x"}"#).unwrap();
+        assert!(detect_runtimes(dir.path()).inferred_commands.is_empty());
+    }
+
+    #[test]
+    fn malformed_package_json_yields_no_commands() {
+        let dir = tmp();
+        fs::write(dir.path().join("package.json"), "{not json").unwrap();
+        assert!(detect_runtimes(dir.path()).inferred_commands.is_empty());
     }
 
     #[test]
     fn no_inferred_command_when_no_package_json() {
         let dir = tmp();
-        assert!(detect_runtimes(dir.path()).inferred_dev_command.is_none());
+        assert!(detect_runtimes(dir.path()).inferred_commands.is_empty());
     }
 
     // ── Malicious and malformed hints ─────────────────────────────────────────
@@ -865,7 +991,10 @@ mod tests {
 
         let result = detect_runtimes(dir.path());
         assert_eq!(node_of(&result).requirement, "20.11.0");
-        assert_eq!(result.inferred_dev_command.as_deref(), Some("npm run dev"));
+        assert_eq!(
+            result.inferred_commands.get("dev").map(String::as_str),
+            Some("npm run dev")
+        );
     }
 
     // ── Bun detection ────────────────────────────────────────────────────────
@@ -1091,7 +1220,10 @@ mod tests {
         fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
 
         assert_eq!(
-            detect_runtimes(dir.path()).inferred_dev_command.as_deref(),
+            detect_runtimes(dir.path())
+                .inferred_commands
+                .get("dev")
+                .map(String::as_str),
             Some("bun run dev"),
             "a bun.lock project should run its dev script with bun"
         );
@@ -1107,7 +1239,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            detect_runtimes(dir.path()).inferred_dev_command.as_deref(),
+            detect_runtimes(dir.path())
+                .inferred_commands
+                .get("dev")
+                .map(String::as_str),
             Some("bun run dev")
         );
     }
@@ -1122,7 +1257,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            detect_runtimes(dir.path()).inferred_dev_command.as_deref(),
+            detect_runtimes(dir.path())
+                .inferred_commands
+                .get("dev")
+                .map(String::as_str),
             Some("npm run dev")
         );
     }

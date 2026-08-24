@@ -41,6 +41,19 @@ pub struct RuntimeSpec {
     pub bin_dirs: Vec<PathBuf>,
 }
 
+impl RuntimeSpec {
+    /// Make `digest` the sole integrity constraint for this install.
+    ///
+    /// Used when a lockfile recorded the artifact's SHA-256: the recorded
+    /// digest replaces the vendor's live checksum document, so verification
+    /// fails unless the downloaded bytes are exactly the ones the lock was
+    /// created from.
+    pub fn pin_digest(&mut self, digest: &str) {
+        self.checksum_url.clear();
+        self.expected_sha256 = Some(digest.to_ascii_lowercase());
+    }
+}
+
 pub fn resolve_runtime(tool: &str, version: &str) -> Result<RuntimeSpec> {
     // Single security chokepoint. Every install path — explicit `runx.toml` and
     // auto-detection alike — reaches the filesystem and network through here,
@@ -52,21 +65,103 @@ pub fn resolve_runtime(tool: &str, version: &str) -> Result<RuntimeSpec> {
     // reintroduce the traversal.
     crate::version::validate_concrete(tool, version).map_err(UserError::new)?;
 
-    match normalized_tool(tool).as_str() {
-        "node" => resolve_node(version),
-        "python" => resolve_python(version),
-        "bun" => resolve_bun(version),
-        "go" => resolve_go(version),
-        "deno" => resolve_deno(version),
-        _ => Err(UserError::new(format!(
-            "Unsupported runtime `{tool}`. Supported runtimes: node, python, bun, go, deno."
+    let def = find(tool).ok_or_else(|| {
+        UserError::new(format!(
+            "Unsupported runtime `{tool}`. Supported runtimes: {}.",
+            supported_list()
         ))
-        .into()),
-    }
+    })?;
+    (def.spec)(version)
 }
 
-fn normalized_tool(tool: &str) -> String {
-    tool.trim().to_ascii_lowercase()
+/// One entry of the static runtime registry: everything that varies per
+/// runtime, in one place.
+///
+/// Adding a runtime means adding a `RuntimeDef` here plus its platform/spec
+/// functions and — for range resolution — a release-index fetcher in
+/// `registry.rs`. No other dispatch site needs to change.
+pub struct RuntimeDef {
+    /// Canonical id (`node`, `python`, ...). Also the cache directory name.
+    pub id: &'static str,
+    /// Platform token used for registry cache keys.
+    pub platform: fn() -> Result<String>,
+    /// Build the download/verification spec for one concrete version.
+    pub spec: fn(&str) -> Result<RuntimeSpec>,
+    /// Fetch every published stable version for range resolution. `None` for
+    /// runtimes whose index is requirement-aware or otherwise special-cased
+    /// in [`crate::registry`] (currently python).
+    pub index: Option<fn() -> Result<Vec<crate::version::Version>>>,
+}
+
+const RUNTIMES: &[RuntimeDef] = &[
+    RuntimeDef {
+        id: "node",
+        platform: node_platform_token,
+        spec: resolve_node,
+        index: Some(crate::registry::fetch_node_versions),
+    },
+    RuntimeDef {
+        id: "python",
+        platform: python_platform_string,
+        spec: resolve_python,
+        index: None,
+    },
+    RuntimeDef {
+        id: "bun",
+        platform: bun_platform_token,
+        spec: resolve_bun,
+        index: Some(crate::registry::fetch_bun_versions),
+    },
+    RuntimeDef {
+        id: "go",
+        platform: go_platform_token,
+        spec: resolve_go,
+        index: Some(crate::registry::fetch_go_versions),
+    },
+    RuntimeDef {
+        id: "deno",
+        platform: deno_platform_string,
+        spec: resolve_deno,
+        index: Some(crate::registry::fetch_deno_versions),
+    },
+];
+
+/// Look up a runtime definition by (normalized) id.
+pub fn find(tool: &str) -> Option<&'static RuntimeDef> {
+    let tool = tool.trim().to_ascii_lowercase();
+    RUNTIMES.iter().find(|def| def.id == tool)
+}
+
+/// The supported runtime ids, for error messages and derived tool lists.
+pub const RUNTIME_IDS: &[&str] = &["node", "python", "bun", "go", "deno"];
+
+/// The supported runtime ids, sorted for display.
+pub fn supported_list() -> String {
+    let mut ids: Vec<&'static str> = RUNTIME_IDS.to_vec();
+    ids.sort_unstable();
+    ids.join(", ")
+}
+
+// ── Platform adapters for the registry table ─────────────────────────────────
+
+fn node_platform_token() -> Result<String> {
+    Ok(node_platform()?.0.to_string())
+}
+
+fn python_platform_string() -> Result<String> {
+    Ok(python_platform()?.to_string())
+}
+
+fn bun_platform_token() -> Result<String> {
+    Ok(bun_platform()?.0.to_string())
+}
+
+fn go_platform_token() -> Result<String> {
+    Ok(go_platform()?.0.to_string())
+}
+
+fn deno_platform_string() -> Result<String> {
+    Ok(deno_platform()?.to_string())
 }
 
 /// Node's platform token and archive format for the current host.
@@ -135,14 +230,8 @@ fn go_platform() -> Result<(&'static str, ArchiveKind)> {
 
 /// Platform key used when querying and caching a release index.
 pub fn registry_platform(tool: &str) -> Result<String> {
-    match normalized_tool(tool).as_str() {
-        "node" => Ok(node_platform()?.0.to_string()),
-        "python" => Ok(python_platform()?.to_string()),
-        "bun" => Ok(bun_platform()?.0.to_string()),
-        "go" => Ok(go_platform()?.0.to_string()),
-        "deno" => Ok(deno_platform()?.to_string()),
-        other => Err(UserError::new(format!("Unsupported runtime `{other}`.")).into()),
-    }
+    let def = find(tool).ok_or_else(|| UserError::new(format!("Unsupported runtime `{tool}`.")))?;
+    (def.platform)()
 }
 
 fn resolve_node(version: &str) -> Result<RuntimeSpec> {
@@ -262,6 +351,8 @@ fn find_go_asset(version: &str, platform: &str) -> Result<GoAsset> {
     if let Some(asset) = read_go_cache(&cache_path, version, platform) {
         return Ok(asset);
     }
+
+    crate::flags::ensure_network("fetch the Go release index")?;
 
     let body = crate::http::get(crate::registry::GO_INDEX_URL)
         .call()
@@ -421,6 +512,8 @@ fn find_python_asset(version: &str, platform: &str) -> Result<PythonAsset> {
     if let Some(asset) = read_python_cache(&cache_path, version, platform) {
         return Ok(asset);
     }
+
+    crate::flags::ensure_network("fetch the python-build-standalone release metadata")?;
 
     // 2. Paginate GitHub API, stopping as soon as a match is found.
     let prefix = format!("cpython-{version}+");
@@ -671,6 +764,101 @@ mod tests {
         thread,
         time::{Duration, Instant},
     };
+
+    // ── Runtime registry table ───────────────────────────────────────────────
+
+    /// The public id list and the table must agree — a runtime registered in
+    /// one but not the other would be silently unreachable or undiscoverable.
+    /// (Order is free: the table is declaration order, RUNTIME_IDS feeds
+    /// sorted display lists.)
+    #[test]
+    fn registry_table_and_id_list_agree() {
+        let mut table_ids: Vec<&str> = RUNTIMES.iter().map(|def| def.id).collect();
+        table_ids.sort_unstable();
+        let mut listed = RUNTIME_IDS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(table_ids, listed);
+    }
+
+    /// Every registered platform key must resolve offline and stay
+    /// filename-safe — a broken fn-pointer registration would otherwise
+    /// surface only at install time.
+    #[test]
+    fn every_registered_runtime_has_a_host_platform() {
+        for def in RUNTIMES {
+            let platform = (def.platform)()
+                .unwrap_or_else(|err| panic!("{} platform failed on host: {err}", def.id));
+            assert!(
+                !platform.is_empty() && !platform.contains('/') && !platform.contains(".."),
+                "{} produced an unusable platform key {platform:?}",
+                def.id
+            );
+            // The spec fn must at least accept a well-formed version for its
+            // own id (python/go may then consult their release caches; that
+            // path is covered by their dedicated tests).
+            let result = (def.spec)("1.0.0");
+            if let Ok(spec) = &result {
+                assert_eq!(spec.tool, def.id);
+                assert!(!spec.url.is_empty());
+            }
+        }
+    }
+
+    /// Node, Bun and Deno build their specs from version templates alone: no
+    /// cache, no network. A regression there breaks the common pin-and-run
+    /// path, which must stay instant and offline.
+    #[test]
+    fn template_runtimes_resolve_specs_without_network() {
+        for id in ["node", "bun", "deno"] {
+            let def = find(id).expect("registered");
+            let spec = (def.spec)("1.2.3")
+                .unwrap_or_else(|err| panic!("{id} spec should be offline: {err}"));
+            assert!(spec.url.starts_with("https://"));
+            assert!(
+                spec.url.contains("1.2.3"),
+                "{id} url must embed the version: {}",
+                spec.url
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_runtimes_list_the_supported_set() {
+        let err = format!("{:#}", resolve_runtime("ruby", "3.2.1").unwrap_err());
+        assert!(err.contains("ruby"), "{err}");
+        for id in ["bun", "deno", "go", "node", "python"] {
+            assert!(err.contains(id), "error should list {id}: {err}");
+        }
+    }
+
+    /// `find` must be case/space tolerant the way `resolve_runtime` always was.
+    #[test]
+    fn find_normalizes_the_tool_name() {
+        assert!(find("  NODE ").is_some());
+        assert!(find("Bun").is_some());
+        assert!(find("rust").is_none());
+    }
+
+    // ── Locked-digest pinning ────────────────────────────────────────────────
+
+    const LOCK_DIGEST: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+    /// A locked install must verify against the recorded digest *instead of*
+    /// the vendor's live checksum document: a mutated upstream archive plus
+    /// its refreshed checksum file must not slip through.
+    #[test]
+    fn pin_digest_replaces_the_live_checksum_source() {
+        let mut spec = resolve_runtime("node", "20.11.0").expect("node resolves");
+        assert!(!spec.checksum_url.is_empty());
+        assert!(spec.expected_sha256.is_none());
+
+        spec.pin_digest(LOCK_DIGEST);
+        assert!(
+            spec.checksum_url.is_empty(),
+            "the live checksum document must be dropped, or it would race the pinned digest"
+        );
+        assert_eq!(spec.expected_sha256.as_deref(), Some(LOCK_DIGEST));
+    }
 
     // ── Bun spec resolution ───────────────────────────────────────────────────
 

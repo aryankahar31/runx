@@ -37,6 +37,9 @@ pub struct CachedRuntime {
 ///
 /// The `sha256` and `source_url` fields exist so a lockfile can be generated
 /// from what was actually installed rather than by re-resolving.
+/// `executable_sha256` covers the cache *at rest*: the archive digest cannot
+/// vouch for extracted files, so the entry-point binary gets its own digest,
+/// recorded at install time and checked by `runx doctor --verify`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallReceipt {
     pub tool: String,
@@ -47,6 +50,30 @@ pub struct InstallReceipt {
     pub source_url: String,
     #[serde(default)]
     pub sha256: Option<String>,
+    #[serde(default)]
+    pub executable_sha256: Option<String>,
+}
+
+/// Outcome of checking one installed runtime's integrity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Integrity {
+    /// The executable matches the digest recorded at install time.
+    Verified,
+    /// The receipt predates executable-digest recording (a legacy install):
+    /// nothing to compare against.
+    Unknown,
+    /// The bytes on disk no longer match what was installed.
+    Corrupt { expected: String, actual: String },
+}
+
+impl std::fmt::Display for Integrity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Integrity::Verified => write!(f, "verified"),
+            Integrity::Unknown => write!(f, "unverifiable"),
+            Integrity::Corrupt { .. } => write!(f, "corrupt"),
+        }
+    }
 }
 
 /// Root of the runx cache.
@@ -104,7 +131,6 @@ pub fn cached_runtime_in(home: &Path, spec: &RuntimeSpec) -> Result<Option<Cache
         // that is otherwise present and working.
         let _ = write_receipt(&root, spec, None);
     }
-
     Ok(Some(CachedRuntime {
         root: root.clone(),
         bin_dirs: absolute_bin_dirs(&root, spec),
@@ -211,7 +237,12 @@ pub fn commit_runtime(
 }
 
 /// Record an install receipt inside `root`.
+///
+/// The receipt embeds a digest of the runtime's entry-point binary so later
+/// integrity checks (`runx doctor --verify`) can detect at-rest corruption,
+/// which an archive-level digest cannot: extraction transforms the bytes.
 pub fn write_receipt(root: &Path, spec: &RuntimeSpec, sha256: Option<String>) -> Result<()> {
+    let executable_sha256 = crate::downloader::sha256_file(&expected_executable(root, spec));
     let receipt = InstallReceipt {
         tool: spec.tool.clone(),
         version: spec.version.clone(),
@@ -219,10 +250,36 @@ pub fn write_receipt(root: &Path, spec: &RuntimeSpec, sha256: Option<String>) ->
         runx_version: env!("CARGO_PKG_VERSION").to_string(),
         source_url: spec.url.clone(),
         sha256,
+        executable_sha256,
     };
     let serialized = serde_json::to_string_pretty(&receipt)?;
     fs::write(root.join(COMPLETION_MARKER), serialized)
         .with_context(|| format!("Failed to write install marker in {}", root.display()))
+}
+
+/// Check an installed runtime's executable against the digest recorded when
+/// it was installed. Read-only; used by `runx doctor --verify`.
+///
+/// A missing file hashes to `None`, which compares against any recorded
+/// digest as a mismatch — but callers normally flag missing executables
+/// earlier, with a clearer message.
+pub fn verify_integrity(root: &Path, spec: &RuntimeSpec) -> Integrity {
+    let Some(receipt) = read_receipt(root) else {
+        // Callers gate on is_complete(); an unparseable marker is reported
+        // there, not here.
+        return Integrity::Unknown;
+    };
+    let Some(expected) = receipt.executable_sha256 else {
+        return Integrity::Unknown;
+    };
+    match crate::downloader::sha256_file(&expected_executable(root, spec)) {
+        None => Integrity::Corrupt {
+            expected,
+            actual: "<missing>".to_string(),
+        },
+        Some(actual) if actual == expected => Integrity::Verified,
+        Some(actual) => Integrity::Corrupt { expected, actual },
+    }
 }
 
 /// Written next to the completion marker whenever a runtime is used.
@@ -765,6 +822,96 @@ mod tests {
         assert_eq!(receipt.version, "20.11.0");
         assert_eq!(receipt.sha256.as_deref(), Some("abc123"));
         assert_eq!(receipt.runx_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    // ── At-rest integrity (doctor --verify) ─────────────────────────────────
+
+    /// An install must record a digest of its entry-point binary, and the
+    /// recorded value must describe the bytes actually on disk.
+    #[test]
+    fn installs_record_a_matching_executable_digest() {
+        let home = tmp();
+        let spec = spec();
+        let staging = staging_dir(home.path(), &spec).expect("staging");
+        populate(&staging, &spec);
+        let cached = commit_runtime(home.path(), &staging, &spec, None).expect("commit");
+
+        assert_eq!(
+            verify_integrity(&cached.root, &spec),
+            Integrity::Verified,
+            "a fresh install must verify against its own receipt"
+        );
+    }
+
+    /// The whole point of `doctor --verify`: bytes replaced after install
+    /// must be detectable.
+    #[test]
+    fn tampered_executables_fail_verification() {
+        let home = tmp();
+        let spec = spec();
+        let staging = staging_dir(home.path(), &spec).expect("staging");
+        populate(&staging, &spec);
+        let cached = commit_runtime(home.path(), &staging, &spec, None).expect("commit");
+
+        fs::write(
+            cached.root.join(&spec.bin_dirs[0]).join(&spec.executable),
+            b"evil",
+        )
+        .unwrap();
+
+        match verify_integrity(&cached.root, &spec) {
+            Integrity::Corrupt { expected, actual } => {
+                assert_ne!(expected, actual);
+                assert!(
+                    expected.len() == 64,
+                    "expected side must be a sha256 hex digest"
+                );
+            }
+            other => panic!("tampered bytes must report Corrupt, got {other:?}"),
+        }
+    }
+
+    /// A deleted executable after completion must not pass as Verified.
+    #[test]
+    fn missing_executables_fail_verification() {
+        let home = tmp();
+        let spec = spec();
+        let staging = staging_dir(home.path(), &spec).expect("staging");
+        populate(&staging, &spec);
+        let cached = commit_runtime(home.path(), &staging, &spec, None).expect("commit");
+
+        fs::remove_file(cached.root.join(&spec.bin_dirs[0]).join(&spec.executable)).unwrap();
+
+        assert!(
+            matches!(
+                verify_integrity(&cached.root, &spec),
+                Integrity::Corrupt { .. }
+            ),
+            "a vanished executable must not count as verified"
+        );
+    }
+
+    /// Receipts written before integrity recording carry no executable
+    /// digest; they are reported as unverifiable rather than corrupt.
+    #[test]
+    fn legacy_receipts_are_unverifiable_not_corrupt() {
+        let home = tmp();
+        let spec = spec();
+        let root = runtime_root_in(home.path(), "node", "20.11.0");
+        fs::create_dir_all(root.join(&spec.bin_dirs[0])).unwrap();
+        fs::write(
+            root.join(&spec.bin_dirs[0]).join(&spec.executable),
+            b"legacy",
+        )
+        .unwrap();
+        // A hand-written pre-integrity receipt: no executable_sha256 field.
+        fs::write(
+            root.join(COMPLETION_MARKER),
+            r#"{"tool":"node","version":"20.11.0","installed_at_secs":0,"runx_version":"0.4.0","source_url":"","sha256":null}"#,
+        )
+        .unwrap();
+
+        assert_eq!(verify_integrity(&root, &spec), Integrity::Unknown);
     }
 
     #[test]

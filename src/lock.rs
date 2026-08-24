@@ -267,6 +267,15 @@ pub struct Planned {
     pub version: String,
     /// True when `version` came from the lockfile rather than the config.
     pub from_lock: bool,
+    /// The SHA-256 recorded for this platform's artifact in the lockfile.
+    ///
+    /// When set, the install must verify against *these bytes*: the recorded
+    /// digest replaces the vendor's live checksum document as the source of
+    /// truth, so a vendor-side mutation of a published archive cannot flow
+    /// into a locked install. `None` means no artifact was recorded for this
+    /// platform (a lock generated on another OS) and the download falls back
+    /// to upstream checksum verification.
+    pub pinned_sha256: Option<String>,
     /// A note to show the user, when the lock could not be used as-is.
     pub note: Option<String>,
 }
@@ -286,6 +295,9 @@ pub struct Planned {
 /// verified against the publisher's own checksum document regardless. Failing
 /// there would make `--locked` unusable for any team spanning two operating
 /// systems, which is most of them.
+///
+/// When an artifact *is* recorded for this platform, its digest rides along in
+/// [`Planned::pinned_sha256`] and becomes the install's integrity constraint.
 pub fn plan(
     requirements: &BTreeMap<String, String>,
     lockfile: Option<&Lockfile>,
@@ -306,16 +318,18 @@ pub fn plan(
                 tool: tool.clone(),
                 version: requirement.clone(),
                 from_lock: false,
+                pinned_sha256: None,
                 note: None,
             });
             continue;
         };
 
         match lockfile.resolve(tool, requirement) {
-            Ok((version, _artifact)) => planned.push(Planned {
+            Ok((version, artifact)) => planned.push(Planned {
                 tool: tool.clone(),
                 version: version.to_string(),
                 from_lock: true,
+                pinned_sha256: Some(artifact.sha256.clone()),
                 note: None,
             }),
 
@@ -329,6 +343,7 @@ pub fn plan(
                     tool: tool.clone(),
                     version,
                     from_lock: true,
+                    pinned_sha256: None,
                     note: Some(format!(
                         "{tool}: {LOCK_FILE} has no entry for {platform}; \
                          using the pinned version and verifying upstream checksums. \
@@ -349,6 +364,7 @@ pub fn plan(
                     tool: tool.clone(),
                     version: requirement.clone(),
                     from_lock: false,
+                    pinned_sha256: None,
                     note: Some(format!(
                         "{tool}: not in {LOCK_FILE}; run `runx lock` to pin it."
                     )),
@@ -371,6 +387,7 @@ pub fn plan(
                     tool: tool.clone(),
                     version: requirement.clone(),
                     from_lock: false,
+                    pinned_sha256: None,
                     note: Some(format!(
                         "{tool}: {LOCK_FILE} pins `{was}` but runx.toml asks for \
                          `{current}`; using runx.toml. Run `runx lock` to update."
@@ -853,5 +870,52 @@ mod tests {
         assert_eq!(plan.len(), 2);
         let tools: Vec<&str> = plan.iter().map(|p| p.tool.as_str()).collect();
         assert!(tools.contains(&"node") && tools.contains(&"python"));
+    }
+
+    // ── Locked-digest propagation ────────────────────────────────────────────
+
+    /// The recorded digest for this platform must ride along in the plan so
+    /// the install can verify against the locked bytes rather than whatever
+    /// the vendor's checksum document lists at install time.
+    #[test]
+    fn plan_carries_the_locked_digest_for_this_platform() {
+        let lock = locked();
+        let planned = plan(&requirements(&[("node", "20.11.0")]), Some(&lock), false)
+            .expect("plan")
+            .remove(0);
+
+        assert!(planned.from_lock);
+        assert_eq!(
+            planned.pinned_sha256.as_deref(),
+            Some(DIGEST),
+            "the lockfile digest must become the install's integrity constraint"
+        );
+    }
+
+    /// A lock generated on another OS pins the version but has no digest here;
+    /// enforcement falls back to upstream verification (already covered by
+    /// `locked_tolerates_a_missing_platform_artifact` for the --locked case).
+    #[test]
+    fn plan_has_no_digest_without_a_platform_artifact() {
+        let mut lock = Lockfile::new();
+        lock.record("node", ">=20", "20.11.0", "https://a.invalid", None);
+        let planned = plan(&requirements(&[("node", ">=20")]), Some(&lock), false)
+            .expect("plan")
+            .remove(0);
+
+        assert!(planned.from_lock);
+        assert_eq!(planned.pinned_sha256, None);
+    }
+
+    /// An unlocked or stale entry must not inherit any digest: the config
+    /// wins, and its install verifies upstream like an un-locked project.
+    #[test]
+    fn stale_entries_carry_no_pinned_digest() {
+        let lock = locked(); // requirement 20.11.0
+        let planned = plan(&requirements(&[("node", "22.1.0")]), Some(&lock), false)
+            .expect("plan")
+            .remove(0);
+        assert!(!planned.from_lock, "22.1.0 is not what was locked");
+        assert_eq!(planned.pinned_sha256, None);
     }
 }

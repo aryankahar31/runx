@@ -8,6 +8,7 @@ pub mod downloader;
 pub mod error;
 pub mod executor;
 pub mod extractor;
+pub mod flags;
 pub mod http;
 pub mod lock;
 pub mod registry;

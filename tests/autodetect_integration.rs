@@ -220,12 +220,12 @@ fn minimum_resolution_remains_available_as_strict_mode() {
 /// detect the Python version and report an error about the missing dev command
 /// (no package.json present).
 #[test]
-fn python_only_project_no_dev_command_errors_clearly() {
+fn python_only_project_no_scripts_errors_clearly() {
     let dir = tmp();
     fs::write(dir.path().join(".python-version"), "3.11.7\n").unwrap();
 
     let err = config::load_or_detect(dir.path())
-        .expect_err("should fail because no dev command can be inferred");
+        .expect_err("should fail because no command can be inferred");
 
     let msg = err.to_string();
     assert!(
@@ -236,6 +236,55 @@ fn python_only_project_no_dev_command_errors_clearly() {
         msg.contains("runx init"),
         "error should hint at runx init: {msg}"
     );
+}
+
+/// Every package.json script becomes a run command, so `runx test` and
+/// `runx build` work on detected-only projects without a runx.toml.
+#[test]
+fn all_scripts_become_commands_on_detected_projects() {
+    let dir = tmp();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "vite",
+    "test": "vitest run",
+    "build": "vite build"
+  }
+}"#,
+    )
+    .unwrap();
+
+    let resolved = config::load_or_detect(dir.path()).expect("scripts should become commands");
+    assert_eq!(resolved.inner.run.len(), 3);
+    assert_eq!(resolved.inner.run["dev"], "npm run dev");
+    assert_eq!(resolved.inner.run["test"], "npm run test");
+    assert_eq!(resolved.inner.run["build"], "npm run build");
+}
+
+/// A Pipfile alone marks a project root and yields a Python requirement.
+#[test]
+fn zero_config_from_pipfile() {
+    let dir = tmp();
+    fs::write(
+        dir.path().join("Pipfile"),
+        "[requires]\npython_version = \"3.11\"\n",
+    )
+    .unwrap();
+
+    let resolved = config::load_or_detect(dir.path()).expect_err("no commands exist to infer");
+    let msg = err_to_string(&resolved);
+    // No scripts anywhere: the runtime hint is named in the detection block
+    // of the "could not infer any run command" error.
+    assert!(
+        msg.contains("3.11"),
+        "Pipfile version should be reported: {msg}"
+    );
+}
+
+fn err_to_string<E: std::fmt::Display>(err: &E) -> String {
+    format!("{err}")
 }
 
 /// End-to-end binary test: running `runx dev` against a zero-config directory

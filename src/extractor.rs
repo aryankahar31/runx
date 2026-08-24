@@ -59,7 +59,7 @@ fn extract_archive_with(
     kind: ArchiveKind,
     strip_first: bool,
 ) -> Result<()> {
-    println!("Extracting to {}", destination.display());
+    crate::flags::info(&format!("Extracting to {}", destination.display()));
     match kind {
         ArchiveKind::Zip => extract_zip(archive, destination, strip_first),
         ArchiveKind::TarGz => {

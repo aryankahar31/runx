@@ -160,6 +160,7 @@ pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
             ".deno-version",
             "package.json",
             "pyproject.toml",
+            "Pipfile",
             "go.mod",
             "bun.lock",
             "bun.lockb",
@@ -206,14 +207,8 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
     // concrete version is reported later, by whoever resolves the requirement,
     // since choosing it may need the published release list.
     let mut detection_lines: Vec<String> = vec![];
-    for (tool, slot) in [
-        ("node", &detected.node),
-        ("python", &detected.python),
-        ("bun", &detected.bun),
-        ("go", &detected.go),
-        ("deno", &detected.deno),
-    ] {
-        let Some(runtime) = slot.as_ref().and_then(detect::Detected::found) else {
+    for (tool, slot) in detected.slots() {
+        let Some(runtime) = slot.and_then(detect::Detected::found) else {
             continue;
         };
         // An open-ended requirement (`*`, from a lockfile with no version)
@@ -253,11 +248,11 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
         .into());
     }
 
-    // Determine the run command. Detection and command inference are separate
-    // problems: a project can have a perfectly valid runtime requirement with
-    // no inferable `dev` command. When inference fails, the error names what
-    // was detected and why no command follows — never a bare "nothing found".
-    let Some(dev_command) = detected.inferred_dev_command else {
+    // Determine the run commands. Detection and command inference are
+    // separate problems: a project can have valid runtime requirements and no
+    // package.json scripts at all. Every script becomes a command (keyed by
+    // script name), so `runx test` works without a runx.toml.
+    if detected.inferred_commands.is_empty() {
         let detected_block = if detection_lines.is_empty() {
             String::new()
         } else {
@@ -267,28 +262,26 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
             )
         };
         let reason = if dir.join("package.json").is_file() {
-            "this project's package.json has no `dev` script".to_string()
+            "this project's package.json defines no scripts".to_string()
         } else {
-            "runx only infers a run command from a `dev` script in package.json, \
-             and this project has none"
+            "runx infers commands from the `scripts` in a package.json, \
+              and this project has none"
                 .to_string()
         };
         return Err(UserError::new(format!(
             "No runx.toml found in {dir}.\n\
              {detected_block}\
-             Could not infer a run command: {reason}.\n\
-             Hint: run `runx init` to create a runx.toml and define a `dev` command \
-             under [run], or add a `dev` script to package.json.",
+             Could not infer any run command: {reason}.\n\
+             Hint: run `runx init` to create a runx.toml and define commands \
+             under [run].",
             dir = dir.display()
         ))
         .into());
-    };
-
-    let run = BTreeMap::from([("dev".to_string(), dev_command)]);
+    }
 
     // Route through `from_parts` so detected versions face the same validation
     // as `runx.toml` ones. A struct literal here would reopen the traversal.
-    let config = RunxConfig::from_parts(runtimes, run)?;
+    let config = RunxConfig::from_parts(runtimes, detected.inferred_commands)?;
     Ok(ResolvedConfig {
         inner: config,
         detection_lines,
@@ -581,7 +574,7 @@ test = "npm test"
             "should name the detection: {message}"
         );
         assert!(
-            message.contains("dev` script"),
+            message.contains("scripts"),
             "should explain inference: {message}"
         );
         assert!(
@@ -590,25 +583,44 @@ test = "npm test"
         );
     }
 
-    /// Same separation for a package.json without a `dev` script.
+    /// A package.json without a `dev` script is no longer an error: every
+    /// script becomes a command, so `runx build` works on detected-only
+    /// projects (the audit finding that only `dev` was reachable).
     #[test]
-    fn package_json_without_dev_script_errors_clearly() {
+    fn non_dev_scripts_become_commands_without_a_toml() {
         let dir = tmp();
         fs::write(
             dir.path().join("package.json"),
-            r#"{"engines": {"node": ">=20"}, "scripts": {"build": "node build.js"}}"#,
+            r#"{"engines": {"node": ">=20"}, "scripts": {"build": "node build.js", "test": "node test.js"}}"#,
         )
         .unwrap();
 
-        let err = load_or_detect(dir.path()).expect_err("no dev script to infer from");
+        let resolved = load_or_detect(dir.path()).expect("scripts should become commands");
+        assert_eq!(resolved.inner.runtimes["node"], ">=20");
+        assert_eq!(resolved.inner.run["build"], "npm run build");
+        assert_eq!(resolved.inner.run["test"], "npm run test");
+    }
+
+    /// A package.json whose scripts object is empty still errors, naming the
+    /// actual reason.
+    #[test]
+    fn package_json_with_no_scripts_errors_clearly() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"node": ">=20"}}"#,
+        )
+        .unwrap();
+
+        let err = load_or_detect(dir.path()).expect_err("no scripts to infer from");
         let message = format!("{err:#}");
         assert!(
-            message.contains("node"),
-            "should name the detection: {message}"
+            message.contains("defines no scripts"),
+            "should explain inference: {message}"
         );
         assert!(
-            message.contains("no `dev` script"),
-            "should point at the missing script: {message}"
+            message.contains("runx init"),
+            "should point at init: {message}"
         );
     }
 

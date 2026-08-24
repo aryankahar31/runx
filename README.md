@@ -136,16 +136,18 @@ Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproj
 ### Reproducibility & security
 
 - [`runx.lock`](docs/lockfile.md) pins resolved versions for CI and teams
+- A recorded platform artifact's digest **becomes the install's integrity constraint**: locked installs verify against `runx.lock` itself, so upstream mutations of a published release fail instead of flowing through
 - `--locked` fails on anything the lockfile doesn't pin
 - SHA-256 verification of every download, plus Sigstore/cosign signatures since v0.4.2
 - Atomic installs — an interrupted download can never corrupt the cache
 
 ### Developer experience
 
-- Zero-config auto-detection, or explicit `runx.toml`
+- Zero-config auto-detection (every `package.json` script becomes a run command), or explicit `runx.toml`
 - No shell integration required, ever — nothing happens until you type `runx`
 - Cross-platform: Linux, macOS, Windows
-- `runx doctor`, cache management (`list`/`size`/`clean`/`prune`), `self update`, shell completions
+- Scripting modes: `--json`, `--quiet`, `--offline`
+- `runx doctor` (plus `doctor --verify`, an integrity sweep over cached executables), cache management (`list`/`size`/`clean`/`prune`), `self update`, shell completions
 
 ## Supported Runtimes
 
@@ -260,15 +262,22 @@ Runtimes are cached under `~/.runx/runtimes/<tool>/<version>/` and reused across
 
 ```bash
 runx dev              # run a key from [run] (any non-builtin word works)
-runx build            # same
+runx build            # same — detected projects expose every package.json script
 runx test --locked    # enforce the lockfile
 runx init             # create a starter runx.toml
 runx lock             # write runx.lock
 runx doctor           # diagnose cache, PATH and detection issues
+runx doctor --verify  # also hash each runtime against its install-time digest
 runx cache list       # also: size, clean, prune (--older-than N)
 runx self update      # verified atomic binary swap
 runx completions zsh  # bash, zsh, fish, powershell
+
+runx --json doctor    # machine-readable output (also: cache list/size)
+runx --quiet dev      # suppress banners and progress bars
+runx --offline dev    # refuse any network access; cached/pinned only
 ```
+
+Global flags work before any subcommand (`runx --json <command>`).
 
 Pass arguments through with `--`: `runx dev -- --port 3000`. Without `--`, extra arguments are rejected rather than silently dropped.
 
@@ -277,6 +286,8 @@ Pass arguments through with `--`: `runx dev -- --port 3000`. Without `--`, extra
 | Variable | Effect |
 |----------|--------|
 | `RUNX_HOME` | Cache location (default `~/.runx`). Useful for CI caching and isolation. |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | Proxy for all outbound requests. Precedence follows curl; TLS and checksum verification are unchanged by proxying. |
+| `NO_PROXY` | Comma-separated hosts that bypass the proxy (`*` disables it entirely). Loopback always bypasses. |
 | `RUNX_RESOLUTION` | `latest` (default) or `minimum` — see [strict mode](docs/runtime-resolution.md#strict-mode). |
 | `GITHUB_TOKEN` | Optional. Raises GitHub API rate limits for Bun/Deno/Python lookups (60 → 5000 req/hour). Sent only to `api.github.com`. |
 | `RUNX_REQUIRE_SIGNATURE` | `1` makes a missing cosign signature an error instead of a warning. |
