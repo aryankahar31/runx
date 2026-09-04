@@ -1754,6 +1754,7 @@ fn failed_command_with_missing_node_modules_suggests_bun_install() {
 }
 
 /// Same for npm: package-lock.json → `npm install`.
+#[cfg(unix)]
 #[test]
 fn failed_command_with_missing_node_modules_suggests_npm_install() {
     let dir = tmp();
