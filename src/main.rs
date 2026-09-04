@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::{
     env, fs,
+    io::Write,
     path::{Path, PathBuf},
     process,
 };
@@ -548,6 +549,8 @@ fn run_command(command_key: &str, locked: bool, passthrough: &[String]) -> Resul
     if !status.success() {
         hint_after_failed_command(&project_dir, &run_dir);
     }
+    // process::exit doesn't flush stdio; ensure the hint (eprintln!) is visible.
+    std::io::stderr().flush().ok();
     process::exit(status.code().unwrap_or(1));
 }
 

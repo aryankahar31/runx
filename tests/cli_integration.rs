@@ -640,6 +640,33 @@ fn doctor_reports_auto_detected_project_runtimes() {
     assert!(stdout.contains("bun.lock"), "{stdout}");
 }
 
+/// A modern Bun project (.bun-version + bun.lock + package.json with scripts, no node_modules)
+/// auto-detected: the run command fails, and the hint is printed.
+/// Uses .bun-version for offline resolution, bun.lock for PM detection in hint.
+#[cfg(unix)]
+#[test]
+fn auto_detected_bun_missing_deps_prints_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "bun", "0.0.0", "exit 1");
+    fs::write(dir.path().join(".bun-version"), "0.0.0\n").unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    // No runx.toml - auto-detection infers dev = "bun run dev"
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "auto-detected bun should hint at bun install, got:\n{stderr}"
+    );
+}
+
 /// A mixed Python + Bun project is reported with both requirements and their
 /// sources, plus a note that the open-ended Bun requirement resolves later.
 #[test]
@@ -1750,6 +1777,35 @@ fn failed_command_with_missing_node_modules_suggests_bun_install() {
     assert!(
         stderr.contains("bun install"),
         "should hint at bun install, got:\n{stderr}"
+    );
+}
+
+/// Auto-detected bun: the run command is `bun run dev`, which fails because
+/// the script's executable (e.g., tsx) is missing from node_modules.
+/// The fake bun simulates this by exiting with 127.
+/// Uses .bun-version for offline resolution, bun.lock for PM detection in hint.
+#[cfg(unix)]
+#[test]
+fn auto_detected_bun_missing_deps_nested_failure_prints_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    // Fake bun that exits 127 to simulate "command not found" from nested script.
+    plant_executable(&home, "bun", "0.0.0", "exit 127");
+    fs::write(dir.path().join(".bun-version"), "0.0.0\n").unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"tsx server.ts"}}"#,
+    )
+    .unwrap();
+    // No runx.toml - auto-detection infers dev = "bun run dev"
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(127));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "nested failure should hint at bun install, got:\n{stderr}"
     );
 }
 
