@@ -1781,6 +1781,121 @@ fn failed_command_with_missing_node_modules_suggests_npm_install() {
     );
 }
 
+/// Legacy bun.lockb also suggests bun install.
+#[cfg(unix)]
+#[test]
+fn failed_command_with_missing_node_modules_suggests_bun_install_from_lockb() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "exit 1");
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("bun.lockb"), "{}\n").unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"exit 1\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "should hint at bun install from bun.lockb, got:\n{stderr}"
+    );
+}
+
+/// yarn.lock → yarn install.
+#[cfg(unix)]
+#[test]
+fn failed_command_with_missing_node_modules_suggests_yarn_install() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "exit 1");
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("yarn.lock"), "# yarn lockfile\n").unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"exit 1\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("yarn install"),
+        "should hint at yarn install, got:\n{stderr}"
+    );
+}
+
+/// pnpm-lock.yaml → pnpm install.
+#[cfg(unix)]
+#[test]
+fn failed_command_with_missing_node_modules_suggests_pnpm_install() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "exit 1");
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("pnpm-lock.yaml"),
+        "lockfileVersion: '6.0'\n",
+    )
+    .unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"exit 1\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("pnpm install"),
+        "should hint at pnpm install, got:\n{stderr}"
+    );
+}
+
+/// package.json without a recognized lockfile falls back to npm install.
+#[cfg(unix)]
+#[test]
+fn failed_command_with_missing_node_modules_fallbacks_to_npm() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "exit 1");
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"exit 1\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("npm install"),
+        "should fallback to npm install, got:\n{stderr}"
+    );
+}
+
 /// No hint when node_modules already exists — dependencies are installed.
 #[test]
 fn failed_command_with_node_modules_does_not_hint() {

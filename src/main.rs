@@ -565,17 +565,18 @@ fn hint_after_failed_command(project_dir: &Path, run_dir: &Path) {
         return;
     }
     // ponytail: detect which PM by lockfile presence, one match wins.
-    let install_cmd = if project_dir.join("bun.lock").is_file() {
-        "bun install"
-    } else if project_dir.join("package-lock.json").is_file() {
-        "npm install"
-    } else if project_dir.join("yarn.lock").is_file() {
-        "yarn install"
-    } else if project_dir.join("pnpm-lock.yaml").is_file() {
-        "pnpm install"
-    } else {
-        "npm install"
-    };
+    let install_cmd =
+        if project_dir.join("bun.lock").is_file() || project_dir.join("bun.lockb").is_file() {
+            "bun install"
+        } else if project_dir.join("package-lock.json").is_file() {
+            "npm install"
+        } else if project_dir.join("yarn.lock").is_file() {
+            "yarn install"
+        } else if project_dir.join("pnpm-lock.yaml").is_file() {
+            "pnpm install"
+        } else {
+            "npm install"
+        };
     eprintln!(
         "\nHint: project dependencies are not installed.\n\
          Run `{install_cmd}` in {dir}, then try again.",
