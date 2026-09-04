@@ -163,7 +163,7 @@ Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproj
 
 ## Zero-Config Detection
 
-Runx automatically detects runtimes from files your project already uses — `.nvmrc`, `.python-version`, `package.json` `engines`, `pyproject.toml`, `go.mod`, and Bun/Deno version files. Multiple runtimes are detected together and share one isolated environment.
+Runx automatically detects runtimes from files your project already uses — `.nvmrc`, `.python-version`, `pyproject.toml`, `Pipfile`, `package.json` `engines`, `go.mod`, and Bun/Deno version files. Multiple runtimes are detected together and share one isolated environment, and every script in `package.json` becomes a run command (`runx dev`, `runx test`, `runx build`, …) without any configuration.
 
 Detection never writes to disk and never merges with an existing `runx.toml`; explicit configuration always wins.
 
@@ -190,8 +190,10 @@ Installs the declared runtimes and writes `runx.lock`, pinning the exact resolve
 Every install is verified before it touches your disk:
 
 - SHA-256 checksum verification of every download, before extraction
+- Locked installs verify against `runx.lock` itself: a recorded platform artifact's digest is the integrity constraint, not the vendor's live checksum document
 - Sigstore/cosign keyless signature verification on release archives (opt-in strict mode via `RUNX_REQUIRE_SIGNATURE=1`)
 - Atomic installs into staging directories — a failed or interrupted install leaves nothing behind
+- Every install records a digest of the runtime's entry-point binary; `runx doctor --verify` detects replaced or corrupted cached executables
 - Strict validation of every version string at a single chokepoint (path-traversal safe by construction)
 - Installers fail closed when no checksum tool is available
 

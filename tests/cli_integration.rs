@@ -640,6 +640,33 @@ fn doctor_reports_auto_detected_project_runtimes() {
     assert!(stdout.contains("bun.lock"), "{stdout}");
 }
 
+/// A modern Bun project (.bun-version + bun.lock + package.json with scripts, no node_modules)
+/// auto-detected: the run command fails, and the hint is printed.
+/// Uses .bun-version for offline resolution, bun.lock for PM detection in hint.
+#[cfg(unix)]
+#[test]
+fn auto_detected_bun_missing_deps_prints_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "bun", "0.0.0", "exit 1");
+    fs::write(dir.path().join(".bun-version"), "0.0.0\n").unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    // No runx.toml - auto-detection infers dev = "bun run dev"
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "auto-detected bun should hint at bun install, got:\n{stderr}"
+    );
+}
+
 /// A mixed Python + Bun project is reported with both requirements and their
 /// sources, plus a note that the open-ended Bun requirement resolves later.
 #[test]
@@ -1719,4 +1746,248 @@ fn offline_mode_refuses_downloads() {
     );
     // The refusal must happen before any download attempt.
     assert!(!combined.contains("Downloading"));
+}
+
+// ── Missing-dependencies hint ────────────────────────────────────────────────
+
+/// When a command fails and the project has package.json + a lockfile but no
+/// node_modules, stderr must hint at `bun install`.
+#[cfg(unix)]
+#[test]
+fn failed_command_with_missing_node_modules_suggests_bun_install() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "exit 1");
+    // Package with bun.lock but no node_modules.
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"exit 1\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "should hint at bun install, got:\n{stderr}"
+    );
+}
+
+/// Auto-detected bun: the run command is `bun run dev`, which fails because
+/// the script's executable (e.g., tsx) is missing from node_modules.
+/// The fake bun simulates this by exiting with 127.
+/// Uses .bun-version for offline resolution, bun.lock for PM detection in hint.
+#[cfg(unix)]
+#[test]
+fn auto_detected_bun_missing_deps_nested_failure_prints_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    // Fake bun that exits 127 to simulate "command not found" from nested script.
+    plant_executable(&home, "bun", "0.0.0", "exit 127");
+    fs::write(dir.path().join(".bun-version"), "0.0.0\n").unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"tsx server.ts"}}"#,
+    )
+    .unwrap();
+    // No runx.toml - auto-detection infers dev = "bun run dev"
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(127));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "nested failure should hint at bun install, got:\n{stderr}"
+    );
+}
+
+/// Same for npm: package-lock.json → `npm install`.
+#[cfg(unix)]
+#[test]
+fn failed_command_with_missing_node_modules_suggests_npm_install() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "exit 1");
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"exit 1\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("npm install"),
+        "should hint at npm install, got:\n{stderr}"
+    );
+}
+
+/// Legacy bun.lockb also suggests bun install.
+#[cfg(unix)]
+#[test]
+fn failed_command_with_missing_node_modules_suggests_bun_install_from_lockb() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "exit 1");
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("bun.lockb"), "{}\n").unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"exit 1\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "should hint at bun install from bun.lockb, got:\n{stderr}"
+    );
+}
+
+/// yarn.lock → yarn install.
+#[cfg(unix)]
+#[test]
+fn failed_command_with_missing_node_modules_suggests_yarn_install() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "exit 1");
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("yarn.lock"), "# yarn lockfile\n").unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"exit 1\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("yarn install"),
+        "should hint at yarn install, got:\n{stderr}"
+    );
+}
+
+/// pnpm-lock.yaml → pnpm install.
+#[cfg(unix)]
+#[test]
+fn failed_command_with_missing_node_modules_suggests_pnpm_install() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "exit 1");
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("pnpm-lock.yaml"),
+        "lockfileVersion: '6.0'\n",
+    )
+    .unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"exit 1\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("pnpm install"),
+        "should hint at pnpm install, got:\n{stderr}"
+    );
+}
+
+/// package.json without a recognized lockfile falls back to npm install.
+#[cfg(unix)]
+#[test]
+fn failed_command_with_missing_node_modules_fallbacks_to_npm() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "exit 1");
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"exit 1\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("npm install"),
+        "should fallback to npm install, got:\n{stderr}"
+    );
+}
+
+/// No hint when node_modules already exists — dependencies are installed.
+#[test]
+fn failed_command_with_node_modules_does_not_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::create_dir_all(dir.path().join("node_modules")).unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("dependencies are not installed"),
+        "should not hint when node_modules exists:\n{stderr}"
+    );
+}
+
+/// No hint when there's no package.json — not a JS project.
+#[test]
+fn failed_command_without_package_json_does_not_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"exit 1\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("dependencies are not installed"),
+        "should not hint for non-JS projects:\n{stderr}"
+    );
 }

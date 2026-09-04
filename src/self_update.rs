@@ -20,6 +20,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Command,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 /// Where runx publishes releases and their metadata.
@@ -52,18 +53,15 @@ pub fn update() -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     let token = platform_token()?;
 
-    let body = crate::http::get(RELEASES_LATEST_URL)
-        .call()
-        .map_err(|err| match err {
-            ureq::Error::Status(404, _) => UserError::new(
-                "No releases found for aryankahar31/runx yet — nothing to update to.",
-            )
-            .into(),
-            other => anyhow::Error::from(other),
-        })
-        .with_context(|| format!("Failed to check for updates at {RELEASES_LATEST_URL}"))?
-        .into_string()
-        .context("Failed to read the latest release metadata")?;
+    let response = crate::http::get(RELEASES_LATEST_URL).call();
+    let body = match response {
+        Ok(resp) => resp
+            .into_string()
+            .context("Failed to read the latest release metadata")?,
+        Err(err) => {
+            return Err(map_github_api_error(err));
+        }
+    };
 
     let release: LatestRelease =
         serde_json::from_str(&body).context("Failed to decode the latest release metadata")?;
@@ -108,6 +106,53 @@ pub fn update() -> Result<()> {
     install_binary(&new_binary)?;
     println!("Updated to runx {latest_version}.");
     Ok(())
+}
+
+/// Map GitHub API errors to actionable user messages.
+fn map_github_api_error(err: ureq::Error) -> anyhow::Error {
+    match err {
+        ureq::Error::Status(403, resp) => {
+            // GitHub API returns 403 for rate limiting (unauthenticated: 60 req/h)
+            // and for other access-denied cases. Extract rate-limit headers if present.
+            let remaining = resp.header("X-RateLimit-Remaining");
+            let reset = resp.header("X-RateLimit-Reset");
+            let retry_after = resp.header("Retry-After");
+
+            let msg = if remaining == Some("0") {
+                let wait_hint = if let Some(reset_str) = reset {
+                    if let Ok(ts) = reset_str.parse::<u64>() {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or(Duration::from_secs(0))
+                            .as_secs();
+                        if ts > now {
+                            format!(" Try again after {} seconds.", ts - now)
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    }
+                } else if let Some(retry_str) = retry_after {
+                    format!(" Try again after {retry_str} seconds.")
+                } else {
+                    " Try again later.".to_string()
+                };
+                format!("Unable to check for updates: GitHub API rate limit reached.{wait_hint}")
+            } else {
+                // Some other 403 (e.g., repo not found, private repo, etc.)
+                "Unable to check for updates: GitHub API access denied (HTTP 403). \
+                 The repository may be private or the API token may lack permissions."
+                    .to_string()
+            };
+            UserError::new(msg).into()
+        }
+        ureq::Error::Status(404, _) => {
+            UserError::new("No releases found for aryankahar31/runx yet — nothing to update to.")
+                .into()
+        }
+        other => anyhow::Error::from(other),
+    }
 }
 
 /// The platform token used in release asset names (`macos-arm64`, ...).
@@ -562,6 +607,35 @@ mod tests {
             find_binary(dir.path()).expect("found").file_name().unwrap(),
             exe_name(),
             "must find the real file and not hang on the symlink"
+        );
+    }
+
+    /// 404 still returns the special "no releases" message.
+    #[test]
+    fn map_github_api_error_404() {
+        let response = ureq::Response::new(404, "Not Found", "").expect("build test response");
+        let err = ureq::Error::Status(404, response);
+        let mapped = map_github_api_error(err);
+        let msg = format!("{mapped:#}");
+        assert!(msg.contains("No releases found"), "msg: {msg}");
+    }
+
+    /// 403 maps to an actionable UserError (not a raw ureq error).
+    /// Headers can't be set on test Response in ureq; the real server provides them.
+    #[test]
+    fn map_github_api_error_403_is_user_error() {
+        let response = ureq::Response::new(403, "Forbidden", "").expect("build test response");
+        let err = ureq::Error::Status(403, response);
+        let mapped = map_github_api_error(err);
+        let msg = format!("{mapped:#}");
+        // Should be a UserError with a clear message, not a raw "status code 403"
+        assert!(
+            msg.contains("Unable to check for updates") || msg.contains("access denied"),
+            "msg: {msg}"
+        );
+        assert!(
+            !msg.contains("status code 403"),
+            "should not leak raw HTTP status"
         );
     }
 }

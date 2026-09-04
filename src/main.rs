@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::{
     env, fs,
+    io::Write,
     path::{Path, PathBuf},
     process,
 };
@@ -545,7 +546,45 @@ fn run_command(command_key: &str, locked: bool, passthrough: &[String]) -> Resul
     }
 
     let status = executor::execute(&command, &runtimes, &run_dir, passthrough)?;
+    if !status.success() {
+        hint_after_failed_command(&project_dir, &run_dir);
+    }
+    // process::exit doesn't flush stdio; ensure the hint (eprintln!) is visible.
+    std::io::stderr().flush().ok();
     process::exit(status.code().unwrap_or(1));
+}
+
+/// After a failed command, check whether the project has a package.json but no
+/// node_modules — the most common first-run failure.  Suggest the package
+/// manager install command so the user gets an actionable hint instead of a
+/// raw "command not found" from the shell.
+fn hint_after_failed_command(project_dir: &Path, run_dir: &Path) {
+    let has_package_json = project_dir.join("package.json").is_file();
+    // Check both run_dir (cwd) and project_dir: node_modules lives at the
+    // project root, but the user may have cd'd into a subdirectory.
+    let has_node_modules =
+        run_dir.join("node_modules").is_dir() || project_dir.join("node_modules").is_dir();
+    if !has_package_json || has_node_modules {
+        return;
+    }
+    // ponytail: detect which PM by lockfile presence, one match wins.
+    let install_cmd =
+        if project_dir.join("bun.lock").is_file() || project_dir.join("bun.lockb").is_file() {
+            "bun install"
+        } else if project_dir.join("package-lock.json").is_file() {
+            "npm install"
+        } else if project_dir.join("yarn.lock").is_file() {
+            "yarn install"
+        } else if project_dir.join("pnpm-lock.yaml").is_file() {
+            "pnpm install"
+        } else {
+            "npm install"
+        };
+    eprintln!(
+        "\nHint: project dependencies are not installed.\n\
+         Run `{install_cmd}` in {dir}, then try again.",
+        dir = project_dir.display(),
+    );
 }
 
 // ── Cache subcommands ────────────────────────────────────────────────────────
