@@ -87,14 +87,10 @@ jobs:
             artifact: runx-windows-x64.zip
             binary: runx.exe
             archive: zip
-          # Native ARM64 runner (public repos). The runtime resolvers and
-          # self-update already support windows-arm64; this publishes the
-          # matching runx binary so installs there are first-class.
-          - os: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            artifact: runx-windows-arm64.zip
-            binary: runx.exe
-            archive: zip
+          # Native ARM64 runner (public repos) is not included because
+          # sigstore/cosign-installer@v3 does not support Windows ARM64.
+          # The runtime resolvers and self-update support windows-arm64;
+          # the binary can be added back when cosign supports it.
 
     steps:
       - name: Checkout
