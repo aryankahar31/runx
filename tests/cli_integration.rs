@@ -1720,3 +1720,102 @@ fn offline_mode_refuses_downloads() {
     // The refusal must happen before any download attempt.
     assert!(!combined.contains("Downloading"));
 }
+
+// ── Missing-dependencies hint ────────────────────────────────────────────────
+
+/// When a command fails and the project has package.json + a lockfile but no
+/// node_modules, stderr must hint at `bun install`.
+#[cfg(unix)]
+#[test]
+fn failed_command_with_missing_node_modules_suggests_bun_install() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "exit 1");
+    // Package with bun.lock but no node_modules.
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"exit 1\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "should hint at bun install, got:\n{stderr}"
+    );
+}
+
+/// Same for npm: package-lock.json → `npm install`.
+#[test]
+fn failed_command_with_missing_node_modules_suggests_npm_install() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "exit 1");
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"exit 1\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("npm install"),
+        "should hint at npm install, got:\n{stderr}"
+    );
+}
+
+/// No hint when node_modules already exists — dependencies are installed.
+#[test]
+fn failed_command_with_node_modules_does_not_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::create_dir_all(dir.path().join("node_modules")).unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("dependencies are not installed"),
+        "should not hint when node_modules exists:\n{stderr}"
+    );
+}
+
+/// No hint when there's no package.json — not a JS project.
+#[test]
+fn failed_command_without_package_json_does_not_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"exit 1\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("dependencies are not installed"),
+        "should not hint for non-JS projects:\n{stderr}"
+    );
+}
