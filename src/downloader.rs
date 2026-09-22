@@ -275,7 +275,7 @@ fn fetch_checksum_document(checksum_url: &str) -> Result<String> {
 const SHA256_HEX_LEN: usize = 64;
 
 /// True if `token` looks like a SHA-256 hex digest.
-fn is_sha256_hex(token: &str) -> bool {
+pub(crate) fn is_sha256_hex(token: &str) -> bool {
     token.len() == SHA256_HEX_LEN && token.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
@@ -368,7 +368,7 @@ pub fn sha256_file(path: &Path) -> Option<String> {
 }
 
 /// Fallible core of [`sha256_file`], with error context for download paths.
-fn compute_sha256(path: &Path) -> Result<String> {
+pub(crate) fn compute_sha256(path: &Path) -> Result<String> {
     let mut file = File::open(path)
         .with_context(|| format!("Failed to open {} for hashing", path.display()))?;
     let mut hasher = Sha256::new();

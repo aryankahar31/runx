@@ -138,8 +138,8 @@ Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproj
 - [`runx.lock`](docs/lockfile.md) pins resolved versions for CI and teams
 - A recorded platform artifact's digest **becomes the install's integrity constraint**: locked installs verify against `runx.lock` itself, so upstream mutations of a published release fail instead of flowing through
 - `--locked` fails on anything the lockfile doesn't pin
-- SHA-256 verification of every download, plus Sigstore/cosign signatures since v0.4.2
-- Atomic installs — an interrupted download can never corrupt the cache
+- SHA-256 verification before extraction (older Deno releases are TLS-only); Sigstore/cosign signatures for runx's own releases
+- Staged installs; `--locked` also authenticates retained archives and checks cached runtime contents
 
 ### Developer experience
 
@@ -171,7 +171,7 @@ Detection never writes to disk and never merges with an existing `runx.toml`; ex
 
 ## Runtime Resolution
 
-Ranges (`>=20`, `^20`, `~20.11`) resolve against each vendor's own release index to the newest matching release; exact pins (`20.11.0`) never touch the network and never change. Resolution results are cached for at most 6 hours — there is no third-party registry in the path.
+Ranges (`>=20`, `^20`, `~20.11`) resolve against each vendor's own release index to the newest matching release. Exact pins (`20.11.0`) avoid version-list lookups, but downloads and Python/Go asset metadata may still need the network. There is no third-party registry in the path; see the [offline limits](docs/security.md#locked-execution).
 
 **[View resolution internals & registry freshness →](docs/runtime-resolution.md)**
 
@@ -187,13 +187,13 @@ Installs the declared runtimes and writes `runx.lock`, pinning the exact resolve
 
 ## Security
 
-Every install is verified before it touches your disk:
+Download and cache verification have distinct scopes:
 
-- SHA-256 checksum verification of every download, before extraction
-- Locked installs verify against `runx.lock` itself: a recorded platform artifact's digest is the integrity constraint, not the vendor's live checksum document
-- Sigstore/cosign keyless signature verification on release archives (opt-in strict mode via `RUNX_REQUIRE_SIGNATURE=1`)
-- Atomic installs into staging directories — a failed or interrupted install leaves nothing behind
-- Every install records a digest of the runtime's entry-point binary; `runx doctor --verify` detects replaced or corrupted cached executables
+- Published SHA-256 checksum verification before extraction, except for older Deno releases
+- `--locked` requires a platform digest in `runx.lock`, verifies the retained archive against it, and compares cached runtime contents with a fresh extraction; missing metadata or mismatched bytes abort execution
+- Sigstore/cosign keyless verification for runx's own release archives, not vendor runtimes (opt-in strict mode via `RUNX_REQUIRE_SIGNATURE=1`)
+- Staged installs verified before publication; interrupted installs may leave staging files, and replacement is not crash-atomic
+- `runx doctor --verify` checks entry-point bytes against available local receipts; it is not full-tree authentication and metadata failures may leave entries unverifiable
 - Strict validation of every version string at a single chokepoint (path-traversal safe by construction)
 - Installers fail closed when no checksum tool is available
 
@@ -265,7 +265,7 @@ Runtimes are cached under `~/.runx/runtimes/<tool>/<version>/` and reused across
 ```bash
 runx dev              # run a key from [run] (any non-builtin word works)
 runx build            # same — detected projects expose every package.json script
-runx test --locked    # enforce the lockfile
+runx run test --locked # enforce the lockfile, including cached artifact integrity
 runx init             # create a starter runx.toml
 runx lock             # write runx.lock
 runx doctor           # diagnose cache, PATH and detection issues
@@ -276,7 +276,7 @@ runx completions zsh  # bash, zsh, fish, powershell
 
 runx --json doctor    # machine-readable output (also: cache list/size)
 runx --quiet dev      # suppress banners and progress bars
-runx --offline dev    # refuse any network access; cached/pinned only
+runx --offline dev    # block runx network operations, not child networking
 ```
 
 Global flags work before any subcommand (`runx --json <command>`).

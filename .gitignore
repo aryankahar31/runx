@@ -3,3 +3,5 @@
 task.md
 .DS_Store
 opencode.json
+package-lock.json
+node_modules/

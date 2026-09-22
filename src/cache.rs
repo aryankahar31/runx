@@ -17,6 +17,9 @@ use std::{
 /// leave a half-extracted tree that looks like a valid cache entry.
 pub const COMPLETION_MARKER: &str = ".runx-complete.json";
 
+/// Retained download: locked execution must authenticate bytes, not a receipt.
+pub const CACHED_ARCHIVE: &str = ".runx-archive";
+
 /// Prefix for in-progress staging directories.
 ///
 /// The leading dot keeps them out of `cache list`, and they are never a valid
@@ -152,6 +155,139 @@ pub fn read_receipt(root: &Path) -> Option<InstallReceipt> {
     serde_json::from_str(&raw).ok()
 }
 
+/// Verify a locked cache without trusting its receipt or extracted files.
+/// Missing legacy metadata/archives require an explicit reinstall, not adoption.
+pub fn verify_locked_artifact(root: &Path, spec: &RuntimeSpec) -> Result<()> {
+    use crate::downloader::{compute_sha256, is_sha256_hex};
+    use anyhow::ensure;
+    use std::collections::BTreeSet;
+
+    let expected = spec
+        .expected_sha256
+        .as_deref()
+        .context("Locked artifact has no SHA-256 digest in runx.lock")?;
+    ensure!(
+        is_sha256_hex(expected) && expected.bytes().any(|b| b != b'0'),
+        "Invalid locked SHA-256 digest in runx.lock (expected 64 hex characters, not all zeroes)"
+    );
+    ensure!(
+        fs::symlink_metadata(root)?.is_dir(),
+        "Locked runtime cache must be a directory, not a symlink: {}",
+        root.display()
+    );
+    for name in [COMPLETION_MARKER, CACHED_ARCHIVE] {
+        let path = root.join(name);
+        ensure!(
+            fs::symlink_metadata(&path)
+                .with_context(|| format!("Cannot verify locked artifact: missing or unreadable {}. Remove this cache entry and reinstall.", path.display()))?
+                .is_file(),
+            "Locked cache metadata/archive must be a regular file: {}",
+            path.display()
+        );
+    }
+    let receipt: InstallReceipt =
+        serde_json::from_str(&fs::read_to_string(root.join(COMPLETION_MARKER))?)
+            .context("Cannot verify locked artifact: invalid cache receipt")?;
+    ensure!(
+        receipt.tool == spec.tool && receipt.version == spec.version,
+        "Locked cache receipt identifies a different runtime"
+    );
+    let recorded = receipt
+        .sha256
+        .context("Locked cache receipt has no artifact SHA-256 digest")?;
+    ensure!(
+        recorded.eq_ignore_ascii_case(expected),
+        "Locked cache artifact SHA-256 mismatch with runx.lock: expected {expected}, receipt has {recorded}"
+    );
+    let archive = root.join(CACHED_ARCHIVE);
+    let actual = compute_sha256(&archive)?;
+    ensure!(
+        actual.eq_ignore_ascii_case(expected),
+        "Locked cache artifact SHA-256 mismatch with runx.lock: expected {expected}, got {actual}"
+    );
+    // ponytail: re-extract on each locked run; a trusted tree digest in the
+    // lockfile could avoid this cost, but an editable cache receipt cannot.
+    let reference = tempfile::tempdir().context("Cannot create locked verification directory")?;
+    crate::extractor::extract_archive(&archive, reference.path(), spec.archive_kind)?;
+    normalize_runtime(reference.path(), spec)?;
+    let mut directories = vec![PathBuf::new()];
+    while let Some(relative) = directories.pop() {
+        let cached_dir = root.join(&relative);
+        let reference_dir = reference.path().join(&relative);
+        let mut cached_names = BTreeSet::new();
+        for entry in fs::read_dir(&cached_dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if relative.as_os_str().is_empty()
+                && [COMPLETION_MARKER, CACHED_ARCHIVE, LAST_USED_MARKER]
+                    .iter()
+                    .any(|marker| name == *marker)
+            {
+                ensure!(
+                    entry.file_type()?.is_file(),
+                    "Invalid locked cache bookkeeping file"
+                );
+                continue;
+            }
+            cached_names.insert(name);
+        }
+        let reference_names = fs::read_dir(&reference_dir)?
+            .map(|entry| entry.map(|e| e.file_name()))
+            .collect::<std::io::Result<BTreeSet<_>>>()?;
+        ensure!(
+            cached_names == reference_names,
+            "Locked cache contents differ from the locked archive at {}",
+            cached_dir.display()
+        );
+        for name in reference_names {
+            let cached = cached_dir.join(&name);
+            let original = reference_dir.join(&name);
+            let metadata = fs::symlink_metadata(&cached)?;
+            let original_metadata = fs::symlink_metadata(&original)?;
+            ensure!(
+                metadata.file_type() == original_metadata.file_type(),
+                "Locked cache file type mismatch: {}",
+                cached.display()
+            );
+            if metadata.is_dir() {
+                directories.push(relative.join(name));
+            } else if metadata.is_symlink() {
+                ensure!(
+                    fs::read_link(&cached)? == fs::read_link(&original)?,
+                    "Locked cache symlink mismatch: {}",
+                    cached.display()
+                );
+            } else {
+                ensure!(
+                    metadata.is_file(),
+                    "Unsupported locked cache file type: {}",
+                    cached.display()
+                );
+                ensure!(
+                    compute_sha256(&cached)? == compute_sha256(&original)?,
+                    "Locked cache file digest mismatch: {}",
+                    cached.display()
+                );
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    ensure!(
+                        metadata.permissions().mode() & 0o7777
+                            == original_metadata.permissions().mode() & 0o7777,
+                        "Locked cache file permissions mismatch: {}",
+                        cached.display()
+                    );
+                }
+            }
+        }
+    }
+    ensure!(
+        verify_integrity(root, spec) == Integrity::Verified,
+        "Locked cache executable digest is missing, unreadable, or mismatched"
+    );
+    Ok(())
+}
+
 /// Create a fresh staging directory to extract into.
 ///
 /// The name includes the process id and a per-process counter so two runx
@@ -190,6 +326,7 @@ pub fn commit_runtime(
     staging: &Path,
     spec: &RuntimeSpec,
     sha256: Option<String>,
+    locked: bool,
 ) -> Result<CachedRuntime> {
     normalize_runtime(staging, spec)?;
 
@@ -204,6 +341,9 @@ pub fn commit_runtime(
     }
 
     write_receipt(staging, spec, sha256)?;
+    if locked {
+        verify_locked_artifact(staging, spec)?;
+    }
 
     let final_root = runtime_root_in(home, &spec.tool, &spec.version);
     if let Some(parent) = final_root.parent() {
@@ -320,7 +460,18 @@ impl CacheEntry {
 /// Record that a runtime was just used. Best effort; failures are ignored so a
 /// read-only cache (a shared CI mount, for instance) still works.
 pub fn touch_last_used(root: &Path) {
-    let _ = fs::write(root.join(LAST_USED_MARKER), now_secs().to_string());
+    use std::io::Write;
+
+    // Never truncate a cache-supplied hard link to a file we just verified.
+    let path = root.join(LAST_USED_MARKER);
+    let _ = fs::remove_file(&path);
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        let _ = write!(file, "{}", now_secs());
+    }
 }
 
 /// Read the last-used timestamp, if one was recorded and is parseable.
@@ -652,7 +803,7 @@ mod tests {
         let staging = staging_dir(home.path(), &spec).expect("staging dir");
         populate(&staging, &spec);
 
-        let cached = commit_runtime(home.path(), &staging, &spec, None).expect("commit");
+        let cached = commit_runtime(home.path(), &staging, &spec, None, false).expect("commit");
 
         assert_eq!(cached.root, runtime_root_in(home.path(), "node", "20.11.0"));
         assert!(cached.root.is_dir(), "runtime should exist at final path");
@@ -673,7 +824,7 @@ mod tests {
         fs::write(staging.join("lib/partial.so"), b"x").unwrap();
 
         assert!(
-            commit_runtime(home.path(), &staging, &spec, None).is_err(),
+            commit_runtime(home.path(), &staging, &spec, None, false).is_err(),
             "commit must fail when the executable is missing"
         );
         assert!(
@@ -697,12 +848,12 @@ mod tests {
 
         let first = staging_dir(home.path(), &spec).expect("staging dir");
         populate(&first, &spec);
-        commit_runtime(home.path(), &first, &spec, None).expect("first install");
+        commit_runtime(home.path(), &first, &spec, None, false).expect("first install");
 
         // A second install that fails verification.
         let second = staging_dir(home.path(), &spec).expect("second staging dir");
         fs::write(second.join("junk"), b"x").unwrap();
-        assert!(commit_runtime(home.path(), &second, &spec, None).is_err());
+        assert!(commit_runtime(home.path(), &second, &spec, None, false).is_err());
 
         assert!(
             cached_runtime_in(home.path(), &spec).unwrap().is_some(),
@@ -717,12 +868,13 @@ mod tests {
 
         let first = staging_dir(home.path(), &spec).expect("staging");
         populate(&first, &spec);
-        commit_runtime(home.path(), &first, &spec, None).expect("first install");
+        commit_runtime(home.path(), &first, &spec, None, false).expect("first install");
 
         let second = staging_dir(home.path(), &spec).expect("staging");
         populate(&second, &spec);
         fs::write(second.join("marker.txt"), b"second").unwrap();
-        let cached = commit_runtime(home.path(), &second, &spec, None).expect("second install");
+        let cached =
+            commit_runtime(home.path(), &second, &spec, None, false).expect("second install");
 
         assert!(
             cached.root.join("marker.txt").is_file(),
@@ -755,7 +907,7 @@ mod tests {
                     let spec = spec();
                     let staging = staging_dir(&home_path, &spec).expect("staging");
                     populate(&staging, &spec);
-                    commit_runtime(&home_path, &staging, &spec, None).map(|rt| rt.root)
+                    commit_runtime(&home_path, &staging, &spec, None, false).map(|rt| rt.root)
                 })
             })
             .collect();
@@ -834,7 +986,7 @@ mod tests {
         let spec = spec();
         let staging = staging_dir(home.path(), &spec).expect("staging");
         populate(&staging, &spec);
-        let cached = commit_runtime(home.path(), &staging, &spec, None).expect("commit");
+        let cached = commit_runtime(home.path(), &staging, &spec, None, false).expect("commit");
 
         assert_eq!(
             verify_integrity(&cached.root, &spec),
@@ -851,7 +1003,7 @@ mod tests {
         let spec = spec();
         let staging = staging_dir(home.path(), &spec).expect("staging");
         populate(&staging, &spec);
-        let cached = commit_runtime(home.path(), &staging, &spec, None).expect("commit");
+        let cached = commit_runtime(home.path(), &staging, &spec, None, false).expect("commit");
 
         fs::write(
             cached.root.join(&spec.bin_dirs[0]).join(&spec.executable),
@@ -878,7 +1030,7 @@ mod tests {
         let spec = spec();
         let staging = staging_dir(home.path(), &spec).expect("staging");
         populate(&staging, &spec);
-        let cached = commit_runtime(home.path(), &staging, &spec, None).expect("commit");
+        let cached = commit_runtime(home.path(), &staging, &spec, None, false).expect("commit");
 
         fs::remove_file(cached.root.join(&spec.bin_dirs[0]).join(&spec.executable)).unwrap();
 
@@ -1018,7 +1170,8 @@ mod tests {
         // Install node 20.11.0 properly.
         let staging = staging_dir(home.path(), &spec).expect("staging");
         populate(&staging, &spec);
-        commit_runtime(home.path(), &staging, &spec, Some("abc".to_string())).expect("commit");
+        commit_runtime(home.path(), &staging, &spec, Some("abc".to_string()), false)
+            .expect("commit");
 
         // And a second runtime, out of alphabetical order.
         let mut python = spec.clone();
@@ -1026,7 +1179,7 @@ mod tests {
         python.version = "3.11.7".to_string();
         let staging = staging_dir(home.path(), &python).expect("staging");
         populate(&staging, &python);
-        commit_runtime(home.path(), &staging, &python, None).expect("commit");
+        commit_runtime(home.path(), &staging, &python, None, false).expect("commit");
 
         let entries = list_cached(home.path()).expect("list");
         assert_eq!(entries.len(), 2);
@@ -1102,7 +1255,7 @@ mod tests {
         let spec = spec();
         let staging = staging_dir(home.path(), &spec).expect("staging");
         populate(&staging, &spec);
-        let cached = commit_runtime(home.path(), &staging, &spec, None).expect("commit");
+        let cached = commit_runtime(home.path(), &staging, &spec, None, false).expect("commit");
 
         touch_last_used(&cached.root);
 
@@ -1158,7 +1311,7 @@ mod tests {
         let spec = spec();
         let staging = staging_dir(home.path(), &spec).expect("staging");
         populate(&staging, &spec);
-        let cached = commit_runtime(home.path(), &staging, &spec, None).expect("commit");
+        let cached = commit_runtime(home.path(), &staging, &spec, None, false).expect("commit");
 
         remove_entry(&cached.root).expect("remove");
 
