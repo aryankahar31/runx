@@ -144,6 +144,7 @@ Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproj
 ### Developer experience
 
 - Zero-config auto-detection (every `package.json` script becomes a run command), or explicit `runx.toml`
+- `runx install` / `--install` — install project dependencies (npm, pnpm, Bun, pip, Go) using the managed runtime
 - No shell integration required, ever — nothing happens until you type `runx`
 - Cross-platform: Linux, macOS, Windows
 - Scripting modes: `--json`, `--quiet`, `--offline`
@@ -268,6 +269,7 @@ runx build            # same — detected projects expose every package.json scr
 runx run test --locked # enforce the lockfile, including cached artifact integrity
 runx init             # create a starter runx.toml
 runx lock             # write runx.lock
+runx install          # install project dependencies (npm ci, pnpm install, pip, etc.)
 runx doctor           # diagnose cache, PATH and detection issues
 runx doctor --verify  # also hash each runtime against its install-time digest
 runx cache list       # also: size, clean, prune (--older-than N)
@@ -277,7 +279,23 @@ runx completions zsh  # bash, zsh, fish, powershell
 runx --json doctor    # machine-readable output (also: cache list/size)
 runx --quiet dev      # suppress banners and progress bars
 runx --offline dev    # block runx network operations, not child networking
+runx --install dev    # install project dependencies before running the command
 ```
+
+### Dependency installation
+
+`runx install` detects the project's package manager and installs dependencies using the runx-managed runtime. Supported managers:
+
+| Lockfile | Manager | Install command |
+|----------|---------|-----------------|
+| `package-lock.json` | npm | `npm ci` |
+| `pnpm-lock.yaml` | pnpm | `pnpm install` |
+| `bun.lock` / `bun.lockb` | Bun | `bun install` |
+| `pyproject.toml` | pip | `pip install -e .` or individual deps |
+| `requirements.txt` | pip | `pip install -r requirements.txt` |
+| `go.mod` | Go | `go mod download` |
+
+`runx --install <key>` does the same inline: install dependencies, then run the command. When dependencies are already up to date, the install is skipped.
 
 Global flags work before any subcommand (`runx --json <command>`).
 

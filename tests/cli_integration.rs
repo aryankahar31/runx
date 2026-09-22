@@ -3673,3 +3673,238 @@ fn node_install_unchanged_by_phase4() {
         "npm ci should have created node_modules"
     );
 }
+
+// ── Phase 5: pnpm dependency bootstrap ───────────────────────────────────────
+
+/// `runx --install dev` on a pnpm project: fake pnpm creates node_modules,
+/// then the command runs.
+#[cfg(unix)]
+#[test]
+fn pnpm_install_scenario() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo PNPM_INSTALL_MARKER\"\n",
+    )
+    .unwrap();
+
+    // Plant a fake Node with a fake pnpm that creates node_modules.
+    let node_root = plant_executable(&home, "node", "0.0.0", "");
+    let bin = node_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_pnpm = bin.join("pnpm");
+    fs::write(
+        &fake_pnpm,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"install\" ]; then\n\
+           mkdir -p \"$PWD/node_modules\"\n\
+           echo ok > \"$PWD/node_modules/.pnpm-done\"\n\
+         fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_pnpm, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        output.status.success(),
+        "should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("PNPM_INSTALL_MARKER"),
+        "command should run after install, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        project.join("node_modules/.pnpm-done").is_file(),
+        "fake pnpm should have created node_modules"
+    );
+}
+
+/// pnpm deps already installed (node_modules exists) -> --install skips.
+#[cfg(unix)]
+#[test]
+fn pnpm_deps_already_installed_skips() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    // node_modules exists -> deps are present.
+    fs::create_dir(project.join("node_modules")).unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo PNPM_SKIP_MARKER\"\n",
+    )
+    .unwrap();
+
+    plant_executable(&home, "node", "0.0.0", "echo fake-node");
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(output.status.success());
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("PNPM_SKIP_MARKER"),
+        "command should run, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("Installing project dependencies"),
+        "should skip install when deps are present:\n{stderr}"
+    );
+}
+
+/// pnpm install fails -> clear error message.
+#[cfg(unix)]
+#[test]
+fn pnpm_install_failure_clear_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo never\"\n",
+    )
+    .unwrap();
+
+    let node_root = plant_executable(&home, "node", "0.0.0", "");
+    let bin = node_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_pnpm = bin.join("pnpm");
+    fs::write(
+        &fake_pnpm,
+        "#!/bin/sh\nif [ \"$1\" = \"install\" ]; then exit 1; fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_pnpm, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        !output.status.success(),
+        "install failure should produce non-zero exit"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("pnpm install"),
+        "should mention pnpm install in error:\n{stderr}"
+    );
+    assert!(stderr.contains("failed"), "should say failed:\n{stderr}");
+}
+
+/// `runx dev` with no --install flag on a pnpm project must NOT auto-install.
+#[cfg(unix)]
+#[test]
+fn runx_dev_without_install_flag_does_not_install_pnpm_deps() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    // No node_modules -> deps are missing.
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo PNPM_NO_INSTALL_MARKER\"\n",
+    )
+    .unwrap();
+
+    plant_executable(&home, "node", "0.0.0", "echo fake-node");
+
+    let output = runx_with_home(&project, &home, &["dev"]);
+    assert!(output.status.success());
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("PNPM_NO_INSTALL_MARKER"),
+        "command should run, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("Installing project dependencies"),
+        "must NOT install when --install is not given:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("dependencies are not installed"),
+        "should still hint about missing deps:\n{stderr}"
+    );
+}
+
+/// pnpm lockfile shows "pnpm install" hint when deps are missing.
+#[test]
+fn missing_deps_pnpm_lockfile_shows_pnpm_install_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        dir.path().join("pnpm-lock.yaml"),
+        "lockfileVersion: '9.0'\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("package.json"), "{}").unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"echo hi\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("pnpm install"),
+        "should hint at pnpm install, got:\n{stderr}"
+    );
+}
+
+/// Existing Node/Python/Bun/Go behavior unchanged by pnpm addition.
+#[cfg(unix)]
+#[test]
+fn node_install_unchanged_by_phase5() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(project.join("package-lock.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo NODE_PHASE5_UNCHANGED\"\n",
+    )
+    .unwrap();
+
+    let node_root = plant_executable(&home, "node", "0.0.0", "echo fake-node");
+    let bin = node_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_npm = bin.join("npm");
+    fs::write(
+        &fake_npm,
+        "#!/bin/sh\nif [ \"$1\" = \"ci\" ]; then\n  mkdir -p \"$PWD/node_modules\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_npm, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        output.status.success(),
+        "should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join("node_modules").is_dir(),
+        "npm ci should have created node_modules"
+    );
+}

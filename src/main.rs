@@ -310,7 +310,8 @@ fn install_command() -> Result<()> {
     let detection = dep::detect(&project_dir).ok_or_else(|| {
         error::UserError::new(format!(
             "No supported dependency manager found in {}.\n\
-             Hint: ensure a package-lock.json (Node), pyproject.toml (Python), \
+             Hint: ensure a package-lock.json (Node), pnpm-lock.yaml (pnpm), \
+             bun.lock (Bun), pyproject.toml (Python), \
              go.mod (Go), or equivalent lockfile exists.",
             project_dir.display()
         ))
@@ -695,6 +696,11 @@ fn deps_are_missing(project_dir: &Path, run_dir: &Path) -> bool {
         || project_dir.join("bun.lockb").is_file()
         || project_dir.join("bunfig.toml").is_file()
     {
+        return !(run_dir.join("node_modules").is_dir()
+            || project_dir.join("node_modules").is_dir());
+    }
+    // pnpm uses node_modules, same as npm.
+    if project_dir.join("pnpm-lock.yaml").is_file() {
         return !(run_dir.join("node_modules").is_dir()
             || project_dir.join("node_modules").is_dir());
     }
