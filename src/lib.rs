@@ -3,6 +3,7 @@
 
 pub mod cache;
 pub mod config;
+pub mod dep;
 pub mod detect;
 pub mod downloader;
 pub mod error;

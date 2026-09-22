@@ -2476,3 +2476,127 @@ fn missing_deps_bun_exits_zero_still_hints() {
         "should show the dependency hint, got:\n{stderr}"
     );
 }
+
+// ── `runx install` (Phase 1: npm only) ───────────────────────────────────────
+
+/// Install detects npm from package-lock.json and skips when node_modules is
+/// already up to date.
+#[cfg(unix)]
+#[test]
+fn install_skips_when_deps_already_present() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(project.join("package-lock.json"), "{}").unwrap();
+    // node_modules is newer than lockfile → skip.
+    fs::create_dir(project.join("node_modules")).unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed (skip), stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("already installed"),
+        "should report already installed, got:\n{stderr}"
+    );
+}
+
+/// Install fails clearly when no lockfile is present.
+#[test]
+fn install_fails_without_lockfile() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        !output.status.success(),
+        "install should fail without lockfile"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("No supported dependency manager"),
+        "should give clear error, got:\n{stderr}"
+    );
+}
+
+/// `runx dev` is completely unaffected by the install feature: same command,
+/// same exit code, same output. This is the mandatory regression test.
+#[test]
+fn runx_dev_unchanged_by_install_feature() {
+    let dir = tmp();
+    write_config(dir.path(), "hello = \"echo RUNX_DEV_MARKER\"\n");
+
+    let output = runx(dir.path(), &["hello"]);
+    assert!(output.status.success());
+    assert!(stdout_of(&output).contains("RUNX_DEV_MARKER"));
+}
+
+/// Install with a fake npm that creates node_modules when called with `ci`.
+/// Verifies the install command actually invokes the package manager.
+#[cfg(unix)]
+#[test]
+fn install_runs_npm_ci_via_managed_node() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(project.join("package-lock.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    // Plant a fake Node runtime with a fake `npm` that touches node_modules.
+    let node_root = plant_executable(&home, "node", "0.0.0", "echo fake-node");
+    let bin = node_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_npm = bin.join("npm");
+    fs::write(
+        &fake_npm,
+        "#!/bin/sh\nif [ \"$1\" = \"ci\" ]; then\n  mkdir -p \"$PWD/node_modules\"\n  echo installed > \"$PWD/node_modules/.marker\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_npm, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join("node_modules/.marker").is_file(),
+        "fake npm should have created node_modules/.marker"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Dependencies installed successfully"),
+        "should show success, got:\n{stderr}"
+    );
+}
