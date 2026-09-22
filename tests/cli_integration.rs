@@ -2600,3 +2600,183 @@ fn install_runs_npm_ci_via_managed_node() {
         "should show success, got:\n{stderr}"
     );
 }
+
+// ── `runx dev --install` (Phase 2) ───────────────────────────────────────────
+
+/// The most important regression test: `runx dev` with no --install flag,
+/// on a project with missing dependencies, must fail exactly the way it does
+/// today — the child command fails with its own error. It must NOT silently
+/// start installing dependencies.
+#[cfg(unix)]
+#[test]
+fn runx_dev_without_install_flag_does_not_install_deps() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(project.join("package-lock.json"), "{}").unwrap();
+    // No node_modules → deps are missing.
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo RUNX_NO_INSTALL_MARKER\"\n",
+    )
+    .unwrap();
+
+    // Plant a fake Node.
+    plant_executable(&home, "node", "0.0.0", "echo fake-node");
+
+    let output = runx_with_home(&project, &home, &["dev"]);
+    // Command succeeds (echo always exits 0) — but deps are still missing.
+    assert!(output.status.success());
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("RUNX_NO_INSTALL_MARKER"),
+        "command should run, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("Installing project dependencies"),
+        "must NOT install when --install is not given:\n{stderr}"
+    );
+    // The hint should fire because deps are missing.
+    assert!(
+        stderr.contains("dependencies are not installed"),
+        "should still hint about missing deps:\n{stderr}"
+    );
+}
+
+/// `runx dev --install` on a clean Node project: installs deps, then runs
+/// the command end to end.
+#[cfg(unix)]
+#[test]
+fn runx_dev_with_install_flag_installs_and_runs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(project.join("package-lock.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo RUNX_INSTALL_MARKER\"\n",
+    )
+    .unwrap();
+
+    // Plant a fake Node with a fake npm that creates node_modules.
+    let node_root = plant_executable(&home, "node", "0.0.0", "echo fake-node");
+    let bin = node_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_npm = bin.join("npm");
+    fs::write(
+        &fake_npm,
+        "#!/bin/sh\nif [ \"$1\" = \"ci\" ]; then\n  mkdir -p \"$PWD/node_modules\"\n  echo ok > \"$PWD/node_modules/.npm-done\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_npm, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        output.status.success(),
+        "should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("RUNX_INSTALL_MARKER"),
+        "command should run after install, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        project.join("node_modules/.npm-done").is_file(),
+        "fake npm should have run and created node_modules"
+    );
+}
+
+/// `runx dev --install` when deps are already installed skips install
+/// and goes straight to running the command.
+#[cfg(unix)]
+#[test]
+fn runx_dev_with_install_flag_skips_when_deps_present() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(project.join("package-lock.json"), "{}").unwrap();
+    // node_modules exists and is newer → already installed.
+    fs::create_dir(project.join("node_modules")).unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo RUNX_SKIP_INSTALL_MARKER\"\n",
+    )
+    .unwrap();
+
+    plant_executable(&home, "node", "0.0.0", "echo fake-node");
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(output.status.success());
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("RUNX_SKIP_INSTALL_MARKER"),
+        "command should run, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("Installing project dependencies"),
+        "should skip install when deps are present:\n{stderr}"
+    );
+}
+
+/// `runx run dev --install` works via the explicit Run subcommand path.
+#[cfg(unix)]
+#[test]
+fn runx_run_dev_with_install_flag() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(project.join("package-lock.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo RUNX_RUN_INSTALL_MARKER\"\n",
+    )
+    .unwrap();
+
+    let node_root = plant_executable(&home, "node", "0.0.0", "echo fake-node");
+    let bin = node_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_npm = bin.join("npm");
+    fs::write(
+        &fake_npm,
+        "#!/bin/sh\nif [ \"$1\" = \"ci\" ]; then\n  mkdir -p \"$PWD/node_modules\"\n  echo ok > \"$PWD/node_modules/.npm-done\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_npm, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "run", "dev"]);
+    assert!(
+        output.status.success(),
+        "should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("RUNX_RUN_INSTALL_MARKER"),
+        "command should run, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+}
