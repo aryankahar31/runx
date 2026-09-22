@@ -307,28 +307,94 @@ fn init_config() -> Result<()> {
 }
 fn install_command() -> Result<()> {
     let (_, project_dir, cfg) = load_project()?;
-    let detection = dep::detect(&project_dir).ok_or_else(|| {
-        error::UserError::new(format!(
+    let detections = dep::detect_all(&project_dir);
+    if detections.is_empty() {
+        return Err(error::UserError::new(format!(
             "No supported dependency manager found in {}.\n\
              Hint: ensure a package-lock.json (Node), yarn.lock (Yarn), pnpm-lock.yaml (pnpm), \
              bun.lock (Bun), pyproject.toml (Python), \
-             go.mod (Go), or equivalent lockfile exists.",
+             go.mod (Go), deno.lock (Deno), or equivalent lockfile exists.",
             project_dir.display()
         ))
-    })?;
+        .into());
+    }
 
-    if dep::deps_installed(&project_dir, &detection.manager) {
-        eprintln!("\nDependencies already installed ({})", detection.label);
+    // Resolve JS manager conflicts: if npm is present, skip other JS managers.
+    let has_npm = detections
+        .iter()
+        .any(|d| matches!(d.manager, dep::DepManager::Npm { .. }));
+    let mut skipped_js = Vec::new();
+
+    // Determine which managers actually need installation (not already installed).
+    let mut to_install = Vec::new();
+    for detection in &detections {
+        let is_js_manager = matches!(
+            detection.manager,
+            dep::DepManager::Npm { .. }
+                | dep::DepManager::Pnpm { .. }
+                | dep::DepManager::Yarn { .. }
+                | dep::DepManager::Bun { .. }
+        );
+
+        if is_js_manager && has_npm && !matches!(detection.manager, dep::DepManager::Npm { .. }) {
+            skipped_js.push(detection.label);
+            eprintln!(
+                "Warning: multiple JavaScript package managers detected:\n\
+                 \n\
+                 * npm (package-lock.json)\n\
+                 * {} ({})\n\
+                 \n\
+                 Using npm because package-lock.json has higher priority.\n\
+                 Skipping {}.",
+                detection.label,
+                match &detection.manager {
+                    dep::DepManager::Pnpm { .. } => "pnpm-lock.yaml",
+                    dep::DepManager::Yarn { .. } => "yarn.lock",
+                    dep::DepManager::Bun { .. } => "bun.lock / bun.lockb / bunfig.toml",
+                    _ => unreachable!(),
+                },
+                detection.label
+            );
+            continue;
+        }
+
+        if dep::deps_installed(&project_dir, &detection.manager) {
+            eprintln!("\nDependencies already installed ({})", detection.label);
+            continue;
+        }
+
+        to_install.push(detection);
+    }
+
+    if to_install.is_empty() {
+        if !skipped_js.is_empty() {
+            eprintln!(
+                "\nDependencies already installed ({})",
+                skipped_js.join(", ")
+            );
+        }
         return Ok(());
     }
 
-    // Provision runtimes so the managed runtime's npm/etc is on PATH.
+    // Provision runtimes only for managers that need installation.
     let provisioned = provision(&project_dir, &cfg, false)?;
     let runtimes: Vec<cache::CachedRuntime> = provisioned.into_iter().map(|e| e.cached).collect();
 
-    eprintln!("\nInstalling project dependencies ({})...", detection.label);
-    dep::install(&project_dir, &detection, &runtimes)?;
-    eprintln!("Dependencies installed successfully.");
+    let mut installed_any = false;
+    for detection in &to_install {
+        eprintln!("\nInstalling project dependencies ({})...", detection.label);
+        dep::install(&project_dir, detection, &runtimes)?;
+        eprintln!("Dependencies installed successfully.");
+        installed_any = true;
+    }
+
+    if !skipped_js.is_empty() && !installed_any {
+        eprintln!(
+            "\nDependencies already installed ({})",
+            skipped_js.join(", ")
+        );
+    }
+
     Ok(())
 }
 
@@ -617,17 +683,36 @@ fn run_command(
         eprintln!("runx timing: cache: {:?}", t2.duration_since(t1));
     }
 
-    // --install: detect dependency manager and install deps before execution.
+    // --install: detect dependency managers and install deps before execution.
     if install {
-        if let Some(detection) = dep::detect(&project_dir) {
+        let detections = dep::detect_all(&project_dir);
+        let has_npm = detections
+            .iter()
+            .any(|d| matches!(d.manager, dep::DepManager::Npm { .. }));
+
+        for detection in &detections {
+            let is_js_manager = matches!(
+                detection.manager,
+                dep::DepManager::Npm { .. }
+                    | dep::DepManager::Pnpm { .. }
+                    | dep::DepManager::Yarn { .. }
+                    | dep::DepManager::Bun { .. }
+            );
+
+            if is_js_manager && has_npm && !matches!(detection.manager, dep::DepManager::Npm { .. })
+            {
+                continue;
+            }
+
             if !dep::deps_installed(&project_dir, &detection.manager) {
                 eprintln!("\nInstalling project dependencies ({})...", detection.label);
-                dep::install(&project_dir, &detection, &runtimes)?;
+                dep::install(&project_dir, detection, &runtimes)?;
                 eprintln!("Dependencies installed successfully.");
             }
         }
-        // No lockfile → silently skip (the child command will fail with its
-        // own error; --install does not force a dependency manager).
+
+        // If we skipped JS managers but npm was one of them, that's fine — npm was handled.
+        // If nothing was installed but deps were already present, that's also fine.
     }
 
     // Determine dependency state before execution.  The hint fires
@@ -637,98 +722,166 @@ fn run_command(
 
     let status = executor::execute(&command, &runtimes, &run_dir, &project_dir, passthrough)?;
     if deps_missing {
-        let install_cmd = detect_install_command(&project_dir);
-        eprintln!(
-            "\nHint: project dependencies are not installed.\n\
-             Run `{install_cmd}` in {dir}, then try again.",
-            dir = project_dir.display(),
-        );
+        let install_cmds = detect_install_commands(&project_dir);
+        if install_cmds.len() == 1 {
+            eprintln!(
+                "\nHint: project dependencies are not installed.\n\
+                 Run `{install_cmd}` in {dir}, then try again.",
+                install_cmd = install_cmds[0],
+                dir = project_dir.display(),
+            );
+        } else if !install_cmds.is_empty() {
+            eprintln!(
+                "\nHint: project dependencies are not installed.\n\
+                 Run one of the following in {dir}, then try again:\n  {cmds}",
+                dir = project_dir.display(),
+                cmds = install_cmds.join("\n  ")
+            );
+        }
     }
     // process::exit doesn't flush stdio; ensure the hint (eprintln!) is visible.
     std::io::stderr().flush().ok();
     process::exit(status.code().unwrap_or(1));
 }
 
-/// Detect the dependency install command from project files.
-/// Falls back to npm when no recognised file is present.
-fn detect_install_command(project_dir: &Path) -> &'static str {
-    if project_dir.join("deno.lock").is_file() {
-        "deno install"
-    } else if project_dir.join("bun.lock").is_file() || project_dir.join("bun.lockb").is_file() {
-        "bun install"
-    } else if project_dir.join("package-lock.json").is_file() {
-        "npm install"
-    } else if project_dir.join("yarn.lock").is_file() {
-        "yarn install"
-    } else if project_dir.join("pnpm-lock.yaml").is_file() {
-        "pnpm install"
-    } else if project_dir.join("pyproject.toml").is_file() {
-        if dep::has_build_system(&project_dir.join("pyproject.toml")) {
-            "pip install -e ."
-        } else {
-            "pip install (see [project.dependencies] in pyproject.toml)"
+/// Detect the dependency install commands from project files.
+/// Returns all detected managers in priority order, applying JS conflict resolution.
+fn detect_install_commands(project_dir: &Path) -> Vec<&'static str> {
+    let mut commands = Vec::new();
+    let detections = dep::detect_all(project_dir);
+    let has_npm = detections
+        .iter()
+        .any(|d| matches!(d.manager, dep::DepManager::Npm { .. }));
+
+    for detection in &detections {
+        let is_js_manager = matches!(
+            detection.manager,
+            dep::DepManager::Npm { .. }
+                | dep::DepManager::Pnpm { .. }
+                | dep::DepManager::Yarn { .. }
+                | dep::DepManager::Bun { .. }
+        );
+
+        if is_js_manager && has_npm && !matches!(detection.manager, dep::DepManager::Npm { .. }) {
+            continue;
         }
-    } else if project_dir.join("requirements.txt").is_file() {
-        "pip install -r requirements.txt"
-    } else if project_dir.join("go.mod").is_file() {
-        "go mod download"
-    } else {
-        "npm install"
+
+        let cmd = match &detection.manager {
+            dep::DepManager::Npm { .. } => "npm install",
+            dep::DepManager::Yarn { .. } => "yarn install",
+            dep::DepManager::Pnpm { .. } => "pnpm install",
+            dep::DepManager::Bun { .. } => "bun install",
+            dep::DepManager::PythonPyproject { .. } => {
+                if dep::has_build_system(&project_dir.join("pyproject.toml")) {
+                    "pip install -e ."
+                } else {
+                    "pip install (see [project.dependencies] in pyproject.toml)"
+                }
+            }
+            dep::DepManager::PythonRequirements { .. } => "pip install -r requirements.txt",
+            dep::DepManager::Go { .. } => "go mod download",
+            dep::DepManager::Deno { .. } => "deno install",
+        };
+        commands.push(cmd);
     }
+
+    // Fallback: if no lockfile-based managers detected but package.json exists,
+    // fall back to npm install (matching legacy behavior).
+    if commands.is_empty() && project_dir.join("package.json").is_file() {
+        commands.push("npm install");
+    }
+    commands
 }
+
 /// True when a project has a dependency manifest but no installed deps.
 ///
-/// JS: `package.json` present but no `node_modules/` directory.
-/// Python: `pyproject.toml`/`requirements.txt` present but no `.venv`/`venv`.
+/// Checks all detected managers, applying JS conflict resolution (npm wins).
+/// For the hint, we only care if the dependency directory/file is MISSING entirely,
+/// not whether it's outdated (mtime check). The mtime heuristic is used by `runx install`
+/// to decide whether to run the install command, but the hint should be conservative.
 fn deps_are_missing(project_dir: &Path, run_dir: &Path) -> bool {
-    if project_dir.join("package.json").is_file() {
-        return !(run_dir.join("node_modules").is_dir()
-            || project_dir.join("node_modules").is_dir());
-    }
-    if project_dir.join("pyproject.toml").is_file()
-        || project_dir.join("requirements.txt").is_file()
-    {
-        return !(run_dir.join(".venv").is_dir()
-            || run_dir.join("venv").is_dir()
-            || project_dir.join(".venv").is_dir()
-            || project_dir.join("venv").is_dir());
-    }
-    // Bun uses node_modules, same as npm.
-    if project_dir.join("bun.lock").is_file()
-        || project_dir.join("bun.lockb").is_file()
-        || project_dir.join("bunfig.toml").is_file()
-    {
-        return !(run_dir.join("node_modules").is_dir()
-            || project_dir.join("node_modules").is_dir());
-    }
-    // pnpm uses node_modules, same as npm.
-    if project_dir.join("pnpm-lock.yaml").is_file() {
-        return !(run_dir.join("node_modules").is_dir()
-            || project_dir.join("node_modules").is_dir());
-    }
-    // Deno: deno.lock is the manifest; if it exists but deps not installed,
-    // we consider deps missing. Since deno.lock is both manifest and proof,
-    // we check if it exists but has no meaningful content (empty or {}).
-    if project_dir.join("deno.lock").is_file() {
-        return project_dir
-            .join("deno.lock")
-            .metadata()
-            .and_then(|m| {
-                if m.len() == 0 {
-                    return Ok(true);
+    let detections = dep::detect_all(project_dir);
+    // Apply JS conflict resolution: if npm is detected, it's the primary JS manager.
+    let has_npm = detections
+        .iter()
+        .any(|d| matches!(d.manager, dep::DepManager::Npm { .. }));
+    let primary_js_manager = if has_npm {
+        detections
+            .iter()
+            .find(|d| matches!(d.manager, dep::DepManager::Npm { .. }))
+    } else {
+        detections.iter().find(|d| {
+            matches!(
+                d.manager,
+                dep::DepManager::Pnpm { .. }
+                    | dep::DepManager::Yarn { .. }
+                    | dep::DepManager::Bun { .. }
+            )
+        })
+    };
+
+    let mut any_missing = false;
+    for detection in &detections {
+        let is_js_manager = matches!(
+            detection.manager,
+            dep::DepManager::Npm { .. }
+                | dep::DepManager::Pnpm { .. }
+                | dep::DepManager::Yarn { .. }
+                | dep::DepManager::Bun { .. }
+        );
+
+        // Skip non-primary JS managers
+        if is_js_manager {
+            if let Some(primary) = primary_js_manager {
+                if detection.label != primary.label {
+                    continue;
                 }
-                std::fs::read_to_string(project_dir.join("deno.lock")).map(|content| {
+            }
+        }
+
+        // For the hint, check if the dependency directory/file is MISSING entirely.
+        // We don't use mtime here — the hint should fire only when deps are clearly absent.
+        let missing = match &detection.manager {
+            dep::DepManager::Npm { .. }
+            | dep::DepManager::Yarn { .. }
+            | dep::DepManager::Pnpm { .. } => {
+                !(run_dir.join("node_modules").is_dir()
+                    || project_dir.join("node_modules").is_dir())
+            }
+            dep::DepManager::PythonPyproject { .. }
+            | dep::DepManager::PythonRequirements { .. } => {
+                !(run_dir.join(".venv").is_dir()
+                    || run_dir.join("venv").is_dir()
+                    || project_dir.join(".venv").is_dir()
+                    || project_dir.join("venv").is_dir())
+            }
+            dep::DepManager::Bun { .. } => {
+                !(run_dir.join("node_modules").is_dir()
+                    || project_dir.join("node_modules").is_dir())
+            }
+            dep::DepManager::Go { .. } => !project_dir.join("go.sum").is_file(),
+            dep::DepManager::Deno { lockfile } => match std::fs::read_to_string(lockfile) {
+                Ok(content) => {
                     let trimmed = content.trim();
                     trimmed.is_empty() || trimmed == "{}" || trimmed == "[]"
-                })
-            })
-            .unwrap_or(true);
+                }
+                Err(_) => true,
+            },
+        };
+        if missing {
+            any_missing = true;
+        }
     }
-    // Go: go.sum is the local proof that modules are downloaded.
-    if project_dir.join("go.mod").is_file() {
-        return !project_dir.join("go.sum").is_file();
+
+    // Fallback: if no lockfile-based managers detected but package.json exists,
+    // consider deps missing (matching legacy fallback to npm).
+    if !any_missing && detections.is_empty() && project_dir.join("package.json").is_file() {
+        // Check if node_modules is missing
+        any_missing =
+            !(run_dir.join("node_modules").is_dir() || project_dir.join("node_modules").is_dir());
     }
-    false
+
+    any_missing
 }
 
 // ── Cache subcommands ────────────────────────────────────────────────────────

@@ -28,10 +28,20 @@ pub struct DepDetection {
 /// Scan `project_dir` for dependency manager indicators.
 ///
 /// Returns `None` when no recognised lockfile/manifest is found.
+/// This is the single-manager API (first-match wins) kept for backward compatibility.
 pub fn detect(project_dir: &Path) -> Option<DepDetection> {
-    // ponytail: first-match wins, one file per PM.
+    detect_all(project_dir).into_iter().next()
+}
+
+/// Scan `project_dir` for ALL dependency manager indicators.
+///
+/// Returns a list of all detected managers in priority order.
+/// Priority: npm > pnpm > yarn > pip (pyproject) > pip (requirements) > bun > go > deno.
+pub fn detect_all(project_dir: &Path) -> Vec<DepDetection> {
+    let mut detections = Vec::new();
+
     if project_dir.join("package-lock.json").is_file() {
-        return Some(DepDetection {
+        detections.push(DepDetection {
             manager: DepManager::Npm {
                 lockfile: project_dir.join("package-lock.json"),
             },
@@ -39,25 +49,23 @@ pub fn detect(project_dir: &Path) -> Option<DepDetection> {
         });
     }
     if project_dir.join("pnpm-lock.yaml").is_file() {
-        return Some(DepDetection {
+        detections.push(DepDetection {
             manager: DepManager::Pnpm {
                 lockfile: project_dir.join("pnpm-lock.yaml"),
             },
             label: "pnpm",
         });
     }
-    // yarn.lock is a JS package manager — check before Python/Go.
     if project_dir.join("yarn.lock").is_file() {
-        return Some(DepDetection {
+        detections.push(DepDetection {
             manager: DepManager::Yarn {
                 lockfile: project_dir.join("yarn.lock"),
             },
             label: "yarn",
         });
     }
-    // pyproject.toml preferred over requirements.txt (PEP 621 standard).
     if project_dir.join("pyproject.toml").is_file() {
-        return Some(DepDetection {
+        detections.push(DepDetection {
             manager: DepManager::PythonPyproject {
                 pyproject: project_dir.join("pyproject.toml"),
             },
@@ -65,51 +73,50 @@ pub fn detect(project_dir: &Path) -> Option<DepDetection> {
         });
     }
     if project_dir.join("requirements.txt").is_file() {
-        return Some(DepDetection {
+        detections.push(DepDetection {
             manager: DepManager::PythonRequirements {
                 requirements: project_dir.join("requirements.txt"),
             },
             label: "pip (requirements.txt)",
         });
     }
-    // Bun: bun.lock, bun.lockb, or bunfig.toml.
     for name in &["bun.lock", "bun.lockb"] {
         if project_dir.join(name).is_file() {
-            return Some(DepDetection {
+            detections.push(DepDetection {
                 manager: DepManager::Bun {
                     lockfile: project_dir.join(name),
                 },
                 label: "bun",
             });
+            break;
         }
     }
     if project_dir.join("bunfig.toml").is_file() {
-        return Some(DepDetection {
+        detections.push(DepDetection {
             manager: DepManager::Bun {
                 lockfile: project_dir.join("bunfig.toml"),
             },
             label: "bun",
         });
     }
-    // Go: go.mod.
     if project_dir.join("go.mod").is_file() {
-        return Some(DepDetection {
+        detections.push(DepDetection {
             manager: DepManager::Go {
                 gomod: project_dir.join("go.mod"),
             },
             label: "go",
         });
     }
-    // Deno: deno.lock.
     if project_dir.join("deno.lock").is_file() {
-        return Some(DepDetection {
+        detections.push(DepDetection {
             manager: DepManager::Deno {
                 lockfile: project_dir.join("deno.lock"),
             },
             label: "deno",
         });
     }
-    None
+
+    detections
 }
 
 /// Return `true` if `pyproject.toml` contains a `[build-system]` table.
