@@ -667,6 +667,8 @@ fn detect_install_command(project_dir: &Path) -> &'static str {
         }
     } else if project_dir.join("requirements.txt").is_file() {
         "pip install -r requirements.txt"
+    } else if project_dir.join("go.mod").is_file() {
+        "go mod download"
     } else {
         "npm install"
     }
@@ -687,6 +689,18 @@ fn deps_are_missing(project_dir: &Path, run_dir: &Path) -> bool {
             || run_dir.join("venv").is_dir()
             || project_dir.join(".venv").is_dir()
             || project_dir.join("venv").is_dir());
+    }
+    // Bun uses node_modules, same as npm.
+    if project_dir.join("bun.lock").is_file()
+        || project_dir.join("bun.lockb").is_file()
+        || project_dir.join("bunfig.toml").is_file()
+    {
+        return !(run_dir.join("node_modules").is_dir()
+            || project_dir.join("node_modules").is_dir());
+    }
+    // Go: go.sum is the local proof that modules are downloaded.
+    if project_dir.join("go.mod").is_file() {
+        return !project_dir.join("go.sum").is_file();
     }
     false
 }

@@ -12,7 +12,8 @@ pub enum DepManager {
     Npm { lockfile: PathBuf },
     PythonPyproject { pyproject: PathBuf },
     PythonRequirements { requirements: PathBuf },
-    // ponytail: Phase 4 adds Bun, Go, Deno. Phase 5 adds Pnpm, Yarn.
+    Bun { lockfile: PathBuf },
+    Go { gomod: PathBuf },
 }
 
 /// Result of scanning a project directory for dependency information.
@@ -51,8 +52,35 @@ pub fn detect(project_dir: &Path) -> Option<DepDetection> {
             label: "pip (requirements.txt)",
         });
     }
-    // ponytail: Phase 4 adds bun.lock, go.mod, deno.json.
-    // Phase 5 adds pnpm-lock.yaml, yarn.lock.
+    // Bun: bun.lock, bun.lockb, or bunfig.toml.
+    for name in &["bun.lock", "bun.lockb"] {
+        if project_dir.join(name).is_file() {
+            return Some(DepDetection {
+                manager: DepManager::Bun {
+                    lockfile: project_dir.join(name),
+                },
+                label: "bun",
+            });
+        }
+    }
+    if project_dir.join("bunfig.toml").is_file() {
+        return Some(DepDetection {
+            manager: DepManager::Bun {
+                lockfile: project_dir.join("bunfig.toml"),
+            },
+            label: "bun",
+        });
+    }
+    // Go: go.mod.
+    if project_dir.join("go.mod").is_file() {
+        return Some(DepDetection {
+            manager: DepManager::Go {
+                gomod: project_dir.join("go.mod"),
+            },
+            label: "go",
+        });
+    }
+    // ponytail: Phase 5 adds pnpm-lock.yaml, yarn.lock, deno.json.
     None
 }
 
@@ -143,6 +171,39 @@ pub fn deps_installed(project_dir: &Path, manager: &DepManager) -> bool {
             // Check for standard venv directories.
             project_dir.join(".venv").is_dir() || project_dir.join("venv").is_dir()
         }
+        DepManager::Bun { lockfile } => {
+            // Bun uses node_modules, same as npm.
+            let nm = project_dir.join("node_modules");
+            match (nm.metadata(), lockfile.metadata()) {
+                (Ok(nm_meta), Ok(lf_meta)) => {
+                    let nm_modified = nm_meta
+                        .modified()
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    let lf_modified = lf_meta
+                        .modified()
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    nm_modified >= lf_modified
+                }
+                (Err(_), _) => false,
+                (_, Err(_)) => false,
+            }
+        }
+        DepManager::Go { gomod } => {
+            // go.sum is the local proof that modules are downloaded.
+            let go_sum = project_dir.join("go.sum");
+            match (go_sum.metadata(), gomod.metadata()) {
+                (Ok(gs_meta), Ok(gm_meta)) => {
+                    let gs_modified = gs_meta
+                        .modified()
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    let gm_modified = gm_meta
+                        .modified()
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    gs_modified >= gm_modified
+                }
+                _ => false,
+            }
+        }
     }
 }
 
@@ -156,6 +217,8 @@ pub fn install(
         DepManager::Npm { .. } => install_npm(project_dir, runtimes),
         DepManager::PythonPyproject { .. } => install_python(project_dir, runtimes, true),
         DepManager::PythonRequirements { .. } => install_python(project_dir, runtimes, false),
+        DepManager::Bun { .. } => install_bun(project_dir, runtimes),
+        DepManager::Go { .. } => install_go(project_dir, runtimes),
     }
 }
 
@@ -275,6 +338,38 @@ fn install_python(
     }
 }
 
+fn install_bun(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
+    let bun = find_runtime(runtimes, "bun")
+        .context("Bun runtime not provisioned — cannot run bun install")?;
+    let path = build_path(bun)?;
+    let status = run_shell_command("bun install", project_dir, &path)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "`bun install` failed in {} with exit code {}",
+            project_dir.display(),
+            status.code().unwrap_or(-1)
+        ))
+    }
+}
+
+fn install_go(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
+    let go = find_runtime(runtimes, "go")
+        .context("Go runtime not provisioned — cannot run go mod download")?;
+    let path = build_path(go)?;
+    let status = run_shell_command("go mod download", project_dir, &path)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "`go mod download` failed in {} with exit code {}",
+            project_dir.display(),
+            status.code().unwrap_or(-1)
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,5 +459,87 @@ mod tests {
         fs::create_dir(dir.path().join("venv")).unwrap();
         let det = detect(dir.path()).unwrap();
         assert!(deps_installed(dir.path(), &det.manager));
+    }
+
+    #[test]
+    fn detects_bun_from_bun_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+        let det = detect(dir.path()).expect("should detect bun");
+        assert_eq!(det.label, "bun");
+        assert!(matches!(det.manager, DepManager::Bun { .. }));
+    }
+
+    #[test]
+    fn detects_bun_from_bun_lockb() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("bun.lockb"), "BunLock\x00\x01").unwrap();
+        let det = detect(dir.path()).expect("should detect bun");
+        assert_eq!(det.label, "bun");
+        assert!(matches!(det.manager, DepManager::Bun { .. }));
+    }
+
+    #[test]
+    fn detects_bun_from_bunfig_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("bunfig.toml"), "[install]\n").unwrap();
+        let det = detect(dir.path()).expect("should detect bun");
+        assert_eq!(det.label, "bun");
+        assert!(matches!(det.manager, DepManager::Bun { .. }));
+    }
+
+    #[test]
+    fn detects_go_from_go_mod() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+        let det = detect(dir.path()).expect("should detect go");
+        assert_eq!(det.label, "go");
+        assert!(matches!(det.manager, DepManager::Go { .. }));
+    }
+
+    #[test]
+    fn bun_not_installed_without_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(!deps_installed(dir.path(), &det.manager));
+    }
+
+    #[test]
+    fn bun_installed_with_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+        fs::create_dir(dir.path().join("node_modules")).unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(deps_installed(dir.path(), &det.manager));
+    }
+
+    #[test]
+    fn go_not_installed_without_go_sum() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(!deps_installed(dir.path(), &det.manager));
+    }
+
+    #[test]
+    fn go_installed_with_go_sum() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+        fs::write(dir.path().join("go.sum"), "").unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(deps_installed(dir.path(), &det.manager));
+    }
+
+    #[test]
+    fn npm_lock_wins_over_bun_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+        fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(
+            matches!(det.manager, DepManager::Npm { .. }),
+            "package-lock.json should take precedence for backward compat"
+        );
     }
 }
