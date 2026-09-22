@@ -587,6 +587,37 @@ fn plant_python_release_cache(home: &Path, version: &str) {
     fs::write(home.join("python-release-cache.json"), json).expect("write python release cache");
 }
 
+/// Plant a Go release cache so `resolve_runtime` doesn't hit the network.
+/// Cache format: version -> platform -> {url, sha256, cached_at_secs}.
+#[cfg(unix)]
+fn plant_go_release_cache(home: &Path, version: &str) {
+    fs::create_dir_all(home).expect("create home dir");
+    let platforms = [
+        "linux-amd64",
+        "linux-arm64",
+        "darwin-amd64",
+        "darwin-arm64",
+        "windows-amd64",
+        "windows-arm64",
+    ];
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let platform_entries: Vec<String> = platforms
+        .iter()
+        .map(|p| {
+            format!(
+                r#""{p}": {{"url": "https://example.invalid/go.tgz",
+                    "sha256": "abcdef0123456789",
+                    "cached_at_secs": {now}}}"#
+            )
+        })
+        .collect();
+    let json = format!(r#"{{"{version}": {{{}}}}}"#, platform_entries.join(", "));
+    fs::write(home.join("go-release-cache.json"), json).expect("write go release cache");
+}
+
 /// The `npm run dev` failure mode, generalised: the run command invokes one
 /// runtime (node, standing in for npm) while a second runtime (bun) is only
 /// reached through the child's PATH. Both must be found.
@@ -3225,5 +3256,420 @@ fi\n' > \"$venv_dir/bin/pip\"\n\
     assert!(
         !deps.contains("-e"),
         "should NOT use -e flag for config-only pyproject.toml, got: {deps}"
+    );
+}
+
+// ── Phase 4: Bun + Go dependency bootstrap ───────────────────────────────────
+
+/// `runx --install dev` on a Bun project: fake bun creates node_modules,
+/// then the command runs.
+#[cfg(unix)]
+#[test]
+fn bun_install_scenario() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("bun.lock"), "{}\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nbun = \"0.0.0\"\n\n[run]\ndev = \"echo BUN_INSTALL_MARKER\"\n",
+    )
+    .unwrap();
+
+    // Plant a fake bun that creates node_modules when invoked with "install".
+    let bun_root = plant_executable(&home, "bun", "0.0.0", "");
+    let fake_bun = bun_root.join("bun");
+    fs::write(
+        &fake_bun,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"install\" ]; then\n\
+           mkdir -p \"$PWD/node_modules\"\n\
+           echo ok > \"$PWD/node_modules/.bun-done\"\n\
+         fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_bun, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        output.status.success(),
+        "should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("BUN_INSTALL_MARKER"),
+        "command should run after install, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        project.join("node_modules/.bun-done").is_file(),
+        "fake bun should have created node_modules"
+    );
+}
+
+/// Bun deps already installed (node_modules exists) → --install skips.
+#[cfg(unix)]
+#[test]
+fn bun_deps_already_installed_skips() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("bun.lock"), "{}\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    // node_modules exists → deps are present.
+    fs::create_dir(project.join("node_modules")).unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nbun = \"0.0.0\"\n\n[run]\ndev = \"echo BUN_SKIP_MARKER\"\n",
+    )
+    .unwrap();
+
+    plant_executable(&home, "bun", "0.0.0", "echo fake-bun");
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(output.status.success());
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("BUN_SKIP_MARKER"),
+        "command should run, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("Installing project dependencies"),
+        "should skip install when deps are present:\n{stderr}"
+    );
+}
+
+/// Bun install fails → clear error message.
+#[cfg(unix)]
+#[test]
+fn bun_install_failure_clear_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("bun.lock"), "{}\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nbun = \"0.0.0\"\n\n[run]\ndev = \"echo never\"\n",
+    )
+    .unwrap();
+
+    let bun_root = plant_executable(&home, "bun", "0.0.0", "");
+    let fake_bun = bun_root.join("bun");
+    fs::write(
+        &fake_bun,
+        "#!/bin/sh\nif [ \"$1\" = \"install\" ]; then exit 1; fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_bun, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        !output.status.success(),
+        "install failure should produce non-zero exit"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "should mention bun install in error:\n{stderr}"
+    );
+    assert!(stderr.contains("failed"), "should say failed:\n{stderr}");
+}
+
+/// `runx --install dev` on a Go project: fake go creates go.sum, then
+/// the command runs.
+#[cfg(unix)]
+#[test]
+fn go_mod_download_scenario() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\ngo = \"1.22.5\"\n\n[run]\ndev = \"echo GO_INSTALL_MARKER\"\n",
+    )
+    .unwrap();
+
+    plant_go_release_cache(&home, "1.22.5");
+
+    // Plant a fake go binary that creates go.sum on "mod download".
+    let go_root = plant_executable(&home, "go", "1.22.5", "");
+    let fake_go = go_root.join("bin").join("go");
+    fs::write(
+        &fake_go,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"mod\" ] && [ \"$2\" = \"download\" ]; then\n\
+           touch \"$PWD/go.sum\"\n\
+         fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_go, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        output.status.success(),
+        "should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("GO_INSTALL_MARKER"),
+        "command should run after install, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        project.join("go.sum").is_file(),
+        "fake go should have created go.sum"
+    );
+}
+
+/// Go deps already installed (go.sum exists) → --install skips.
+#[cfg(unix)]
+#[test]
+fn go_deps_already_installed_skips() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+    // go.sum exists → deps are present.
+    fs::write(project.join("go.sum"), "").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\ngo = \"1.22.5\"\n\n[run]\ndev = \"echo GO_SKIP_MARKER\"\n",
+    )
+    .unwrap();
+
+    plant_go_release_cache(&home, "1.22.5");
+    plant_executable(&home, "go", "1.22.5", "echo fake-go");
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(output.status.success());
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("GO_SKIP_MARKER"),
+        "command should run, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("Installing project dependencies"),
+        "should skip install when deps are present:\n{stderr}"
+    );
+}
+
+/// Go install fails → clear error message.
+#[cfg(unix)]
+#[test]
+fn go_install_failure_clear_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\ngo = \"1.22.5\"\n\n[run]\ndev = \"echo never\"\n",
+    )
+    .unwrap();
+
+    plant_go_release_cache(&home, "1.22.5");
+
+    let go_root = plant_executable(&home, "go", "1.22.5", "");
+    let fake_go = go_root.join("bin").join("go");
+    fs::write(
+        &fake_go,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"mod\" ] && [ \"$2\" = \"download\" ]; then\n\
+           exit 1\n\
+         fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_go, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        !output.status.success(),
+        "install failure should produce non-zero exit"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("go mod download"),
+        "should mention go mod download in error:\n{stderr}"
+    );
+    assert!(stderr.contains("failed"), "should say failed:\n{stderr}");
+}
+
+/// `runx dev` with no --install flag on a Bun project must NOT auto-install.
+#[cfg(unix)]
+#[test]
+fn runx_dev_without_install_flag_does_not_install_bun_deps() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("bun.lock"), "{}\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    // No node_modules → deps are missing.
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nbun = \"0.0.0\"\n\n[run]\ndev = \"echo BUN_NO_INSTALL_MARKER\"\n",
+    )
+    .unwrap();
+
+    plant_executable(&home, "bun", "0.0.0", "echo fake-bun");
+
+    let output = runx_with_home(&project, &home, &["dev"]);
+    assert!(output.status.success());
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("BUN_NO_INSTALL_MARKER"),
+        "command should run, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("Installing project dependencies"),
+        "must NOT install when --install is not given:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("dependencies are not installed"),
+        "should still hint about missing deps:\n{stderr}"
+    );
+}
+
+/// `runx dev` with no --install flag on a Go project must NOT auto-install.
+#[cfg(unix)]
+#[test]
+fn runx_dev_without_install_flag_does_not_install_go_deps() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+    // No go.sum → deps are missing.
+    fs::write(
+        config_path(&project),
+        "[runtimes]\ngo = \"1.22.5\"\n\n[run]\ndev = \"echo GO_NO_INSTALL_MARKER\"\n",
+    )
+    .unwrap();
+
+    plant_go_release_cache(&home, "1.22.5");
+    plant_executable(&home, "go", "1.22.5", "echo fake-go");
+
+    let output = runx_with_home(&project, &home, &["dev"]);
+    assert!(output.status.success());
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("GO_NO_INSTALL_MARKER"),
+        "command should run, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("Installing project dependencies"),
+        "must NOT install when --install is not given:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("dependencies are not installed"),
+        "should still hint about missing deps:\n{stderr}"
+    );
+}
+
+/// Bun lockfile shows "bun install" hint when deps are missing.
+#[test]
+fn missing_deps_bun_lockfile_shows_bun_install_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(dir.path().join("package.json"), "{}").unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"echo hi\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "should hint at bun install, got:\n{stderr}"
+    );
+}
+
+/// Go project shows "go mod download" hint when deps are missing.
+#[test]
+fn missing_deps_go_mod_shows_go_mod_download_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(dir.path().join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"echo hi\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("go mod download"),
+        "should hint at go mod download, got:\n{stderr}"
+    );
+}
+
+/// Existing Node behavior unchanged: --install + package-lock.json still
+/// installs via npm ci.
+#[cfg(unix)]
+#[test]
+fn node_install_unchanged_by_phase4() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(project.join("package-lock.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo NODE_UNCHANGED_MARKER\"\n",
+    )
+    .unwrap();
+
+    let node_root = plant_executable(&home, "node", "0.0.0", "echo fake-node");
+    let bin = node_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_npm = bin.join("npm");
+    fs::write(
+        &fake_npm,
+        "#!/bin/sh\nif [ \"$1\" = \"ci\" ]; then\n  mkdir -p \"$PWD/node_modules\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_npm, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        output.status.success(),
+        "should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join("node_modules").is_dir(),
+        "npm ci should have created node_modules"
     );
 }
