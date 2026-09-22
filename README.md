@@ -295,6 +295,7 @@ runx --install dev    # install project dependencies before running the command
 | `pyproject.toml` | pip | `pip install -e .` or individual deps |
 | `requirements.txt` | pip | `pip install -r requirements.txt` |
 | `go.mod` | Go | `go mod download` |
+| `deno.lock` | Deno | `deno install` |
 
 `runx --install <key>` does the same inline: install dependencies, then run the command. When dependencies are already up to date, the install is skipped.
 

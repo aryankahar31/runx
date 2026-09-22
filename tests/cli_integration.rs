@@ -3523,30 +3523,156 @@ fn go_install_failure_clear_error() {
     assert!(stderr.contains("failed"), "should say failed:\n{stderr}");
 }
 
-/// `runx dev` with no --install flag on a Bun project must NOT auto-install.
+/// `runx --install dev` on a Deno project: fake deno creates a marker,
+/// then the command runs.
 #[cfg(unix)]
 #[test]
-fn runx_dev_without_install_flag_does_not_install_bun_deps() {
+fn deno_install_scenario() {
+    use std::os::unix::fs::PermissionsExt;
+
     let dir = tmp();
     let home = dir.path().join("home");
     let project = dir.path().join("project");
     fs::create_dir_all(&project).unwrap();
-    fs::write(project.join("bun.lock"), "{}\n").unwrap();
-    fs::write(project.join("package.json"), "{}").unwrap();
-    // No node_modules → deps are missing.
+    fs::write(project.join("deno.lock"), "{}\n").unwrap();
     fs::write(
         config_path(&project),
-        "[runtimes]\nbun = \"0.0.0\"\n\n[run]\ndev = \"echo BUN_NO_INSTALL_MARKER\"\n",
+        "[runtimes]\ndeno = \"2.0.0\"\n\n[run]\ndev = \"echo DENO_INSTALL_MARKER\"\n",
     )
     .unwrap();
 
-    plant_executable(&home, "bun", "0.0.0", "echo fake-bun");
+    let deno_root = plant_executable(&home, "deno", "2.0.0", "");
+    let fake_deno = deno_root.join("deno");
+    fs::write(
+        &fake_deno,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"install\" ]; then\n\
+           echo installed > \"$PWD/deno.lock\"\n\
+         fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_deno, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        output.status.success(),
+        "should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("DENO_INSTALL_MARKER"),
+        "command should run after install, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        project.join("deno.lock").is_file(),
+        "fake deno should have updated deno.lock"
+    );
+}
+
+/// Deno deps already installed (deno.lock has content) -> --install skips.
+#[cfg(unix)]
+#[test]
+fn deno_deps_already_installed_skips() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    // A lockfile with actual dependency entries means deps are installed.
+    fs::write(
+        project.join("deno.lock"),
+        r#"{"https://deno.land/std@0.200.0/http/server.ts": "sha256-abc123"}"#,
+    )
+    .unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\ndeno = \"2.0.0\"\n\n[run]\ndev = \"echo DENO_SKIP_MARKER\"\n",
+    )
+    .unwrap();
+
+    plant_executable(&home, "deno", "2.0.0", "echo fake-deno");
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(output.status.success());
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("DENO_SKIP_MARKER"),
+        "command should run, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("Installing project dependencies"),
+        "should skip install when deps are present:\n{stderr}"
+    );
+}
+
+/// Deno install fails -> clear error message.
+#[cfg(unix)]
+#[test]
+fn deno_install_failure_clear_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("deno.lock"), "{}\n").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\ndeno = \"2.0.0\"\n\n[run]\ndev = \"echo never\"\n",
+    )
+    .unwrap();
+
+    let deno_root = plant_executable(&home, "deno", "2.0.0", "");
+    let fake_deno = deno_root.join("deno");
+    fs::write(
+        &fake_deno,
+        "#!/bin/sh\nif [ \"$1\" = \"install\" ]; then exit 1; fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_deno, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        !output.status.success(),
+        "install failure should produce non-zero exit"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("deno install"),
+        "should mention deno install in error:\n{stderr}"
+    );
+    assert!(stderr.contains("failed"), "should say failed:\n{stderr}");
+}
+
+/// `runx dev` with no --install flag on a Deno project must NOT auto-install.
+#[cfg(unix)]
+#[test]
+fn runx_dev_without_install_flag_does_not_install_deno_deps() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("deno.lock"), "{}\n").unwrap();
+    // Empty deno.lock -> deps are missing.
+    fs::write(
+        config_path(&project),
+        "[runtimes]\ndeno = \"2.0.0\"\n\n[run]\ndev = \"echo DENO_NO_INSTALL_MARKER\"\n",
+    )
+    .unwrap();
+
+    plant_executable(&home, "deno", "2.0.0", "echo fake-deno");
 
     let output = runx_with_home(&project, &home, &["dev"]);
     assert!(output.status.success());
     let stdout = stdout_of(&output);
     assert!(
-        stdout.contains("BUN_NO_INSTALL_MARKER"),
+        stdout.contains("DENO_NO_INSTALL_MARKER"),
         "command should run, got stdout:\n{stdout}"
     );
     let stderr = stderr_of(&output);
@@ -3560,6 +3686,7 @@ fn runx_dev_without_install_flag_does_not_install_bun_deps() {
     );
 }
 
+/// `runx dev` with no --install flag on a Bun project must NOT auto-install.
 /// `runx dev` with no --install flag on a Go project must NOT auto-install.
 #[cfg(unix)]
 #[test]
@@ -3629,6 +3756,23 @@ fn missing_deps_go_mod_shows_go_mod_download_hint() {
     assert!(
         stderr.contains("go mod download"),
         "should hint at go mod download, got:\n{stderr}"
+    );
+}
+
+/// Deno lockfile shows "deno install" hint when deps are missing.
+#[test]
+fn missing_deps_deno_lockfile_shows_deno_install_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(dir.path().join("deno.lock"), "{}\n").unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"echo hi\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("deno install"),
+        "should hint at deno install, got:\n{stderr}"
     );
 }
 
@@ -4313,6 +4457,88 @@ fn install_skips_go_when_deps_already_present() {
 
     plant_go_release_cache(&home, "1.22.5");
     plant_executable(&home, "go", "1.22.5", "echo fake-go");
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed (skip), stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("already installed"),
+        "should report already installed, got:\n{stderr}"
+    );
+}
+
+/// `runx install` on a Deno project: fake deno updates deno.lock.
+#[cfg(unix)]
+#[test]
+fn install_runs_deno_install_via_managed_deno() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("deno.lock"), "{}\n").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\ndeno = \"2.0.0\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    let deno_root = plant_executable(&home, "deno", "2.0.0", "");
+    let fake_deno = deno_root.join("deno");
+    fs::write(
+        &fake_deno,
+        "#!/bin/sh\nif [ \"$1\" = \"install\" ]; then\n  echo installed > \"$PWD/deno.lock\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_deno, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join("deno.lock").is_file(),
+        "fake deno should have updated deno.lock"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Dependencies installed successfully"),
+        "should show success, got:\n{stderr}"
+    );
+}
+
+/// `runx install` on a Deno project with existing deno.lock -> skips install.
+#[cfg(unix)]
+#[test]
+fn install_skips_deno_when_deps_already_present() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    // A lockfile with actual dependency entries means deps are installed.
+    fs::write(
+        project.join("deno.lock"),
+        r#"{"https://deno.land/std@0.200.0/http/server.ts": "sha256-abc123"}"#,
+    )
+    .unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\ndeno = \"2.0.0\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    plant_executable(&home, "deno", "2.0.0", "echo fake-deno");
 
     let output = runx_with_home(&project, &home, &["install"]);
     assert!(
