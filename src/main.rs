@@ -560,12 +560,13 @@ fn run_command(command_key: &str, locked: bool, passthrough: &[String]) -> Resul
         eprintln!("runx timing: cache: {:?}", t2.duration_since(t1));
     }
 
-    // Determine dependency state before execution so the hint (on failure)
-    // reflects the pre-condition, not a TOCTOU snapshot after the child ran.
+    // Determine dependency state before execution.  The hint fires
+    // unconditionally when deps are missing — a real JS runtime can exit 0
+    // even when the inner command fails, so exit-code gating is unreliable.
     let deps_missing = deps_are_missing(&project_dir, &run_dir);
 
     let status = executor::execute(&command, &runtimes, &run_dir, passthrough)?;
-    if !status.success() && deps_missing {
+    if deps_missing {
         let install_cmd = detect_install_command(&project_dir);
         eprintln!(
             "\nHint: project dependencies are not installed.\n\

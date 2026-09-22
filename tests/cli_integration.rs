@@ -2424,10 +2424,12 @@ fn missing_deps_preserves_exit_code() {
     );
 }
 
-/// When the command succeeds despite missing deps, no hint is shown — the hint
-/// only fires when the command actually fails.
+/// When the command succeeds despite missing deps, the hint still fires —
+/// a real JS runtime (e.g. bun) can exit 0 even when the inner command
+/// fails, so exit-code gating is unreliable.  Showing the hint when deps
+/// are missing is always correct.
 #[test]
-fn missing_deps_command_succeeds_does_not_hint() {
+fn missing_deps_command_succeeds_still_hints() {
     let dir = tmp();
     let home = dir.path().join("home");
     fs::create_dir_all(&home).unwrap();
@@ -2439,7 +2441,38 @@ fn missing_deps_command_succeeds_does_not_hint() {
     assert_eq!(output.status.code(), Some(0));
     let stderr = stderr_of(&output);
     assert!(
-        !stderr.contains("dependencies are not installed"),
-        "should not hint when command succeeds:\n{stderr}"
+        stderr.contains("dependencies are not installed"),
+        "should hint when deps are missing even if command succeeds:\n{stderr}"
+    );
+}
+
+/// Regression: real bun can exit 0 even when the inner command fails (exit-code
+/// re-mapping). The hint must fire regardless of the exit code when deps are
+/// missing, because exit-code gating is unreliable for JS runtimes.
+#[cfg(unix)]
+#[test]
+fn missing_deps_bun_exits_zero_still_hints() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    // Fake bun that exits 0 — simulates real bun re-mapping a child's non-zero exit.
+    plant_executable(&home, "bun", "0.0.0", "exit 0");
+    fs::write(dir.path().join(".bun-version"), "0.0.0\n").unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"tsx server.ts"}}"#,
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "should hint at bun install even when bun exits 0, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("dependencies are not installed"),
+        "should show the dependency hint, got:\n{stderr}"
     );
 }
