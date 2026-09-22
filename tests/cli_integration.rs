@@ -4327,6 +4327,74 @@ fn install_skips_go_when_deps_already_present() {
     );
 }
 
+/// `runx install` on a Python project: fake pip creates .venv and installs deps.
+#[cfg(unix)]
+#[test]
+fn install_runs_pip_install_via_managed_python() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\n\n[project.dependencies]\nrequests = \">=2.28\"\n",
+    )
+    .unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\npython = \"3.11.7\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    let py_root = plant_python(&home, "3.11.7", "");
+    let bin = py_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+
+    let fake_python = bin.join("python");
+    fs::write(
+        &fake_python,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"-m\" ] && [ \"$2\" = \"venv\" ]; then\n\
+           venv_dir=\"$3\"\n\
+           mkdir -p \"$venv_dir/bin\"\n\
+           printf '#!/bin/sh\n\
+if [ \"$1\" = \"install\" ]; then\n\
+  mkdir -p \"$PWD/.venv\"\n\
+  echo installed > \"$PWD/.venv/.deps\"\n\
+fi\n' > \"$venv_dir/bin/pip\"\n\
+           chmod +x \"$venv_dir/bin/pip\"\n\
+           exit 0\n\
+         fi\n\
+         exit 0\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_python, fs::Permissions::from_mode(0o755)).unwrap();
+
+    plant_python_release_cache(&home, "3.11.7");
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join(".venv/.deps").is_file(),
+        "fake pip should have created .venv/.deps"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Dependencies installed successfully"),
+        "should show success, got:\n{stderr}"
+    );
+}
+
 /// Existing Node/Python/Bun/Go behavior unchanged by pnpm addition.
 #[cfg(unix)]
 #[test]
