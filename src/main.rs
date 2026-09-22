@@ -199,6 +199,20 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     let install = cli.install;
+
+    // --install only makes sense on run keys; reject it everywhere else.
+    if install {
+        let applies = matches!(
+            cli.command,
+            Some(Command::Run { .. }) | Some(Command::External(_))
+        );
+        if !applies {
+            anyhow::bail!(
+                "--install can only be used with a run command key (e.g. `runx --install dev`)."
+            );
+        }
+    }
+
     match cli.command {
         Some(Command::Init) => init_config(),
         Some(Command::Install) => install_command(),

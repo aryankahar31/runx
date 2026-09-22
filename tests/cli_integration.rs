@@ -2780,3 +2780,16 @@ fn runx_run_dev_with_install_flag() {
         "should show install progress:\n{stderr}"
     );
 }
+
+/// --install on a non-run command is rejected with a clear error.
+#[test]
+fn install_flag_rejected_on_non_run_command() {
+    let dir = tmp();
+    let output = runx(dir.path(), &["--install", "doctor"]);
+    assert!(!output.status.success(), "--install on doctor should fail");
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("--install can only be used with a run command key"),
+        "should give clear error, got:\n{stderr}"
+    );
+}
