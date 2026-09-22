@@ -4077,9 +4077,253 @@ fn missing_deps_pnpm_lockfile_shows_pnpm_install_hint() {
 
     let output = runx_with_home(dir.path(), &home, &["dev"]);
     let stderr = stderr_of(&output);
+
     assert!(
         stderr.contains("pnpm install"),
         "should hint at pnpm install, got:\n{stderr}"
+    );
+}
+
+/// `runx install` with pnpm-lock.yaml: runs `pnpm install` via the managed Node
+/// runtime, creating node_modules.
+#[cfg(unix)]
+#[test]
+fn install_runs_pnpm_install_via_managed_node() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    let node_root = plant_executable(&home, "node", "0.0.0", "echo fake-node");
+    let bin = node_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_pnpm = bin.join("pnpm");
+    fs::write(
+        &fake_pnpm,
+        "#!/bin/sh\nif [ \"$1\" = \"install\" ]; then\n  mkdir -p \"$PWD/node_modules\"\n  echo installed > \"$PWD/node_modules/.marker\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_pnpm, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join("node_modules/.marker").is_file(),
+        "fake pnpm should have created node_modules/.marker"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Dependencies installed successfully"),
+        "should show success, got:\n{stderr}"
+    );
+}
+
+/// `runx install` with pnpm-lock.yaml and existing node_modules -> skips install.
+#[cfg(unix)]
+#[test]
+fn install_skips_pnpm_when_deps_already_present() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    // node_modules is newer than lockfile -> skip.
+    fs::create_dir(project.join("node_modules")).unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed (skip), stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("already installed"),
+        "should report already installed, got:\n{stderr}"
+    );
+}
+
+/// `runx install` on a Bun project: fake bun creates node_modules.
+#[cfg(unix)]
+#[test]
+fn install_runs_bun_install_via_managed_bun() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("bun.lock"), "{}\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nbun = \"0.0.0\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    let bun_root = plant_executable(&home, "bun", "0.0.0", "");
+    let fake_bun = bun_root.join("bun");
+    fs::write(
+        &fake_bun,
+        "#!/bin/sh\nif [ \"$1\" = \"install\" ]; then\n  mkdir -p \"$PWD/node_modules\"\n  echo installed > \"$PWD/node_modules/.marker\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_bun, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join("node_modules/.marker").is_file(),
+        "fake bun should have created node_modules/.marker"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Dependencies installed successfully"),
+        "should show success, got:\n{stderr}"
+    );
+}
+
+/// `runx install` on a Bun project with existing node_modules -> skips install.
+#[cfg(unix)]
+#[test]
+fn install_skips_bun_when_deps_already_present() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("bun.lock"), "{}\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    // node_modules is newer than lockfile -> skip.
+    fs::create_dir(project.join("node_modules")).unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nbun = \"0.0.0\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed (skip), stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("already installed"),
+        "should report already installed, got:\n{stderr}"
+    );
+}
+
+/// `runx install` on a Go project: fake go creates go.sum.
+#[cfg(unix)]
+#[test]
+fn install_runs_go_mod_download_via_managed_go() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\ngo = \"1.22.5\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    plant_go_release_cache(&home, "1.22.5");
+
+    let go_root = plant_executable(&home, "go", "1.22.5", "");
+    let fake_go = go_root.join("bin").join("go");
+    fs::write(
+        &fake_go,
+        "#!/bin/sh\nif [ \"$1\" = \"mod\" ] && [ \"$2\" = \"download\" ]; then\n  touch \"$PWD/go.sum\"\n  echo installed > \"$PWD/go.sum\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_go, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join("go.sum").is_file(),
+        "fake go should have created go.sum"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Dependencies installed successfully"),
+        "should show success, got:\n{stderr}"
+    );
+}
+
+/// `runx install` on a Go project with existing go.sum -> skips install.
+#[cfg(unix)]
+#[test]
+fn install_skips_go_when_deps_already_present() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+    // go.sum exists -> deps are present.
+    fs::write(project.join("go.sum"), "").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\ngo = \"1.22.5\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    plant_go_release_cache(&home, "1.22.5");
+    plant_executable(&home, "go", "1.22.5", "echo fake-go");
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed (skip), stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("already installed"),
+        "should report already installed, got:\n{stderr}"
     );
 }
 
