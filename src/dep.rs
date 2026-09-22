@@ -7,10 +7,12 @@ use std::{
 
 /// Detected dependency manager for a project.
 ///
-/// Each variant carries the lockfile (or manifest) path that triggered
-/// detection. Future phases add Pnpm, Yarn, Bun, Python, Go, Deno.
+/// Each variant carries the file path that triggered detection.
 pub enum DepManager {
     Npm { lockfile: PathBuf },
+    PythonPyproject { pyproject: PathBuf },
+    PythonRequirements { requirements: PathBuf },
+    // ponytail: Phase 4 adds Bun, Go, Deno. Phase 5 adds Pnpm, Yarn.
 }
 
 /// Result of scanning a project directory for dependency information.
@@ -21,11 +23,9 @@ pub struct DepDetection {
 
 /// Scan `project_dir` for dependency manager indicators.
 ///
-/// Returns `None` when no recognised lockfile/manifest is found — the
-/// caller decides what that means (error, skip, etc.).
+/// Returns `None` when no recognised lockfile/manifest is found.
 pub fn detect(project_dir: &Path) -> Option<DepDetection> {
     // ponytail: first-match wins, one file per PM.
-    // Phase 5 adds pnpm-lock.yaml, yarn.lock, bun.lock/bun.lockb.
     if project_dir.join("package-lock.json").is_file() {
         return Some(DepDetection {
             manager: DepManager::Npm {
@@ -34,18 +34,93 @@ pub fn detect(project_dir: &Path) -> Option<DepDetection> {
             label: "npm",
         });
     }
-    // ponytail: Phase 3 adds pyproject.toml + requirements.txt.
-    // Phase 4 adds bun.lock, go.mod, deno.json.
+    // pyproject.toml preferred over requirements.txt (PEP 621 standard).
+    if project_dir.join("pyproject.toml").is_file() {
+        return Some(DepDetection {
+            manager: DepManager::PythonPyproject {
+                pyproject: project_dir.join("pyproject.toml"),
+            },
+            label: "pip (pyproject.toml)",
+        });
+    }
+    if project_dir.join("requirements.txt").is_file() {
+        return Some(DepDetection {
+            manager: DepManager::PythonRequirements {
+                requirements: project_dir.join("requirements.txt"),
+            },
+            label: "pip (requirements.txt)",
+        });
+    }
+    // ponytail: Phase 4 adds bun.lock, go.mod, deno.json.
+    // Phase 5 adds pnpm-lock.yaml, yarn.lock.
     None
 }
 
-/// True when installed `node_modules` is newer than `package-lock.json`.
+/// Return `true` if `pyproject.toml` contains a `[build-system]` table.
 ///
-/// This is a heuristic — it can be fooled by manual edits to node_modules
-/// — but it covers the dominant case (clean checkout → install → run) and
-/// avoids running `npm ls` or hashing. The ceiling is a false-skip after
-/// manual tampering; the upgrade path is a content hash of the lockfile
-/// compared against a marker file inside node_modules.
+/// Only buildable packages with a PEP 517 backend can use `pip install -e .`.
+/// Config-only pyproject.toml files (dependency declarations, tool config)
+/// lack this table and must install deps via individual `pip install` args.
+pub fn has_build_system(pyproject_path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(pyproject_path) else {
+        return false;
+    };
+    let Ok(table) = text.parse::<toml::Table>() else {
+        return false;
+    };
+    table.contains_key("build-system")
+}
+
+/// Extract dependency strings from `[project.dependencies]` in a pyproject.toml.
+///
+/// Supports two TOML layouts:
+/// - PEP 621 array: `dependencies = ["flask>=2.0"]`
+/// - Table format: `[project.dependencies]\nflask = ">=2.0"`
+///
+/// Returns PEP 508 dependency strings, or an empty vec if unparseable.
+pub fn extract_pyproject_deps(pyproject_path: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(pyproject_path) else {
+        return Vec::new();
+    };
+    let Ok(table) = text.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let Some(project) = table.get("project") else {
+        return Vec::new();
+    };
+    let Some(deps) = project.get("dependencies") else {
+        return Vec::new();
+    };
+
+    // PEP 621 inline array: `dependencies = ["flask>=2.0", "click>=8.0"]`
+    if let Some(arr) = deps.as_array() {
+        return arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+    }
+
+    // Table format: `[project.dependencies]\nflask = ">=2.0"` → "flask>=2.0"
+    if let Some(tbl) = deps.as_table() {
+        return tbl
+            .iter()
+            .map(|(name, val)| {
+                let ver = val.as_str().unwrap_or("*");
+                format!("{name}{ver}")
+            })
+            .collect();
+    }
+
+    Vec::new()
+}
+
+/// True when dependencies appear to already be installed.
+///
+/// NPM: `node_modules` mtime >= `package-lock.json` mtime.
+/// Python: `.venv` or `venv` directory exists (standard venv convention).
+///
+/// ponytail: heuristic, not proof. Ceiling: false-skip after manual tampering.
+/// Upgrade path: content hash of lockfile vs marker in venv/site-packages.
 pub fn deps_installed(project_dir: &Path, manager: &DepManager) -> bool {
     match manager {
         DepManager::Npm { lockfile } => {
@@ -60,19 +135,18 @@ pub fn deps_installed(project_dir: &Path, manager: &DepManager) -> bool {
                         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                     nm_modified >= lf_modified
                 }
-                // node_modules doesn't exist → not installed.
                 (Err(_), _) => false,
-                // lockfile doesn't exist → can't compare, assume not installed.
                 (_, Err(_)) => false,
             }
+        }
+        DepManager::PythonPyproject { .. } | DepManager::PythonRequirements { .. } => {
+            // Check for standard venv directories.
+            project_dir.join(".venv").is_dir() || project_dir.join("venv").is_dir()
         }
     }
 }
 
 /// Install project dependencies using the runx-managed runtime.
-///
-/// `runtimes` is the list of provisioned runtimes (from [`crate::cache`]);
-/// the first entry whose tool is `"node"` supplies the `npm` binary on PATH.
 pub fn install(
     project_dir: &Path,
     detection: &DepDetection,
@@ -80,56 +154,121 @@ pub fn install(
 ) -> Result<()> {
     match &detection.manager {
         DepManager::Npm { .. } => install_npm(project_dir, runtimes),
+        DepManager::PythonPyproject { .. } => install_python(project_dir, runtimes, true),
+        DepManager::PythonRequirements { .. } => install_python(project_dir, runtimes, false),
     }
 }
 
-fn install_npm(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
-    let node_runtime = runtimes
-        .iter()
-        .find(|r| {
-            r.bin_dirs
-                .iter()
-                .any(|d| d.join("node").is_file() || d.join("node.exe").is_file())
-        })
-        .context("Node runtime not provisioned — cannot run npm ci")?;
+fn find_runtime<'a>(runtimes: &'a [CachedRuntime], exe: &str) -> Option<&'a CachedRuntime> {
+    runtimes.iter().find(|r| {
+        r.bin_dirs
+            .iter()
+            .any(|d| d.join(exe).is_file() || d.join(format!("{exe}.exe")).is_file())
+    })
+}
 
-    // Build a PATH with the node bin dir first so npm from the managed
-    // Node is used, never a stray system npm.
-    let mut paths: Vec<PathBuf> = node_runtime.bin_dirs.clone();
+fn build_path(runtime: &CachedRuntime) -> Result<std::ffi::OsString> {
+    let mut paths: Vec<PathBuf> = runtime.bin_dirs.clone();
     if let Some(sys) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&sys));
     }
-    let path = std::env::join_paths(&paths).context("Failed to build PATH for npm")?;
+    std::env::join_paths(paths).context("Failed to build PATH")
+}
 
-    // ponytail: `npm ci` for deterministic installs from package-lock.json.
-    // `npm install` would regenerate the lockfile, which is not what we want.
+fn run_shell_command(
+    command: &str,
+    project_dir: &Path,
+    path: &std::ffi::OsString,
+) -> Result<ExitStatus> {
     let mut cmd = if cfg!(windows) {
         let mut c = Command::new("cmd");
-        c.arg("/C").arg("npm ci");
+        c.arg("/C").arg(command);
         c
     } else {
         let mut c = Command::new("/bin/sh");
-        c.arg("-c").arg("npm ci");
+        c.arg("-c").arg(command);
         c
     };
-
     cmd.current_dir(project_dir)
-        .env("PATH", &path)
+        .env("PATH", path)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-
-    let status: ExitStatus = cmd
+    let status = cmd
         .spawn()
-        .context("Failed to start `npm ci`")?
+        .context(format!("Failed to start `{command}`"))?
         .wait()
-        .context("Failed to wait for `npm ci`")?;
+        .context(format!("Failed to wait for `{command}`"))?;
+    Ok(status)
+}
 
+fn install_npm(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
+    let node = find_runtime(runtimes, "node")
+        .context("Node runtime not provisioned — cannot run npm ci")?;
+    let path = build_path(node)?;
+    let status = run_shell_command("npm ci", project_dir, &path)?;
     if status.success() {
         Ok(())
     } else {
         Err(anyhow::anyhow!(
             "`npm ci` failed in {} with exit code {}",
+            project_dir.display(),
+            status.code().unwrap_or(-1)
+        ))
+    }
+}
+
+fn install_python(
+    project_dir: &Path,
+    runtimes: &[CachedRuntime],
+    is_pyproject: bool,
+) -> Result<()> {
+    let py = find_runtime(runtimes, "python")
+        .context("Python runtime not provisioned — cannot run pip")?;
+    let path = build_path(py)?;
+
+    // Step 1: Create a project-local .venv using the managed Python.
+    let venv_status = run_shell_command("python -m venv .venv", project_dir, &path)?;
+    if !venv_status.success() {
+        return Err(anyhow::anyhow!(
+            "Failed to create virtual environment in {} (exit code {})",
+            project_dir.display(),
+            venv_status.code().unwrap_or(-1)
+        ));
+    }
+
+    // Step 2: Choose the pip install command targeting the venv's pip.
+    // Use Path::join to construct correct paths (not string formatting).
+    let venv_pip = project_dir.join(".venv").join("bin").join("pip");
+    let pyproject_path = project_dir.join("pyproject.toml");
+    let cmd_str = if is_pyproject && has_build_system(&pyproject_path) {
+        // PEP 517 build backend present — editable install into the venv.
+        format!("{} install -e .", venv_pip.display())
+    } else if is_pyproject {
+        // Config-only pyproject.toml — extract deps, install individually.
+        let deps = extract_pyproject_deps(&pyproject_path);
+        if deps.is_empty() {
+            return Err(anyhow::anyhow!(
+                "pyproject.toml in {} has no [build-system] and no [project.dependencies].\n\
+                 Hint: add a [build-system] table, a requirements.txt, or [project.dependencies].",
+                project_dir.display()
+            ));
+        }
+        let quoted: Vec<String> = deps
+            .iter()
+            .map(|d| format!("'{}'", d.replace('\'', "'\\''")))
+            .collect();
+        format!("{} install {}", venv_pip.display(), quoted.join(" "))
+    } else {
+        format!("{} install -r requirements.txt", venv_pip.display())
+    };
+
+    let status = run_shell_command(&cmd_str, project_dir, &path)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "`{cmd_str}` failed in {} with exit code {}",
             project_dir.display(),
             status.code().unwrap_or(-1)
         ))
@@ -146,16 +285,41 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("package.json"), "{}").unwrap();
         fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
-
         let det = detect(dir.path()).expect("should detect npm");
         assert_eq!(det.label, "npm");
         assert!(matches!(det.manager, DepManager::Npm { .. }));
     }
 
     #[test]
+    fn detects_python_from_pyproject_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("pyproject.toml"), "[project]\n").unwrap();
+        let det = detect(dir.path()).expect("should detect python");
+        assert_eq!(det.label, "pip (pyproject.toml)");
+        assert!(matches!(det.manager, DepManager::PythonPyproject { .. }));
+    }
+
+    #[test]
+    fn detects_python_from_requirements_txt() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("requirements.txt"), "flask\n").unwrap();
+        let det = detect(dir.path()).expect("should detect python");
+        assert_eq!(det.label, "pip (requirements.txt)");
+        assert!(matches!(det.manager, DepManager::PythonRequirements { .. }));
+    }
+
+    #[test]
+    fn pyproject_toml_wins_over_requirements_txt() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("pyproject.toml"), "[project]\n").unwrap();
+        fs::write(dir.path().join("requirements.txt"), "flask\n").unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(matches!(det.manager, DepManager::PythonPyproject { .. }));
+    }
+
+    #[test]
     fn no_lockfile_returns_none() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("package.json"), "{}").unwrap();
         assert!(detect(dir.path()).is_none());
     }
 
@@ -173,7 +337,32 @@ mod tests {
         fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
         fs::create_dir(dir.path().join("node_modules")).unwrap();
         let det = detect(dir.path()).unwrap();
-        // node_modules was created after package-lock.json
+        assert!(deps_installed(dir.path(), &det.manager));
+    }
+
+    #[test]
+    fn python_not_installed_without_venv() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("pyproject.toml"), "[project]\n").unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(!deps_installed(dir.path(), &det.manager));
+    }
+
+    #[test]
+    fn python_installed_with_dot_venv() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("pyproject.toml"), "[project]\n").unwrap();
+        fs::create_dir(dir.path().join(".venv")).unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(deps_installed(dir.path(), &det.manager));
+    }
+
+    #[test]
+    fn python_installed_with_venv() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("requirements.txt"), "flask\n").unwrap();
+        fs::create_dir(dir.path().join("venv")).unwrap();
+        let det = detect(dir.path()).unwrap();
         assert!(deps_installed(dir.path(), &det.manager));
     }
 }

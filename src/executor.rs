@@ -11,13 +11,23 @@ pub fn execute(
     command: &str,
     runtimes: &[CachedRuntime],
     run_dir: &Path,
+    project_dir: &Path,
     passthrough: &[String],
 ) -> Result<ExitStatus> {
     // RUNX_TIMINGS=1 mirrors mise's MISE_TIMINGS=1: an opt-in breakdown of the
     // pre-child work, so shell-overhead claims are measurable, not asserted.
     let timings = env::var_os("RUNX_TIMINGS").is_some();
     let start = std::time::Instant::now();
-    let path = isolated_path(runtimes)?;
+    let mut path = isolated_path(runtimes)?;
+
+    // Prepend the project's .venv/bin (or venv/bin) to PATH so that commands
+    // use the project-local Python and its installed packages — mirroring how
+    // Node's node_modules/.bin is implicitly on PATH.
+    if let Some(venv_bin) = venv_bin_dir(project_dir) {
+        let mut paths: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        paths.insert(0, venv_bin);
+        path = env::join_paths(paths).context("Failed to build PATH with venv")?;
+    }
     let command = append_passthrough(command, passthrough);
     crate::flags::info(&format!("Running `{command}`"));
 
@@ -90,6 +100,21 @@ fn shell_quote(arg: &str) -> String {
     } else {
         format!("'{}'", arg.replace('\'', "'\\''"))
     }
+}
+
+/// Return the `bin` directory of a Python venv in `project_dir`, if it exists.
+///
+/// Checks both `.venv` and `venv` (the two standard venv directory names).
+fn venv_bin_dir(project_dir: &Path) -> Option<PathBuf> {
+    for venv_name in &[".venv", "venv"] {
+        let bin = project_dir
+            .join(venv_name)
+            .join(if cfg!(windows) { "Scripts" } else { "bin" });
+        if bin.is_dir() {
+            return Some(bin);
+        }
+    }
+    None
 }
 
 /// Build a PATH that prepends runtime bin directories to the existing system
