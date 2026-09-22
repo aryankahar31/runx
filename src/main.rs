@@ -634,7 +634,7 @@ fn run_command(
     // even when the inner command fails, so exit-code gating is unreliable.
     let deps_missing = deps_are_missing(&project_dir, &run_dir);
 
-    let status = executor::execute(&command, &runtimes, &run_dir, passthrough)?;
+    let status = executor::execute(&command, &runtimes, &run_dir, &project_dir, passthrough)?;
     if deps_missing {
         let install_cmd = detect_install_command(&project_dir);
         eprintln!(
@@ -648,11 +648,9 @@ fn run_command(
     process::exit(status.code().unwrap_or(1));
 }
 
-/// Detect the JS package manager install command from lockfiles in the project
-/// directory.  Falls back to npm when no lockfile is present.
+/// Detect the dependency install command from project files.
+/// Falls back to npm when no recognised file is present.
 fn detect_install_command(project_dir: &Path) -> &'static str {
-    // ponytail: first-match wins, one file per PM.  The fallback is npm because
-    // it ships with Node and is the most common default.
     if project_dir.join("bun.lock").is_file() || project_dir.join("bun.lockb").is_file() {
         "bun install"
     } else if project_dir.join("package-lock.json").is_file() {
@@ -661,19 +659,36 @@ fn detect_install_command(project_dir: &Path) -> &'static str {
         "yarn install"
     } else if project_dir.join("pnpm-lock.yaml").is_file() {
         "pnpm install"
+    } else if project_dir.join("pyproject.toml").is_file() {
+        if dep::has_build_system(&project_dir.join("pyproject.toml")) {
+            "pip install -e ."
+        } else {
+            "pip install (see [project.dependencies] in pyproject.toml)"
+        }
+    } else if project_dir.join("requirements.txt").is_file() {
+        "pip install -r requirements.txt"
     } else {
         "npm install"
     }
 }
-/// True when a JS project has package.json but no dependency directory.
+/// True when a project has a dependency manifest but no installed deps.
 ///
-/// All JS package managers (npm, yarn, pnpm, bun) install to `node_modules/`
-/// by default — the internal layout differs but the top-level directory is
-/// universal.  Both `run_dir` (cwd) and `project_dir` are checked because the
-/// user may have cd'd into a subdirectory.
+/// JS: `package.json` present but no `node_modules/` directory.
+/// Python: `pyproject.toml`/`requirements.txt` present but no `.venv`/`venv`.
 fn deps_are_missing(project_dir: &Path, run_dir: &Path) -> bool {
-    project_dir.join("package.json").is_file()
-        && !(run_dir.join("node_modules").is_dir() || project_dir.join("node_modules").is_dir())
+    if project_dir.join("package.json").is_file() {
+        return !(run_dir.join("node_modules").is_dir()
+            || project_dir.join("node_modules").is_dir());
+    }
+    if project_dir.join("pyproject.toml").is_file()
+        || project_dir.join("requirements.txt").is_file()
+    {
+        return !(run_dir.join(".venv").is_dir()
+            || run_dir.join("venv").is_dir()
+            || project_dir.join(".venv").is_dir()
+            || project_dir.join("venv").is_dir());
+    }
+    false
 }
 
 // ── Cache subcommands ────────────────────────────────────────────────────────

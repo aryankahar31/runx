@@ -533,6 +533,60 @@ fn plant_executable(home: &Path, tool: &str, version: &str, body: &str) -> std::
     root
 }
 
+/// Plant a fake Python runtime without hitting the network.
+///
+/// `plant_executable` calls `resolve_runtime` which queries the GitHub API
+/// for Python. This helper manually creates the same directory structure.
+#[cfg(unix)]
+fn plant_python(home: &Path, version: &str, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = home.join("runtimes").join("python").join(version);
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).expect("create bin dir");
+
+    let exe = bin.join("python");
+    fs::write(&exe, format!("#!/bin/sh\n{body}\n")).expect("write fake executable");
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).expect("make executable");
+
+    let receipt = format!(
+        r#"{{"tool":"python","version":"{version}","installed_at_secs":0,
+            "runx_version":"test","source_url":"https://example.invalid","sha256":null}}"#
+    );
+    fs::write(root.join(".runx-complete.json"), receipt).expect("write receipt");
+    root
+}
+
+/// Plant a Python release cache so `resolve_runtime` doesn't hit the network.
+/// Cache format: version -> platform -> {url, checksum_url, cached_at_secs}.
+#[cfg(unix)]
+fn plant_python_release_cache(home: &Path, version: &str) {
+    let platforms = [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
+    ];
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let platform_entries: Vec<String> = platforms
+        .iter()
+        .map(|p| {
+            format!(
+                r#""{p}": {{"url": "https://example.invalid/cpython.tgz",
+                    "checksum_url": "https://example.invalid/cpython.tgz.sha256",
+                    "cached_at_secs": {now}}}"#
+            )
+        })
+        .collect();
+    let json = format!(r#"{{"{version}": {{{}}}}}"#, platform_entries.join(", "));
+    fs::write(home.join("python-release-cache.json"), json).expect("write python release cache");
+}
+
 /// The `npm run dev` failure mode, generalised: the run command invokes one
 /// runtime (node, standing in for npm) while a second runtime (bun) is only
 /// reached through the child's PATH. Both must be found.
@@ -2791,5 +2845,385 @@ fn install_flag_rejected_on_non_run_command() {
     assert!(
         stderr.contains("--install can only be used with a run command key"),
         "should give clear error, got:\n{stderr}"
+    );
+}
+
+// ── Python dependency support (Phase 3) ──────────────────────────────────────
+
+/// Detects pyproject.toml and reports correct label.
+#[cfg(unix)]
+#[test]
+fn install_detects_pyproject_toml() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\n",
+    )
+    .unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\npython = \"3.11.7\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+    // Plant a fake Python so provision succeeds without hitting the network.
+    plant_python(&home, "3.11.7", "exit 1");
+    plant_python_release_cache(&home, "3.11.7");
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(!output.status.success(), "should fail (fake pip exits 1)");
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("pip (pyproject.toml)"),
+        "should detect pyproject.toml, got:\n{stderr}"
+    );
+}
+
+/// Detects requirements.txt and reports correct label.
+#[cfg(unix)]
+#[test]
+fn install_detects_requirements_txt() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("requirements.txt"), "flask\n").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\npython = \"3.11.7\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+    plant_python(&home, "3.11.7", "exit 1");
+    plant_python_release_cache(&home, "3.11.7");
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(!output.status.success());
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("pip (requirements.txt)"),
+        "should detect requirements.txt, got:\n{stderr}"
+    );
+}
+
+/// pyproject.toml wins over requirements.txt when both exist.
+#[cfg(unix)]
+#[test]
+fn install_prefers_pyproject_over_requirements() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("pyproject.toml"), "[project]\n").unwrap();
+    fs::write(project.join("requirements.txt"), "flask\n").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\npython = \"3.11.7\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+    plant_python(&home, "3.11.7", "exit 1");
+    plant_python_release_cache(&home, "3.11.7");
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(!output.status.success());
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("pip (pyproject.toml)"),
+        "should prefer pyproject.toml, got:\n{stderr}"
+    );
+}
+
+/// Skip install when .venv exists (Python deps already installed).
+#[cfg(unix)]
+#[test]
+fn install_skips_python_when_dot_venv_exists() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("pyproject.toml"), "[project]\n").unwrap();
+    fs::create_dir(project.join(".venv")).unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\npython = \"3.11.7\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+    plant_python(&home, "3.11.7", "exit 0");
+    plant_python_release_cache(&home, "3.11.7");
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "should succeed (skip), stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("already installed"),
+        "should report already installed, got:\n{stderr}"
+    );
+}
+
+/// The confirmed real-world scenario: a Python project with fastapi + uvicorn
+/// as dependencies. Without installing, the command fails with "No module
+/// named uvicorn". With --install, pip installs the deps first.
+#[cfg(unix)]
+#[test]
+fn python_uvicorn_fastapi_scenario() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\nrequires-python = \">=3.11\"\n\n\
+         [project.dependencies]\nfastapi = \">=0.100\"\nuvicorn = \">=0.23\"\n",
+    )
+    .unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\npython = \"3.11.7\"\n\n[run]\ndev = \"echo UVICORN_OK\"\n",
+    )
+    .unwrap();
+
+    // Plant a fake Python that handles `python -m venv .venv` by creating a
+    // venv directory structure with a fake pip that records install invocations.
+    let py_root = plant_python(&home, "3.11.7", "");
+    let bin = py_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+
+    let fake_python = bin.join("python");
+    fs::write(
+        &fake_python,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"-m\" ] && [ \"$2\" = \"venv\" ]; then\n\
+           venv_dir=\"$3\"\n\
+           mkdir -p \"$venv_dir/bin\"\n\
+           printf '#!/bin/sh\n\
+if [ \"$1\" = \"install\" ]; then\n\
+  mkdir -p \"$PWD/.venv\"\n\
+  echo installed > \"$PWD/.venv/.deps\"\n\
+fi\n' > \"$venv_dir/bin/pip\"\n\
+           chmod +x \"$venv_dir/bin/pip\"\n\
+           exit 0\n\
+         fi\n\
+         exit 0\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_python, fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Plant a Python release cache so resolve_runtime doesn't hit the network.
+    plant_python_release_cache(&home, "3.11.7");
+
+    // Without --install: hint fires because .venv doesn't exist.
+    let output = runx_with_home(&project, &home, &["dev"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("dependencies are not installed"),
+        "should hint about missing deps, got:\n{stderr}"
+    );
+
+    // With --install: venv is created, deps installed, then command runs.
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        output.status.success(),
+        "should succeed with --install, stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        project.join(".venv/.deps").is_file(),
+        "fake pip should have created .venv/.deps"
+    );
+}
+
+/// Two projects sharing the same Python runtime version must have isolated
+/// dependencies: installing into project A's .venv must not affect project B.
+#[cfg(unix)]
+#[test]
+fn python_install_isolation_between_projects() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+
+    // Project A: fastapi + uvicorn
+    let proj_a = dir.path().join("proj_a");
+    fs::create_dir_all(&proj_a).unwrap();
+    fs::write(proj_a.join("requirements.txt"), "fastapi\nuvicorn\n").unwrap();
+    fs::write(
+        config_path(&proj_a),
+        "[runtimes]\npython = \"3.11.7\"\n\n[run]\ncheck = \"echo A_OK\"\n",
+    )
+    .unwrap();
+
+    // Project B: flask only
+    let proj_b = dir.path().join("proj_b");
+    fs::create_dir_all(&proj_b).unwrap();
+    fs::write(proj_b.join("requirements.txt"), "flask\n").unwrap();
+    fs::write(
+        config_path(&proj_b),
+        "[runtimes]\npython = \"3.11.7\"\n\n[run]\ncheck = \"echo B_OK\"\n",
+    )
+    .unwrap();
+
+    // Fake Python: `python -m venv .venv` creates a venv with a fake pip
+    // that writes installed package names into .venv/.deps.
+    let py_root = plant_python(&home, "3.11.7", "");
+    let bin = py_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+
+    let fake_python = bin.join("python");
+    fs::write(
+        &fake_python,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"-m\" ] && [ \"$2\" = \"venv\" ]; then\n\
+           venv_dir=\"$3\"\n\
+           mkdir -p \"$venv_dir/bin\"\n\
+           printf '#!/bin/sh\n\
+if [ \"$1\" = \"install\" ] && [ \"$2\" = \"-r\" ]; then\n\
+  mkdir -p \"$PWD/.venv\"\n\
+  cat \"$3\" > \"$PWD/.venv/.deps\"\n\
+elif [ \"$1\" = \"install\" ]; then\n\
+  mkdir -p \"$PWD/.venv\"\n\
+  shift\n\
+  echo \"$@\" > \"$PWD/.venv/.deps\"\n\
+fi\n' > \"$venv_dir/bin/pip\"\n\
+           chmod +x \"$venv_dir/bin/pip\"\n\
+           exit 0\n\
+         fi\n\
+         exit 0\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_python, fs::Permissions::from_mode(0o755)).unwrap();
+
+    plant_python_release_cache(&home, "3.11.7");
+
+    // Install deps for project A.
+    let output = runx_with_home(&proj_a, &home, &["--install", "check"]);
+    assert!(
+        output.status.success(),
+        "project A install should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(proj_a.join(".venv/.deps").is_file());
+
+    // Install deps for project B.
+    let output = runx_with_home(&proj_b, &home, &["--install", "check"]);
+    assert!(
+        output.status.success(),
+        "project B install should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(proj_b.join(".venv/.deps").is_file());
+
+    // Verify isolation: .deps files contain different content.
+    let deps_a = fs::read_to_string(proj_a.join(".venv/.deps")).unwrap();
+    let deps_b = fs::read_to_string(proj_b.join(".venv/.deps")).unwrap();
+    assert_ne!(deps_a, deps_b, "projects must have isolated dependencies");
+    assert!(
+        deps_a.contains("fastapi"),
+        "project A should have fastapi, got: {deps_a}"
+    );
+    assert!(
+        deps_b.contains("flask"),
+        "project B should have flask, got: {deps_b}"
+    );
+
+    // Both commands still run successfully.
+    let out_a = runx_with_home(&proj_a, &home, &["check"]);
+    assert!(
+        stdout_of(&out_a).contains("A_OK"),
+        "project A should output A_OK, got:\n{}",
+        stdout_of(&out_a)
+    );
+    let out_b = runx_with_home(&proj_b, &home, &["check"]);
+    assert!(
+        stdout_of(&out_b).contains("B_OK"),
+        "project B should output B_OK, got:\n{}",
+        stdout_of(&out_b)
+    );
+}
+
+/// Config-only pyproject.toml (no [build-system]): deps are extracted from
+/// [project.dependencies] and installed individually — no `pip install -e .`.
+#[cfg(unix)]
+#[test]
+fn python_config_only_pyproject_installs_deps() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    // pyproject.toml with dependencies but NO [build-system].
+    fs::write(
+        project.join("pyproject.toml"),
+        "[project]\nname = \"mylib\"\n\n\
+         [project.dependencies]\nrequests = \">=2.28\"\nclick = \">=8.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\npython = \"3.11.7\"\n\n[run]\ncheck = \"echo OK\"\n",
+    )
+    .unwrap();
+
+    let py_root = plant_python(&home, "3.11.7", "");
+    let bin = py_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+
+    let fake_python = bin.join("python");
+    fs::write(
+        &fake_python,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"-m\" ] && [ \"$2\" = \"venv\" ]; then\n\
+           venv_dir=\"$3\"\n\
+           mkdir -p \"$venv_dir/bin\"\n\
+           printf '#!/bin/sh\n\
+if [ \"$1\" = \"install\" ]; then\n\
+  mkdir -p \"$PWD/.venv\"\n\
+  shift\n\
+  echo \"$@\" > \"$PWD/.venv/.deps\"\n\
+fi\n' > \"$venv_dir/bin/pip\"\n\
+           chmod +x \"$venv_dir/bin/pip\"\n\
+           exit 0\n\
+         fi\n\
+         exit 0\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_python, fs::Permissions::from_mode(0o755)).unwrap();
+
+    plant_python_release_cache(&home, "3.11.7");
+
+    // Install should succeed: deps are extracted from pyproject.toml and pip
+    // installs them as individual packages (not `pip install -e .`).
+    let output = runx_with_home(&project, &home, &["--install", "check"]);
+    assert!(
+        output.status.success(),
+        "should install deps from config-only pyproject.toml, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join(".venv/.deps").is_file(),
+        "fake pip should have created .venv/.deps"
+    );
+    // Verify the correct deps were extracted and passed to pip.
+    let deps = fs::read_to_string(project.join(".venv/.deps")).unwrap();
+    assert!(
+        deps.contains("requests"),
+        "should install requests, got: {deps}"
+    );
+    assert!(deps.contains("click"), "should install click, got: {deps}");
+    assert!(
+        !deps.contains("-e"),
+        "should NOT use -e flag for config-only pyproject.toml, got: {deps}"
     );
 }
