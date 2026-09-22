@@ -72,6 +72,10 @@ struct Cli {
     #[arg(long, global = true)]
     offline: bool,
 
+    /// Install project dependencies before running the command.
+    #[arg(long, global = true)]
+    install: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -194,6 +198,7 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    let install = cli.install;
     match cli.command {
         Some(Command::Init) => init_config(),
         Some(Command::Install) => install_command(),
@@ -201,7 +206,7 @@ fn run(cli: Cli) -> Result<()> {
             key,
             locked,
             passthrough,
-        }) => run_command(&key, locked, &passthrough),
+        }) => run_command(&key, locked, install, &passthrough),
         Some(Command::Lock) => lock_command(),
         Some(Command::Cache { action }) => match action {
             CacheAction::List => cache_list(),
@@ -214,7 +219,7 @@ fn run(cli: Cli) -> Result<()> {
         Some(Command::Self_ { action }) => match action {
             SelfAction::Update => self_update::update(),
         },
-        Some(Command::External(args)) => dispatch_external(args),
+        Some(Command::External(args)) => dispatch_external(args, install),
         None => print_help(),
     }
 }
@@ -243,7 +248,7 @@ fn completions_command(shell: clap_complete::Shell) -> Result<()> {
 /// run command; anything else after the key is rejected explicitly rather than
 /// silently ignored, so a user who tries `runx dev --port 3000` gets told to
 /// use `--` instead of watching `--port 3000` disappear.
-fn dispatch_external(args: Vec<String>) -> Result<()> {
+fn dispatch_external(args: Vec<String>, install: bool) -> Result<()> {
     let mut args = args.into_iter();
     let Some(key) = args.next() else {
         return print_help();
@@ -269,7 +274,7 @@ fn dispatch_external(args: Vec<String>) -> Result<()> {
         .into());
     }
 
-    run_command(&key, false, passthrough)
+    run_command(&key, false, install, passthrough)
 }
 
 fn init_config() -> Result<()> {
@@ -560,7 +565,12 @@ fn provision(
     Ok(provisioned)
 }
 
-fn run_command(command_key: &str, locked: bool, passthrough: &[String]) -> Result<()> {
+fn run_command(
+    command_key: &str,
+    locked: bool,
+    install: bool,
+    passthrough: &[String],
+) -> Result<()> {
     // RUNX_TIMINGS=1 mirrors mise's MISE_TIMINGS=1: opt-in per-phase timings
     // printed to stderr, used by benchmarks/shell-overhead.sh.
     let timings = env::var_os("RUNX_TIMINGS").is_some();
@@ -590,6 +600,19 @@ fn run_command(command_key: &str, locked: bool, passthrough: &[String]) -> Resul
     if timings {
         eprintln!("runx timing: config: {:?}", t1.duration_since(t0));
         eprintln!("runx timing: cache: {:?}", t2.duration_since(t1));
+    }
+
+    // --install: detect dependency manager and install deps before execution.
+    if install {
+        if let Some(detection) = dep::detect(&project_dir) {
+            if !dep::deps_installed(&project_dir, &detection.manager) {
+                eprintln!("\nInstalling project dependencies ({})...", detection.label);
+                dep::install(&project_dir, &detection, &runtimes)?;
+                eprintln!("Dependencies installed successfully.");
+            }
+        }
+        // No lockfile → silently skip (the child command will fail with its
+        // own error; --install does not force a dependency manager).
     }
 
     // Determine dependency state before execution.  The hint fires
