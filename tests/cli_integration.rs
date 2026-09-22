@@ -3809,6 +3809,221 @@ fn pnpm_install_failure_clear_error() {
     assert!(stderr.contains("failed"), "should say failed:\n{stderr}");
 }
 
+// ── Phase 6: yarn dependency bootstrap ────────────────────────────────
+
+/// `runx --install dev` on a yarn project: fake yarn creates node_modules,
+/// then the command runs.
+#[cfg(unix)]
+#[test]
+fn yarn_install_scenario() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("yarn.lock"), "# yarn lockfile\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo YARN_INSTALL_MARKER\"\n",
+    )
+    .unwrap();
+
+    let node_root = plant_executable(&home, "node", "0.0.0", "");
+    let bin = node_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_yarn = bin.join("yarn");
+    fs::write(
+        &fake_yarn,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"install\" ]; then\n\
+           mkdir -p \"$PWD/node_modules\"\n\
+           echo ok > \"$PWD/node_modules/.yarn-done\"\n\
+         fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_yarn, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        output.status.success(),
+        "should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("YARN_INSTALL_MARKER"),
+        "command should run after install, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        project.join("node_modules/.yarn-done").is_file(),
+        "fake yarn should have created node_modules"
+    );
+}
+
+/// yarn deps already installed (node_modules exists) -> --install skips.
+#[cfg(unix)]
+#[test]
+fn yarn_deps_already_installed_skips() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("yarn.lock"), "# yarn lockfile\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::create_dir(project.join("node_modules")).unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo YARN_SKIP_MARKER\"\n",
+    )
+    .unwrap();
+
+    plant_executable(&home, "node", "0.0.0", "echo fake-node");
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(output.status.success());
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("YARN_SKIP_MARKER"),
+        "command should run, got stdout:\n{stdout}"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("Installing project dependencies"),
+        "should skip install when deps are present:\n{stderr}"
+    );
+}
+
+/// yarn install fails -> clear error message.
+#[cfg(unix)]
+#[test]
+fn yarn_install_failure_clear_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("yarn.lock"), "# yarn lockfile\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo never\"\n",
+    )
+    .unwrap();
+
+    let node_root = plant_executable(&home, "node", "0.0.0", "");
+    let bin = node_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_yarn = bin.join("yarn");
+    fs::write(
+        &fake_yarn,
+        "#!/bin/sh\nif [ \"$1\" = \"install\" ]; then exit 1; fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_yarn, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        !output.status.success(),
+        "install failure should produce non-zero exit"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("yarn install"),
+        "should mention yarn install in error:\n{stderr}"
+    );
+    assert!(stderr.contains("failed"), "should say failed:\n{stderr}");
+}
+
+/// `runx install` with yarn.lock: runs `yarn install` via the managed Node
+/// runtime, creating node_modules.
+#[cfg(unix)]
+#[test]
+fn install_runs_yarn_install_via_managed_node() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("yarn.lock"), "# yarn lockfile\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    let node_root = plant_executable(&home, "node", "0.0.0", "echo fake-node");
+    let bin = node_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_yarn = bin.join("yarn");
+    fs::write(
+        &fake_yarn,
+        "#!/bin/sh\nif [ \"$1\" = \"install\" ]; then\n  mkdir -p \"$PWD/node_modules\"\n  echo installed > \"$PWD/node_modules/.marker\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_yarn, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join("node_modules/.marker").is_file(),
+        "fake yarn should have created node_modules/.marker"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Installing project dependencies"),
+        "should show install progress:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Dependencies installed successfully"),
+        "should show success, got:\n{stderr}"
+    );
+}
+
+/// `runx install` with yarn.lock and existing node_modules -> skips install.
+#[cfg(unix)]
+#[test]
+fn install_skips_yarn_when_deps_already_present() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("yarn.lock"), "# yarn lockfile\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    // node_modules is newer than lockfile -> skip.
+    fs::create_dir(project.join("node_modules")).unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\nhello = \"echo hi\"\n",
+    )
+    .unwrap();
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should succeed (skip), stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("already installed"),
+        "should report already installed, got:\n{stderr}"
+    );
+}
+
 /// `runx dev` with no --install flag on a pnpm project must NOT auto-install.
 #[cfg(unix)]
 #[test]

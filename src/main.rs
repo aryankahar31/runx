@@ -310,7 +310,7 @@ fn install_command() -> Result<()> {
     let detection = dep::detect(&project_dir).ok_or_else(|| {
         error::UserError::new(format!(
             "No supported dependency manager found in {}.\n\
-             Hint: ensure a package-lock.json (Node), pnpm-lock.yaml (pnpm), \
+             Hint: ensure a package-lock.json (Node), yarn.lock (Yarn), pnpm-lock.yaml (pnpm), \
              bun.lock (Bun), pyproject.toml (Python), \
              go.mod (Go), or equivalent lockfile exists.",
             project_dir.display()
