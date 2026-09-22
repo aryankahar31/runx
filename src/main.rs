@@ -1,6 +1,7 @@
 // The library crate (lib.rs) owns all modules.  The binary just imports them.
 use runx::cache;
 use runx::config;
+use runx::dep;
 use runx::detect;
 use runx::downloader;
 use runx::error;
@@ -37,6 +38,7 @@ const RESERVED_COMMANDS: &[&str] = &[
     "doctor",
     "completions",
     "self",
+    "install",
 ];
 
 #[derive(Debug, Parser)]
@@ -120,6 +122,10 @@ enum Command {
         shell: clap_complete::Shell,
     },
 
+    /// Install project dependencies (e.g. `npm ci`) using the runx-managed
+    /// runtime. Does not start any command.
+    Install,
+
     /// Manage runx itself.
     Self_ {
         #[command(subcommand)]
@@ -190,6 +196,7 @@ fn main() {
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Init) => init_config(),
+        Some(Command::Install) => install_command(),
         Some(Command::Run {
             key,
             locked,
@@ -277,6 +284,31 @@ fn init_config() -> Result<()> {
     fs::write(&path, config::starter_config())
         .with_context(|| format!("Failed to write {}", path.display()))?;
     println!("Created {}", path.display());
+    Ok(())
+}
+fn install_command() -> Result<()> {
+    let (_, project_dir, cfg) = load_project()?;
+    let detection = dep::detect(&project_dir).ok_or_else(|| {
+        error::UserError::new(format!(
+            "No supported dependency manager found in {}.\n\
+             Hint: ensure a package-lock.json (Node), pyproject.toml (Python), \
+             go.mod (Go), or equivalent lockfile exists.",
+            project_dir.display()
+        ))
+    })?;
+
+    if dep::deps_installed(&project_dir, &detection.manager) {
+        eprintln!("\nDependencies already installed ({})", detection.label);
+        return Ok(());
+    }
+
+    // Provision runtimes so the managed runtime's npm/etc is on PATH.
+    let provisioned = provision(&project_dir, &cfg, false)?;
+    let runtimes: Vec<cache::CachedRuntime> = provisioned.into_iter().map(|e| e.cached).collect();
+
+    eprintln!("\nInstalling project dependencies ({})...", detection.label);
+    dep::install(&project_dir, &detection, &runtimes)?;
+    eprintln!("Dependencies installed successfully.");
     Ok(())
 }
 
