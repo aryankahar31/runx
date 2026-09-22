@@ -10,11 +10,12 @@ use std::{
 /// Each variant carries the file path that triggered detection.
 pub enum DepManager {
     Npm { lockfile: PathBuf },
+    Yarn { lockfile: PathBuf },
+    Pnpm { lockfile: PathBuf },
     PythonPyproject { pyproject: PathBuf },
     PythonRequirements { requirements: PathBuf },
     Bun { lockfile: PathBuf },
     Go { gomod: PathBuf },
-    Pnpm { lockfile: PathBuf },
 }
 
 /// Result of scanning a project directory for dependency information.
@@ -42,6 +43,15 @@ pub fn detect(project_dir: &Path) -> Option<DepDetection> {
                 lockfile: project_dir.join("pnpm-lock.yaml"),
             },
             label: "pnpm",
+        });
+    }
+    // yarn.lock is a JS package manager — check before Python/Go.
+    if project_dir.join("yarn.lock").is_file() {
+        return Some(DepDetection {
+            manager: DepManager::Yarn {
+                lockfile: project_dir.join("yarn.lock"),
+            },
+            label: "yarn",
         });
     }
     // pyproject.toml preferred over requirements.txt (PEP 621 standard).
@@ -89,7 +99,7 @@ pub fn detect(project_dir: &Path) -> Option<DepDetection> {
             label: "go",
         });
     }
-    // ponytail: Phase 6 adds yarn.lock, deno.json.
+    // ponytail: Phase 6 adds deno.json.
     None
 }
 
@@ -160,7 +170,9 @@ pub fn extract_pyproject_deps(pyproject_path: &Path) -> Vec<String> {
 /// Upgrade path: content hash of lockfile vs marker in venv/site-packages.
 pub fn deps_installed(project_dir: &Path, manager: &DepManager) -> bool {
     match manager {
-        DepManager::Npm { lockfile } | DepManager::Pnpm { lockfile } => {
+        DepManager::Npm { lockfile }
+        | DepManager::Yarn { lockfile }
+        | DepManager::Pnpm { lockfile } => {
             let nm = project_dir.join("node_modules");
             match (nm.metadata(), lockfile.metadata()) {
                 (Ok(nm_meta), Ok(lf_meta)) => {
@@ -224,6 +236,7 @@ pub fn install(
 ) -> Result<()> {
     match &detection.manager {
         DepManager::Npm { .. } => install_npm(project_dir, runtimes),
+        DepManager::Yarn { .. } => install_yarn(project_dir, runtimes),
         DepManager::PythonPyproject { .. } => install_python(project_dir, runtimes, true),
         DepManager::PythonRequirements { .. } => install_python(project_dir, runtimes, false),
         DepManager::Bun { .. } => install_bun(project_dir, runtimes),
@@ -397,6 +410,28 @@ fn install_pnpm(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
         Err(anyhow::anyhow!(
             "`pnpm install` failed in {} with exit code {}\n\
              Hint: ensure pnpm is installed (npm install -g pnpm) or available via corepack.",
+            project_dir.display(),
+            status.code().unwrap_or(-1)
+        ))
+    }
+}
+
+/// Install project dependencies via Yarn.
+///
+/// Like pnpm, Yarn is a separate package manager — it is NOT bundled with Node.
+/// The user's system must have yarn installed. This function finds the managed
+/// Node runtime so the correct Node version is on PATH, then delegates to the system yarn.
+fn install_yarn(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
+    let node = find_runtime(runtimes, "node")
+        .context("Node runtime not provisioned — cannot run yarn install")?;
+    let path = build_path(node)?;
+    let status = run_shell_command("yarn install", project_dir, &path)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "`yarn install` failed in {} with exit code {}\n\
+             Hint: ensure yarn is installed (npm install -g yarn) or via corepack.",
             project_dir.display(),
             status.code().unwrap_or(-1)
         ))
@@ -627,6 +662,44 @@ mod tests {
         assert!(
             matches!(det.manager, DepManager::Npm { .. }),
             "package-lock.json should take precedence over pnpm-lock.yaml"
+        );
+    }
+
+    #[test]
+    fn detects_yarn_from_yarn_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("yarn.lock"), "# yarn lockfile\n").unwrap();
+        let det = detect(dir.path()).expect("should detect yarn");
+        assert_eq!(det.label, "yarn");
+        assert!(matches!(det.manager, DepManager::Yarn { .. }));
+    }
+
+    #[test]
+    fn yarn_not_installed_without_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("yarn.lock"), "# yarn lockfile\n").unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(!deps_installed(dir.path(), &det.manager));
+    }
+
+    #[test]
+    fn yarn_installed_with_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("yarn.lock"), "# yarn lockfile\n").unwrap();
+        fs::create_dir(dir.path().join("node_modules")).unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(deps_installed(dir.path(), &det.manager));
+    }
+
+    #[test]
+    fn npm_lock_wins_over_yarn_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("yarn.lock"), "# yarn lockfile\n").unwrap();
+        fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(
+            matches!(det.manager, DepManager::Npm { .. }),
+            "package-lock.json should take precedence over yarn.lock"
         );
     }
 }

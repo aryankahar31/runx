@@ -144,7 +144,7 @@ Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproj
 ### Developer experience
 
 - Zero-config auto-detection (every `package.json` script becomes a run command), or explicit `runx.toml`
-- `runx install` / `--install` — install project dependencies (npm, pnpm, Bun, pip, Go) using the managed runtime
+- `runx install` / `--install` — install project dependencies (npm, Yarn, pnpm, Bun, pip, Go) using the managed runtime
 - No shell integration required, ever — nothing happens until you type `runx`
 - Cross-platform: Linux, macOS, Windows
 - Scripting modes: `--json`, `--quiet`, `--offline`
@@ -289,6 +289,7 @@ runx --install dev    # install project dependencies before running the command
 | Lockfile | Manager | Install command |
 |----------|---------|-----------------|
 | `package-lock.json` | npm | `npm ci` |
+| `yarn.lock` | Yarn | `yarn install` |
 | `pnpm-lock.yaml` | pnpm | `pnpm install` |
 | `bun.lock` / `bun.lockb` | Bun | `bun install` |
 | `pyproject.toml` | pip | `pip install -e .` or individual deps |
