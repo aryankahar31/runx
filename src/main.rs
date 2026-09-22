@@ -64,9 +64,9 @@ struct Cli {
     #[arg(long, global = true)]
     quiet: bool,
 
-    /// Refuse any network access. Cached and pinned runtimes keep working;
-    /// anything that would download or resolve a range against a release
-    /// index fails with an explicit error.
+    /// Refuse runx's network operations, not child-process networking.
+    /// Cached runtimes work only when required asset metadata is also cached;
+    /// downloads and online resolution fail with an explicit error.
     #[arg(long, global = true)]
     offline: bool,
 
@@ -429,6 +429,14 @@ fn provision(
     let mut provisioned: Vec<Provisioned> = Vec::new();
     let mut to_download: Vec<(runtime::RuntimeSpec, String)> = Vec::new();
     for (spec, requirement) in specs {
+        if locked {
+            let root = cache::runtime_root(&spec)?;
+            match fs::symlink_metadata(&root) {
+                Ok(_) => cache::verify_locked_artifact(&root, &spec)?,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err).context("Cannot inspect locked runtime cache"),
+            }
+        }
         match cache::cached_runtime(&spec)? {
             Some(cached) => {
                 flags::info(&format!(
@@ -480,9 +488,16 @@ fn provision(
                 // Record the digest that was actually verified, so `runx.lock`
                 // reflects the installed bytes rather than a second fetch.
                 let sha256 = download.sha256.clone();
-                let result =
-                    extractor::extract_archive(download.path(), &staging, spec.archive_kind)
-                        .and_then(|()| cache::commit_runtime(&home, &staging, &spec, Some(sha256)));
+                let result = (|| {
+                    extractor::extract_archive(download.path(), &staging, spec.archive_kind)?;
+                    let mut archive = fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(staging.join(cache::CACHED_ARCHIVE))?;
+                    std::io::copy(&mut fs::File::open(download.path())?, &mut archive)?;
+                    drop(archive);
+                    cache::commit_runtime(&home, &staging, &spec, Some(sha256), locked)
+                })();
 
                 // Dropping the download deletes the temp archive even on the
                 // error path, so a failed install leaks nothing.
@@ -545,46 +560,51 @@ fn run_command(command_key: &str, locked: bool, passthrough: &[String]) -> Resul
         eprintln!("runx timing: cache: {:?}", t2.duration_since(t1));
     }
 
+    // Determine dependency state before execution.  The hint fires
+    // unconditionally when deps are missing — a real JS runtime can exit 0
+    // even when the inner command fails, so exit-code gating is unreliable.
+    let deps_missing = deps_are_missing(&project_dir, &run_dir);
+
     let status = executor::execute(&command, &runtimes, &run_dir, passthrough)?;
-    if !status.success() {
-        hint_after_failed_command(&project_dir, &run_dir);
+    if deps_missing {
+        let install_cmd = detect_install_command(&project_dir);
+        eprintln!(
+            "\nHint: project dependencies are not installed.\n\
+             Run `{install_cmd}` in {dir}, then try again.",
+            dir = project_dir.display(),
+        );
     }
     // process::exit doesn't flush stdio; ensure the hint (eprintln!) is visible.
     std::io::stderr().flush().ok();
     process::exit(status.code().unwrap_or(1));
 }
 
-/// After a failed command, check whether the project has a package.json but no
-/// node_modules — the most common first-run failure.  Suggest the package
-/// manager install command so the user gets an actionable hint instead of a
-/// raw "command not found" from the shell.
-fn hint_after_failed_command(project_dir: &Path, run_dir: &Path) {
-    let has_package_json = project_dir.join("package.json").is_file();
-    // Check both run_dir (cwd) and project_dir: node_modules lives at the
-    // project root, but the user may have cd'd into a subdirectory.
-    let has_node_modules =
-        run_dir.join("node_modules").is_dir() || project_dir.join("node_modules").is_dir();
-    if !has_package_json || has_node_modules {
-        return;
+/// Detect the JS package manager install command from lockfiles in the project
+/// directory.  Falls back to npm when no lockfile is present.
+fn detect_install_command(project_dir: &Path) -> &'static str {
+    // ponytail: first-match wins, one file per PM.  The fallback is npm because
+    // it ships with Node and is the most common default.
+    if project_dir.join("bun.lock").is_file() || project_dir.join("bun.lockb").is_file() {
+        "bun install"
+    } else if project_dir.join("package-lock.json").is_file() {
+        "npm install"
+    } else if project_dir.join("yarn.lock").is_file() {
+        "yarn install"
+    } else if project_dir.join("pnpm-lock.yaml").is_file() {
+        "pnpm install"
+    } else {
+        "npm install"
     }
-    // ponytail: detect which PM by lockfile presence, one match wins.
-    let install_cmd =
-        if project_dir.join("bun.lock").is_file() || project_dir.join("bun.lockb").is_file() {
-            "bun install"
-        } else if project_dir.join("package-lock.json").is_file() {
-            "npm install"
-        } else if project_dir.join("yarn.lock").is_file() {
-            "yarn install"
-        } else if project_dir.join("pnpm-lock.yaml").is_file() {
-            "pnpm install"
-        } else {
-            "npm install"
-        };
-    eprintln!(
-        "\nHint: project dependencies are not installed.\n\
-         Run `{install_cmd}` in {dir}, then try again.",
-        dir = project_dir.display(),
-    );
+}
+/// True when a JS project has package.json but no dependency directory.
+///
+/// All JS package managers (npm, yarn, pnpm, bun) install to `node_modules/`
+/// by default — the internal layout differs but the top-level directory is
+/// universal.  Both `run_dir` (cwd) and `project_dir` are checked because the
+/// user may have cd'd into a subdirectory.
+fn deps_are_missing(project_dir: &Path, run_dir: &Path) -> bool {
+    project_dir.join("package.json").is_file()
+        && !(run_dir.join("node_modules").is_dir() || project_dir.join("node_modules").is_dir())
 }
 
 // ── Cache subcommands ────────────────────────────────────────────────────────

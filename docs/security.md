@@ -2,24 +2,36 @@
 
 ## Summary of hardening guarantees
 
-- **SHA-256 verification** of every download, before extraction
-- **Locked installs verify against `runx.lock` itself** — when a lock entry records an artifact for your platform, its digest (not the vendor's live checksum document) is the integrity constraint
-- **Sigstore/cosign signature verification** (keyless) on release archives and `SHA256SUMS`
-- **Atomic installs** — extraction happens in `.staging-*` directories and is renamed into place only after verification; an interrupted download can never corrupt the cache
+- **SHA-256 verification** before extraction using published checksums, except for older Deno releases described below
+- **Locked execution verifies against `runx.lock` itself**: `--locked` requires a platform artifact digest, authenticates the retained archive, and checks the installed runtime tree before execution
+- **Sigstore/cosign signatures** on runx's own release archives and `SHA256SUMS`; installers and self-update verify the archive signature, not vendor runtime signatures
+- **Staged installs**: extraction and locked verification finish before publication. Interrupted installs can leave staging files; replacement of an existing runtime is not crash-atomic
 - **Strict version validation at a single chokepoint** (`src/runtime.rs::resolve_runtime`) — version strings become filesystem paths and download URLs, so path traversal is rejected before anything else happens
 - **Archive extraction hardening** — symlink escape rejected, exec bits preserved
-- **At-rest integrity checking** — every install records a SHA-256 of the runtime's entry-point binary in its receipt; `runx doctor --verify` hashes the current bytes against it and reports replaced or corrupted executables (legacy receipts without a recorded digest are reported as unverifiable, never as corrupt)
+- **Diagnostic integrity checking**: `runx doctor --verify` compares entry-point bytes with a local receipt when available. This is not full-tree authentication, and unavailable Python/Go metadata can leave entries unverifiable even with a healthy overall result
 - **Fail-closed installers** — no checksum tool available means no install
+
+## Locked execution
+
+Use `runx run check --locked` (equivalently `runx run --locked check`). A command key is required. Every declared runtime must have a SHA-256 artifact digest for the current platform in `runx.lock`. Missing, malformed, unsupported, or all-zero digests cannot authorize execution.
+
+New installs retain the downloaded archive as `.runx-archive`. Before locked cache reuse, runx requires a readable receipt with matching runtime identity and archive digest, hashes the retained archive against the lockfile, then compares the installed tree with a fresh normalized extraction of that archive. File contents, symlink targets, file types, added/missing entries, and Unix file modes are checked; runx's own bookkeeping files are excluded from the tree comparison. The receipt alone is never proof that the installed bytes are authentic. Cold downloads are checked before extraction, and the same locked-cache verification runs before the staging directory is published.
+
+Any verification failure aborts without running the project command or falling back to another cached runtime. Legacy caches without a retained archive or required digests are rejected under `--locked`, not silently adopted. Remove the affected cache entry and reinstall from a trusted lockfile. Missing platform artifacts must be recorded with `runx lock` on that platform before using `--locked`.
+
+This retains an additional archive and re-extracts/hashes on each locked run. The runtime tree must remain immutable: installing global packages or adding generated files inside it invalidates locked reuse. Unlocked execution retains its existing, weaker cache behavior. The lockfile must be trusted; these checks do not sandbox the child or defend against another process modifying files concurrently between verification and execution.
+
+Verification itself needs no network. However, Python/Go provisioning currently needs fresh asset metadata even for an installed exact pin. `--offline` can therefore refuse those runs when metadata is missing or expired. It blocks runx's own network operations, not child-process networking.
 
 ## Install-script verification
 
-Both install scripts (`install.sh` / `install.ps1`) verify the downloaded binary against the SHA-256 checksum published with each release, and abort without extracting or installing anything if it does not match. They also **fail closed**: if no SHA-256 tool is available (`sha256sum`, `shasum`, or `openssl`), the install stops rather than silently proceeding unverified. Set `RUNX_SKIP_CHECKSUM=1` to override that deliberately.
+Both install scripts (`install.sh` / `install.ps1`) verify the downloaded archive against its published SHA-256 before extraction. They fail closed by default if verification is unavailable. The Unix script uses `sha256sum`, `shasum`, or `openssl`; PowerShell uses `Get-FileHash`. Only the Unix script supports `RUNX_SKIP_CHECKSUM=1`, which also bypasses its signature block when checksum tools are absent; do not combine it with strict signature requirements.
 
 Checksums confirm the download is intact and matches what the publisher listed. They are fetched from the same origin as the artifact, so they are not by themselves protection against a compromised release host.
 
 ### Signature verification (Sigstore/cosign)
 
-Since v0.4.2 every release archive and the `SHA256SUMS` manifest are additionally signed with Sigstore/cosign *keyless* signing: the release workflow asks GitHub for an OIDC token, and Sigstore's Fulcio CA issues a short-lived certificate bound to that identity (the workflow path, repository, and triggering ref — no private keys are stored anywhere). When `cosign` is installed, the install scripts and `runx self update` verify each download against that signature with the identity pinned to `aryankahar31/runx`'s `release.yml` on a `v*.*.*` tag, so only a real run of the release workflow can have produced the file.
+Since v0.4.2 runx release archives and the `SHA256SUMS` manifest are signed with Sigstore/cosign keyless signing. When cosign is installed, the install scripts and `runx self update` verify the archive signature against `aryankahar31/runx`'s `release.yml` identity on a numeric release tag or `main`. This checks workflow provenance, not that the signature belongs to the exact requested tag. It does not verify Node, Python, Bun, Go, or Deno signatures.
 
 This closes the checksum gap: a compromised release host cannot forge a signature without also compromising the signing identity.
 
@@ -43,6 +55,11 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
 ### Windows PowerShell
+
+> **Note:** Windows ARM64 (`runx-windows-arm64.zip`) is **not currently published**.
+> The Sigstore/cosign signing infrastructure does not yet support the Windows ARM64
+> runner (`windows-11-arm`). The x64 binary (`runx-windows-x64.zip`) runs on ARM64
+> Windows via x64 emulation. This will be revisited when cosign supports that runner.
 
 ```powershell
 # Download the archive and the per-file checksum

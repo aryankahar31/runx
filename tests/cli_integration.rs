@@ -1748,6 +1748,263 @@ fn offline_mode_refuses_downloads() {
     assert!(!combined.contains("Downloading"));
 }
 
+/// A tiny Node-shaped vendor archive, using the host's real archive/layout.
+fn locked_node_fixture() -> (
+    TempDir,
+    TempDir,
+    std::path::PathBuf,
+    runx::runtime::RuntimeSpec,
+) {
+    use runx::{cache, downloader, extractor, lock, runtime};
+    use std::io::Write;
+
+    let project = tmp();
+    let home = tmp();
+    let spec = runtime::resolve_runtime("node", "20.11.0").unwrap();
+    let relative_exe = spec.bin_dirs[0].join(&spec.executable);
+    let archive_path = format!("node/{}", relative_exe.to_string_lossy().replace('\\', "/"));
+    let bytes = b"fixture executable";
+    let mut tar = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(bytes.len() as u64);
+    header.set_mode(0o755);
+    header.set_cksum();
+    tar.append_data(&mut header, &archive_path, &bytes[..])
+        .unwrap();
+    tar.append_data(&mut header, "node/support", &bytes[..])
+        .unwrap();
+    let tar = tar.into_inner().unwrap();
+    let archive = match spec.archive_kind {
+        runtime::ArchiveKind::TarGz => {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(&tar).unwrap();
+            encoder.finish().unwrap()
+        }
+        runtime::ArchiveKind::TarXz => {
+            let mut encoder = xz2::write::XzEncoder::new(Vec::new(), 1);
+            encoder.write_all(&tar).unwrap();
+            encoder.finish().unwrap()
+        }
+        runtime::ArchiveKind::Zip => {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            zip.start_file(archive_path, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+            zip.start_file("node/support", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+            zip.finish().unwrap().into_inner()
+        }
+    };
+    let download = home.path().join("download");
+    fs::write(&download, archive).unwrap();
+    let digest = downloader::sha256_file(&download).unwrap();
+    let staging = cache::staging_dir(home.path(), &spec).unwrap();
+    extractor::extract_archive(&download, &staging, spec.archive_kind).unwrap();
+    fs::rename(download, staging.join(cache::CACHED_ARCHIVE)).unwrap();
+    let root = cache::commit_runtime(home.path(), &staging, &spec, Some(digest.clone()), false)
+        .unwrap()
+        .root;
+    let mut lockfile = lock::Lockfile::new();
+    lockfile.record("node", "20.11.0", "20.11.0", &spec.url, Some(&digest));
+    lockfile.save(project.path()).unwrap();
+    fs::write(
+        config_path(project.path()),
+        "[runtimes]\nnode = \"20.11.0\"\n[run]\ncheck = \"echo LOCKED_CHILD_RAN\"\n",
+    )
+    .unwrap();
+    (project, home, root, spec)
+}
+
+#[test]
+fn locked_cache_requires_authenticated_bytes_and_metadata() {
+    use runx::{cache, downloader, lock};
+
+    for case in [
+        "valid",
+        "hardlinked_usage_executable",
+        "hardlinked_usage_lock",
+        "zero_lock",
+        "empty_lock",
+        "wrong_lock",
+        "unsupported_digest",
+        "missing_platform",
+        "tampered_archive",
+        "tampered_executable",
+        "tampered_support_file",
+        "forged_receipt",
+        "extra_file",
+        "missing_digest",
+        "missing_executable_digest",
+        "missing_receipt",
+        "invalid_receipt",
+        "missing_archive",
+        "unreadable_archive",
+        "wrong_receipt",
+    ] {
+        let (project, home, root, spec) = locked_node_fixture();
+        let marker = root.join(cache::COMPLETION_MARKER);
+        let mut receipt = cache::read_receipt(&root).unwrap();
+        let mut lockfile = lock::Lockfile::load(project.path()).unwrap().unwrap();
+        let entry = lockfile.runtimes.get_mut("node").unwrap();
+        let artifact = entry.artifacts.get_mut(&lock::current_platform()).unwrap();
+        let executable = root.join(&spec.bin_dirs[0]).join(&spec.executable);
+        let valid = matches!(
+            case,
+            "valid" | "hardlinked_usage_executable" | "hardlinked_usage_lock"
+        );
+        match case {
+            "valid" => {}
+            "hardlinked_usage_executable" => {
+                fs::hard_link(&executable, root.join(cache::LAST_USED_MARKER)).unwrap()
+            }
+            "hardlinked_usage_lock" => fs::hard_link(
+                lock::lock_path(project.path()),
+                root.join(cache::LAST_USED_MARKER),
+            )
+            .unwrap(),
+            "zero_lock" => artifact.sha256 = "0".repeat(64),
+            "empty_lock" => artifact.sha256.clear(),
+            "wrong_lock" => artifact.sha256 = "a".repeat(64),
+            "unsupported_digest" => artifact.sha256 = "sha512:unsupported".into(),
+            "missing_platform" => entry.artifacts.clear(),
+            "tampered_archive" => fs::write(root.join(cache::CACHED_ARCHIVE), b"tampered").unwrap(),
+            "tampered_executable" => fs::write(&executable, b"tampered").unwrap(),
+            "tampered_support_file" => fs::write(root.join("support"), b"tampered").unwrap(),
+            "forged_receipt" => {
+                fs::write(&executable, b"tampered").unwrap();
+                receipt.executable_sha256 = downloader::sha256_file(&executable);
+            }
+            "extra_file" => fs::write(root.join("injected-library"), b"tampered").unwrap(),
+            "missing_digest" => receipt.sha256 = None,
+            "missing_executable_digest" => receipt.executable_sha256 = None,
+            "wrong_receipt" => receipt.sha256 = Some("b".repeat(64)),
+            "missing_archive" => fs::remove_file(root.join(cache::CACHED_ARCHIVE)).unwrap(),
+            "unreadable_archive" => {
+                fs::remove_file(root.join(cache::CACHED_ARCHIVE)).unwrap();
+                fs::create_dir(root.join(cache::CACHED_ARCHIVE)).unwrap();
+            }
+            "missing_receipt" | "invalid_receipt" => {}
+            _ => unreachable!(),
+        }
+        lockfile.save(project.path()).unwrap();
+        fs::write(&marker, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        if case == "missing_receipt" {
+            fs::remove_file(&marker).unwrap();
+        } else if case == "invalid_receipt" {
+            fs::write(&marker, b"invalid JSON").unwrap();
+        }
+        for args in [
+            ["--offline", "run", "check", "--locked"],
+            ["--offline", "run", "--locked", "check"],
+        ] {
+            let output = runx_with_home(project.path(), home.path(), &args);
+            assert_eq!(
+                output.status.success(),
+                valid,
+                "{case} {args:?}: {}",
+                stderr_of(&output)
+            );
+            assert_eq!(
+                stdout_of(&output).contains("LOCKED_CHILD_RAN"),
+                valid,
+                "{case}"
+            );
+            assert!(!stdout_of(&output).contains("Downloading"), "{case}");
+            if !valid {
+                assert!(
+                    !stderr_of(&output).contains("will not download"),
+                    "must fail verification, not fall back to downloading: {case}"
+                );
+            }
+        }
+        if valid {
+            assert_eq!(
+                downloader::sha256_file(&executable),
+                receipt.executable_sha256
+            );
+            assert_eq!(
+                lock::Lockfile::load(project.path()).unwrap().unwrap(),
+                lockfile
+            );
+        }
+        if matches!(case, "valid" | "zero_lock" | "wrong_lock") {
+            let output = runx_with_home(project.path(), home.path(), &["run", "check", "--locked"]);
+            assert_eq!(
+                output.status.success(),
+                case == "valid",
+                "{case}: {}",
+                stderr_of(&output)
+            );
+            assert_eq!(
+                stdout_of(&output).contains("LOCKED_CHILD_RAN"),
+                case == "valid"
+            );
+        }
+    }
+}
+
+#[test]
+fn locked_install_is_verified_before_cache_publication() {
+    use runx::{cache, lock};
+
+    let (project, home, root, mut spec) = locked_node_fixture();
+    let lockfile = lock::Lockfile::load(project.path()).unwrap().unwrap();
+    let digest = &lockfile.runtimes["node"].artifacts[&lock::current_platform()].sha256;
+    let staging = cache::staging_dir(home.path(), &spec).unwrap();
+    fs::remove_dir(&staging).unwrap();
+    fs::rename(&root, &staging).unwrap();
+    spec.pin_digest(&"a".repeat(64));
+    // Even a receipt claiming the locked digest cannot authorize other bytes.
+    let err = cache::commit_runtime(home.path(), &staging, &spec, Some("a".repeat(64)), true)
+        .unwrap_err();
+    assert!(err.to_string().contains("SHA-256 mismatch"), "{err:#}");
+    assert!(!root.exists(), "invalid artifact must never be published");
+    spec.pin_digest(digest);
+    fs::write(staging.join("support"), b"tampered").unwrap();
+    let err = cache::commit_runtime(home.path(), &staging, &spec, Some(digest.clone()), true)
+        .unwrap_err();
+    assert!(err.to_string().contains("file digest mismatch"), "{err:#}");
+    assert!(
+        !root.exists(),
+        "tampered extraction must never be published"
+    );
+    fs::write(staging.join("support"), b"fixture executable").unwrap();
+    let cached =
+        cache::commit_runtime(home.path(), &staging, &spec, Some(digest.clone()), true).unwrap();
+    cache::verify_locked_artifact(&cached.root, &spec).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn locked_cache_rejects_link_mode_and_unreadable_file_changes() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    for case in ["symlink", "mode", "unreadable"] {
+        let (project, home, root, _) = locked_node_fixture();
+        let path = root.join("support");
+        match case {
+            "symlink" => {
+                let copy = home.path().join("identical-bytes");
+                fs::copy(&path, &copy).unwrap();
+                fs::remove_file(&path).unwrap();
+                symlink(copy, &path).unwrap();
+            }
+            "mode" => fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap(),
+            "unreadable" => fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap(),
+            _ => unreachable!(),
+        }
+        let output = runx_with_home(
+            project.path(),
+            home.path(),
+            &["--offline", "run", "check", "--locked"],
+        );
+        assert!(!output.status.success(), "{case}: {}", stderr_of(&output));
+        assert!(!stdout_of(&output).contains("LOCKED_CHILD_RAN"));
+    }
+}
+
 // ── Missing-dependencies hint ────────────────────────────────────────────────
 
 /// When a command fails and the project has package.json + a lockfile but no
@@ -1989,5 +2246,233 @@ fn failed_command_without_package_json_does_not_hint() {
     assert!(
         !stderr.contains("dependencies are not installed"),
         "should not hint for non-JS projects:\n{stderr}"
+    );
+}
+
+// ── Proactive dependency hint (pre-execution check) ──────────────────────────
+
+/// Real-world scenario: bun.lock + package.json + no node_modules, command
+/// invokes a locally-installed binary that won't exist.  The hint must appear
+/// in stderr, and the original exit code must be preserved.
+#[test]
+fn missing_deps_bun_lock_shows_hint_before_execution() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"exit 1\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "should hint at bun install, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("project dependencies are not installed"),
+        "should show the dependency hint, got:\n{stderr}"
+    );
+}
+
+/// npm lockfile variant.
+#[test]
+fn missing_deps_npm_lock_shows_hint_before_execution() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"exit 1\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("npm install"),
+        "should hint at npm install, got:\n{stderr}"
+    );
+}
+
+/// pnpm lockfile variant.
+#[test]
+fn missing_deps_pnpm_lock_shows_hint_before_execution() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("pnpm-lock.yaml"),
+        "lockfileVersion: '6.0'\n",
+    )
+    .unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"exit 1\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("pnpm install"),
+        "should hint at pnpm install, got:\n{stderr}"
+    );
+}
+
+/// yarn lockfile variant.
+#[test]
+fn missing_deps_yarn_lock_shows_hint_before_execution() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("yarn.lock"), "# yarn lockfile\n").unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"exit 1\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("yarn install"),
+        "should hint at yarn install, got:\n{stderr}"
+    );
+}
+
+/// No lockfile at all falls back to npm.
+#[test]
+fn missing_deps_no_lockfile_falls_back_to_npm() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"exit 1\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("npm install"),
+        "should fallback to npm install, got:\n{stderr}"
+    );
+}
+
+/// When node_modules exists but the command fails, the hint must NOT appear —
+/// the failure is unrelated to missing dependencies.
+#[test]
+fn deps_present_command_fails_does_not_hint() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(dir.path().join("node_modules")).unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"exit 1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"exit 1\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        !stderr.contains("dependencies are not installed"),
+        "should not hint when node_modules exists:\n{stderr}"
+    );
+}
+
+/// Exit code is preserved when deps are missing — the hint is diagnostic only,
+/// it must not mask the original failure.
+#[test]
+fn missing_deps_preserves_exit_code() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(dir.path().join("package.json"), "{}").unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"exit 42\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(
+        output.status.code(),
+        Some(42),
+        "exit code must be preserved, stderr:\n{}",
+        stderr_of(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "should still show hint, got:\n{stderr}"
+    );
+}
+
+/// When the command succeeds despite missing deps, the hint still fires —
+/// a real JS runtime (e.g. bun) can exit 0 even when the inner command
+/// fails, so exit-code gating is unreliable.  Showing the hint when deps
+/// are missing is always correct.
+#[test]
+fn missing_deps_command_succeeds_still_hints() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(dir.path().join("package.json"), "{}").unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"echo ok\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("dependencies are not installed"),
+        "should hint when deps are missing even if command succeeds:\n{stderr}"
+    );
+}
+
+/// Regression: real bun can exit 0 even when the inner command fails (exit-code
+/// re-mapping). The hint must fire regardless of the exit code when deps are
+/// missing, because exit-code gating is unreliable for JS runtimes.
+#[cfg(unix)]
+#[test]
+fn missing_deps_bun_exits_zero_still_hints() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    // Fake bun that exits 0 — simulates real bun re-mapping a child's non-zero exit.
+    plant_executable(&home, "bun", "0.0.0", "exit 0");
+    fs::write(dir.path().join(".bun-version"), "0.0.0\n").unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"tsx server.ts"}}"#,
+    )
+    .unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("bun install"),
+        "should hint at bun install even when bun exits 0, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("dependencies are not installed"),
+        "should show the dependency hint, got:\n{stderr}"
     );
 }

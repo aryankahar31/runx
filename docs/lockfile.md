@@ -26,6 +26,8 @@ Artifacts are keyed by platform because runtime archives *are* platform-specific
 
 When an install uses a lock entry that carries an artifact for the current platform, the **recorded SHA-256 becomes the integrity constraint**: runx verifies the downloaded archive against the digest in `runx.lock` instead of the publisher's live checksum document. A release that was mutated upstream after locking — a force-pushed tag, a compromised CDN account — fails the install instead of flowing into it.
 
+With `--locked`, cache reuse also hashes the retained archive against that digest and compares the installed tree with a fresh extraction. Missing archives/digests or mismatched bytes fail closed; legacy cache entries need reinstalling. This costs additional disk space and verification time. See [locked execution and offline limits](security.md#locked-execution).
+
 The mismatch error names the lockfile, so a vendor-side mutation is distinguishable from an ordinary corrupt download:
 
 ```text
@@ -43,7 +45,7 @@ runx run test --locked
 
 `--locked` fails rather than resolving anything the lockfile does not already pin, mirroring `cargo build --locked`. It fails when a runtime is missing from the lockfile, or when `runx.toml` asks for a requirement the lockfile does not record.
 
-A missing entry for *your platform* is deliberately not fatal, even under `--locked`: the version is still pinned, and the download is still verified against the publisher's own checksums. A mixed-OS team is not blocked by a lockfile generated elsewhere. Run `runx lock` once from each platform you use in CI to record its artifact.
+A missing artifact digest for *your platform* is fatal under `--locked`: the version alone cannot authenticate a runtime. Run `runx lock` once from each platform you use in CI and commit its artifact entry. Without `--locked`, a missing platform artifact still permits the pinned version to be installed using upstream checksum verification where available.
 
 ## Precedence
 

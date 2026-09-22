@@ -288,13 +288,8 @@ pub struct Planned {
 ///
 /// # `--locked`
 ///
-/// Under `locked`, a missing tool or a changed requirement is an error: the
-/// lockfile genuinely does not describe what the config now asks for. A missing
-/// *platform artifact* is **not** an error, because the version pin — the actual
-/// cross-platform reproducibility guarantee — still holds, and the download is
-/// verified against the publisher's own checksum document regardless. Failing
-/// there would make `--locked` unusable for any team spanning two operating
-/// systems, which is most of them.
+/// Under `locked`, a missing tool, changed requirement, or missing platform
+/// artifact is an error: execution requires a digest from the lockfile itself.
 ///
 /// When an artifact *is* recorded for this platform, its digest rides along in
 /// [`Planned::pinned_sha256`] and becomes the install's integrity constraint.
@@ -335,6 +330,12 @@ pub fn plan(
 
             // Version still pinned; only this platform's digest is absent.
             Err(Staleness::PlatformMissing { platform }) => {
+                if locked {
+                    return Err(UserError::new(format!(
+                        "--locked was given but {LOCK_FILE} has no artifact SHA-256 for {tool} on {platform}.\n\
+                         Hint: run `runx lock` on this platform and commit the result."
+                    )).into());
+                }
                 let version = lockfile
                     .pinned_version(tool, requirement)
                     .unwrap_or(requirement)
@@ -833,10 +834,9 @@ mod tests {
         assert!(format!("{err:#}").contains("out of date"));
     }
 
-    /// A teammate on another OS must not break `--locked` in CI: the version is
-    /// still pinned and the download is still checksum-verified upstream.
+    /// A version pin without this platform's digest cannot authorize execution.
     #[test]
-    fn locked_tolerates_a_missing_platform_artifact() {
+    fn locked_rejects_a_missing_platform_artifact() {
         let mut lock = Lockfile::new();
         lock.runtimes.insert(
             "node".to_string(),
@@ -853,9 +853,9 @@ mod tests {
             },
         );
 
-        let plan = plan(&requirements(&[("node", "20.11.0")]), Some(&lock), true)
-            .expect("--locked should tolerate a foreign-platform lock");
-        assert_eq!(plan[0].version, "20.11.0");
+        let err = plan(&requirements(&[("node", "20.11.0")]), Some(&lock), true)
+            .expect_err("--locked requires a platform digest");
+        assert!(err.to_string().contains("no artifact SHA-256"));
     }
 
     #[test]
@@ -893,8 +893,7 @@ mod tests {
     }
 
     /// A lock generated on another OS pins the version but has no digest here;
-    /// enforcement falls back to upstream verification (already covered by
-    /// `locked_tolerates_a_missing_platform_artifact` for the --locked case).
+    /// unlocked provisioning falls back to upstream verification.
     #[test]
     fn plan_has_no_digest_without_a_platform_artifact() {
         let mut lock = Lockfile::new();
