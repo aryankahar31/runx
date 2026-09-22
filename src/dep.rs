@@ -14,6 +14,7 @@ pub enum DepManager {
     PythonRequirements { requirements: PathBuf },
     Bun { lockfile: PathBuf },
     Go { gomod: PathBuf },
+    Pnpm { lockfile: PathBuf },
 }
 
 /// Result of scanning a project directory for dependency information.
@@ -33,6 +34,14 @@ pub fn detect(project_dir: &Path) -> Option<DepDetection> {
                 lockfile: project_dir.join("package-lock.json"),
             },
             label: "npm",
+        });
+    }
+    if project_dir.join("pnpm-lock.yaml").is_file() {
+        return Some(DepDetection {
+            manager: DepManager::Pnpm {
+                lockfile: project_dir.join("pnpm-lock.yaml"),
+            },
+            label: "pnpm",
         });
     }
     // pyproject.toml preferred over requirements.txt (PEP 621 standard).
@@ -80,7 +89,7 @@ pub fn detect(project_dir: &Path) -> Option<DepDetection> {
             label: "go",
         });
     }
-    // ponytail: Phase 5 adds pnpm-lock.yaml, yarn.lock, deno.json.
+    // ponytail: Phase 6 adds yarn.lock, deno.json.
     None
 }
 
@@ -151,7 +160,7 @@ pub fn extract_pyproject_deps(pyproject_path: &Path) -> Vec<String> {
 /// Upgrade path: content hash of lockfile vs marker in venv/site-packages.
 pub fn deps_installed(project_dir: &Path, manager: &DepManager) -> bool {
     match manager {
-        DepManager::Npm { lockfile } => {
+        DepManager::Npm { lockfile } | DepManager::Pnpm { lockfile } => {
             let nm = project_dir.join("node_modules");
             match (nm.metadata(), lockfile.metadata()) {
                 (Ok(nm_meta), Ok(lf_meta)) => {
@@ -219,6 +228,7 @@ pub fn install(
         DepManager::PythonRequirements { .. } => install_python(project_dir, runtimes, false),
         DepManager::Bun { .. } => install_bun(project_dir, runtimes),
         DepManager::Go { .. } => install_go(project_dir, runtimes),
+        DepManager::Pnpm { .. } => install_pnpm(project_dir, runtimes),
     }
 }
 
@@ -364,6 +374,29 @@ fn install_go(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
     } else {
         Err(anyhow::anyhow!(
             "`go mod download` failed in {} with exit code {}",
+            project_dir.display(),
+            status.code().unwrap_or(-1)
+        ))
+    }
+}
+
+/// Install project dependencies via pnpm.
+///
+/// pnpm is a separate package manager — it is NOT bundled with Node.
+/// The user's system must have pnpm installed (e.g. `npm install -g pnpm`
+/// or via corepack). This function finds the managed Node runtime so the
+/// correct Node version is on PATH, then delegates to the system pnpm.
+fn install_pnpm(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
+    let node = find_runtime(runtimes, "node")
+        .context("Node runtime not provisioned — cannot run pnpm install")?;
+    let path = build_path(node)?;
+    let status = run_shell_command("pnpm install", project_dir, &path)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "`pnpm install` failed in {} with exit code {}\n\
+             Hint: ensure pnpm is installed (npm install -g pnpm) or available via corepack.",
             project_dir.display(),
             status.code().unwrap_or(-1)
         ))
@@ -540,6 +573,60 @@ mod tests {
         assert!(
             matches!(det.manager, DepManager::Npm { .. }),
             "package-lock.json should take precedence for backward compat"
+        );
+    }
+
+    #[test]
+    fn detects_pnpm_from_pnpm_lock_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("pnpm-lock.yaml"),
+            "lockfileVersion: '9.0'\n",
+        )
+        .unwrap();
+        let det = detect(dir.path()).expect("should detect pnpm");
+        assert_eq!(det.label, "pnpm");
+        assert!(matches!(det.manager, DepManager::Pnpm { .. }));
+    }
+
+    #[test]
+    fn pnpm_not_installed_without_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("pnpm-lock.yaml"),
+            "lockfileVersion: '9.0'\n",
+        )
+        .unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(!deps_installed(dir.path(), &det.manager));
+    }
+
+    #[test]
+    fn pnpm_installed_with_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("pnpm-lock.yaml"),
+            "lockfileVersion: '9.0'\n",
+        )
+        .unwrap();
+        fs::create_dir(dir.path().join("node_modules")).unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(deps_installed(dir.path(), &det.manager));
+    }
+
+    #[test]
+    fn npm_lock_wins_over_pnpm_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("pnpm-lock.yaml"),
+            "lockfileVersion: '9.0'\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(
+            matches!(det.manager, DepManager::Npm { .. }),
+            "package-lock.json should take precedence over pnpm-lock.yaml"
         );
     }
 }
