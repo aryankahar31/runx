@@ -652,7 +652,9 @@ fn run_command(
 /// Detect the dependency install command from project files.
 /// Falls back to npm when no recognised file is present.
 fn detect_install_command(project_dir: &Path) -> &'static str {
-    if project_dir.join("bun.lock").is_file() || project_dir.join("bun.lockb").is_file() {
+    if project_dir.join("deno.lock").is_file() {
+        "deno install"
+    } else if project_dir.join("bun.lock").is_file() || project_dir.join("bun.lockb").is_file() {
         "bun install"
     } else if project_dir.join("package-lock.json").is_file() {
         "npm install"
@@ -703,6 +705,24 @@ fn deps_are_missing(project_dir: &Path, run_dir: &Path) -> bool {
     if project_dir.join("pnpm-lock.yaml").is_file() {
         return !(run_dir.join("node_modules").is_dir()
             || project_dir.join("node_modules").is_dir());
+    }
+    // Deno: deno.lock is the manifest; if it exists but deps not installed,
+    // we consider deps missing. Since deno.lock is both manifest and proof,
+    // we check if it exists but has no meaningful content (empty or {}).
+    if project_dir.join("deno.lock").is_file() {
+        return project_dir
+            .join("deno.lock")
+            .metadata()
+            .and_then(|m| {
+                if m.len() == 0 {
+                    return Ok(true);
+                }
+                std::fs::read_to_string(project_dir.join("deno.lock")).map(|content| {
+                    let trimmed = content.trim();
+                    trimmed.is_empty() || trimmed == "{}" || trimmed == "[]"
+                })
+            })
+            .unwrap_or(true);
     }
     // Go: go.sum is the local proof that modules are downloaded.
     if project_dir.join("go.mod").is_file() {

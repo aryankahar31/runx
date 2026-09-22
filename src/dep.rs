@@ -16,6 +16,7 @@ pub enum DepManager {
     PythonRequirements { requirements: PathBuf },
     Bun { lockfile: PathBuf },
     Go { gomod: PathBuf },
+    Deno { lockfile: PathBuf },
 }
 
 /// Result of scanning a project directory for dependency information.
@@ -99,7 +100,15 @@ pub fn detect(project_dir: &Path) -> Option<DepDetection> {
             label: "go",
         });
     }
-    // ponytail: Phase 6 adds deno.json.
+    // Deno: deno.lock.
+    if project_dir.join("deno.lock").is_file() {
+        return Some(DepDetection {
+            manager: DepManager::Deno {
+                lockfile: project_dir.join("deno.lock"),
+            },
+            label: "deno",
+        });
+    }
     None
 }
 
@@ -225,6 +234,19 @@ pub fn deps_installed(project_dir: &Path, manager: &DepManager) -> bool {
                 _ => false,
             }
         }
+        DepManager::Deno { lockfile } => {
+            // deno.lock is both the manifest and the proof of installation.
+            // An empty lockfile ({} or empty) means no deps have been locked yet.
+            // We consider deps installed if the lockfile exists and has meaningful content.
+            match std::fs::read_to_string(lockfile) {
+                Ok(content) => {
+                    let trimmed = content.trim();
+                    // Empty file or empty JSON object means no deps locked yet.
+                    !(trimmed.is_empty() || trimmed == "{}" || trimmed == "[]")
+                }
+                Err(_) => false,
+            }
+        }
     }
 }
 
@@ -242,6 +264,7 @@ pub fn install(
         DepManager::Bun { .. } => install_bun(project_dir, runtimes),
         DepManager::Go { .. } => install_go(project_dir, runtimes),
         DepManager::Pnpm { .. } => install_pnpm(project_dir, runtimes),
+        DepManager::Deno { .. } => install_deno(project_dir, runtimes),
     }
 }
 
@@ -387,6 +410,26 @@ fn install_go(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
     } else {
         Err(anyhow::anyhow!(
             "`go mod download` failed in {} with exit code {}",
+            project_dir.display(),
+            status.code().unwrap_or(-1)
+        ))
+    }
+}
+
+/// Install project dependencies via Deno.
+///
+/// Uses the runx-managed Deno runtime to run `deno install` which
+/// reads the lockfile and installs dependencies.
+fn install_deno(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
+    let deno = find_runtime(runtimes, "deno")
+        .context("Deno runtime not provisioned — cannot run deno install")?;
+    let path = build_path(deno)?;
+    let status = run_shell_command("deno install", project_dir, &path)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "`deno install` failed in {} with exit code {}",
             project_dir.display(),
             status.code().unwrap_or(-1)
         ))
@@ -701,5 +744,34 @@ mod tests {
             matches!(det.manager, DepManager::Npm { .. }),
             "package-lock.json should take precedence over yarn.lock"
         );
+    }
+
+    #[test]
+    fn detects_deno_from_deno_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("deno.lock"), "{}\n").unwrap();
+        let det = detect(dir.path()).expect("should detect deno");
+        assert_eq!(det.label, "deno");
+        assert!(matches!(det.manager, DepManager::Deno { .. }));
+    }
+
+    #[test]
+    fn deno_not_installed_without_deno_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        // No deno.lock -> not installed
+        assert!(detect(dir.path()).is_none());
+    }
+
+    #[test]
+    fn deno_installed_with_deno_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        // A lockfile with actual dependency entries (not empty {}) means installed.
+        fs::write(
+            dir.path().join("deno.lock"),
+            r#"{"https://deno.land/std@0.200.0/http/server.ts": "sha256-abc123"}"#,
+        )
+        .unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert!(deps_installed(dir.path(), &det.manager));
     }
 }
