@@ -142,13 +142,15 @@ Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproj
 - Staged installs; `--locked` also authenticates retained archives and checks cached runtime contents
 
 ### Developer experience
-
-- Zero-config auto-detection (every `package.json` script becomes a run command), or explicit `runx.toml`
-- `runx install` / `--install` — install project dependencies (npm, Yarn, pnpm, Bun, pip, Go) using the managed runtime
-- No shell integration required, ever — nothing happens until you type `runx`
-- Cross-platform: Linux, macOS, Windows
-- Scripting modes: `--json`, `--quiet`, `--offline`
-- `runx doctor` (plus `doctor --verify`, an integrity sweep over cached executables), cache management (`list`/`size`/`clean`/`prune`), `self update`, shell completions
+ 
+ - Zero-config auto-detection (every `package.json` script becomes a run command), or explicit `runx.toml`
+ - `runx install` / `--install` — install project dependencies (npm, Yarn, pnpm, Bun, pip, Go, Deno) using the managed runtime
+ - Multiple dependency managers in one project: `runx install` installs all compatible managers at once
+ - Plain `runx dev` is unchanged — it never installs dependencies automatically
+ - No shell integration required, ever — nothing happens until you type `runx`
+ - Cross-platform: Linux, macOS, Windows
+ - Scripting modes: `--json`, `--quiet`, `--offline`
+ - `runx doctor` (plus `doctor --verify`, an integrity sweep over cached executables), cache management (`list`/`size`/`clean`/`prune`), `self update`, shell completions
 
 ## Supported Runtimes
 
@@ -279,57 +281,61 @@ runx completions zsh  # bash, zsh, fish, powershell
 runx --json doctor    # machine-readable output (also: cache list/size)
 runx --quiet dev      # suppress banners and progress bars
 runx --offline dev    # block runx network operations, not child networking
-runx --install dev    # install project dependencies before running the command
+runx --install dev    # install project dependencies (all detected managers) before running the command
 ```
-
-### Dependency installation
-
-`runx install` detects the project's package manager and installs dependencies using the runx-managed runtime. Supported managers:
-
-| Lockfile | Manager | Install command |
-|----------|---------|-----------------|
-| `package-lock.json` | npm | `npm ci` |
-| `yarn.lock` | Yarn | `yarn install` |
-| `pnpm-lock.yaml` | pnpm | `pnpm install` |
-| `bun.lock` / `bun.lockb` | Bun | `bun install` |
-| `pyproject.toml` | pip | `pip install -e .` or individual deps |
-| `requirements.txt` | pip | `pip install -r requirements.txt` |
-| `go.mod` | Go | `go mod download` |
-| `deno.lock` | Deno | `deno install` |
-
-`runx --install <key>` does the same inline: install dependencies, then run the command. When dependencies are already up to date, the install is skipped.
-
-Global flags work before any subcommand (`runx --json <command>`).
-
-Pass arguments through with `--`: `runx dev -- --port 3000`. Without `--`, extra arguments are rejected rather than silently dropped.
-
-### Environment variables
-
-| Variable | Effect |
-|----------|--------|
-| `RUNX_HOME` | Cache location (default `~/.runx`). Useful for CI caching and isolation. |
-| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | Proxy for all outbound requests. Precedence follows curl; TLS and checksum verification are unchanged by proxying. |
-| `NO_PROXY` | Comma-separated hosts that bypass the proxy (`*` disables it entirely). Loopback always bypasses. |
-| `RUNX_RESOLUTION` | `latest` (default) or `minimum` — see [strict mode](docs/runtime-resolution.md#strict-mode). |
-| `GITHUB_TOKEN` | Optional. Raises GitHub API rate limits for Bun/Deno/Python lookups (60 → 5000 req/hour). Sent only to `api.github.com`. |
-| `RUNX_REQUIRE_SIGNATURE` | `1` makes a missing cosign signature an error instead of a warning. |
-
-There is no telemetry, and runx makes no network requests beyond fetching runtime release metadata, archives, and their checksums.
-
-## Roadmap
-
-**Current** (v0.5)
-
-- Node.js, Python, Bun, Go, Deno
-- `runx.lock` + `--locked`, Sigstore/cosign signing
-- Cache management, `doctor`, `self update`, completions
-- Multi-runtime detection and isolated multi-runtime `PATH`
-
-**Next**
-
-- Java, .NET
-- Monorepo / workspace support
-- Pre/post run hooks
+ 
+ ### Dependency installation
+ 
+ `runx install` detects the project's package manager(s) and installs dependencies using the runx-managed runtime. All detected managers are installed in a single command:
+ 
+ | Lockfile | Manager | Install command | Isolation |
+ |----------|---------|-----------------|-----------|
+ | `package-lock.json` | npm | `npm ci` | `node_modules/` (project-local) |
+ | `yarn.lock` | Yarn | `yarn install` | `node_modules/` (project-local) |
+ | `pnpm-lock.yaml` | pnpm | `pnpm install` | `node_modules/` (project-local) |
+ | `bun.lock` / `bun.lockb` | Bun | `bun install` | `node_modules/` (project-local) |
+ | `pyproject.toml` | pip | `pip install -e .` or individual deps | **`.venv/` (project-local, never shared)** |
+ | `requirements.txt` | pip | `pip install -r requirements.txt` | **`.venv/` (project-local, never shared)** |
+ | `go.mod` | Go | `go mod download` | `go.sum` (project-local) |
+ | `deno.lock` | Deno | `deno install` | `deno.lock` (self-contained) |
+ 
+ `runx --install <key>` does the same inline: install dependencies, then run the command. When dependencies are already up to date, the install is skipped.
+ 
+ **Python isolation guarantee:** `pip` always installs into a project-local `.venv/` directory created by the runx-managed Python. Different projects using the same Python version get completely separate dependency sets — no shared `site-packages`, no version conflicts across projects. This mirrors how `node_modules` provides isolation for Node projects.
+ 
+ **JS package-manager conflict resolution:** If multiple JavaScript lockfiles are present (e.g. `package-lock.json` + `pnpm-lock.yaml`), runx uses **npm** (highest priority) and emits a clear warning listing the detected managers and which one was skipped. Priority order: npm > pnpm > Yarn > Bun.
+ 
+ `runx --install <key>` does the same inline: install dependencies, then run the command. When dependencies are already up to date, the install is skipped.
+ 
+ ### Environment variables
+ 
+ | Variable | Effect |
+ |----------|--------|
+ | `RUNX_HOME` | Cache location (default `~/.runx`). Useful for CI caching and isolation. |
+ | `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | Proxy for all outbound requests. Precedence follows curl; TLS and checksum verification are unchanged by proxying. |
+ | `NO_PROXY` | Comma-separated hosts that bypass the proxy (`*` disables it entirely). Loopback always bypasses. |
+ | `RUNX_RESOLUTION` | `latest` (default) or `minimum` — see [strict mode](docs/runtime-resolution.md#strict-mode). |
+ | `GITHUB_TOKEN` | Optional. Raises GitHub API rate limits for Bun/Deno/Python lookups (60 → 5000 req/hour). Sent only to `api.github.com`. |
+ | `RUNX_REQUIRE_SIGNATURE` | `1` makes a missing cosign signature an error instead of a warning. |
+ 
+ There is no telemetry, and runx makes no network requests beyond fetching runtime release metadata, archives, and their checksums.
+ 
+ ## Roadmap
+ 
+ **Current** (v0.5)
+ 
+ - Node.js, Python, Bun, Go, Deno
+ - `runx.lock` + `--locked`, Sigstore/cosign signing
+ - Cache management, `doctor`, `self update`, completions
+ - Multi-runtime detection and isolated multi-runtime `PATH`
+ - **Dependency installation for npm, Yarn, pnpm, Bun, pip, Go, Deno**
+ - **Multi-manager `runx install` with JS conflict resolution (npm wins)**
+ 
+ **Next**
+ 
+ - Java, .NET
+ - Monorepo / workspace support
+ - Pre/post run hooks
 
 **Future**
 
