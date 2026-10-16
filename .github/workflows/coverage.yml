@@ -1,0 +1,46 @@
+# Coverage is informational; the cross-platform CI workflow remains the merge gate.
+name: Coverage
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    name: Rust coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust and LLVM tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --version 0.9.1 --locked
+
+      - name: Run tests with coverage
+        run: cargo llvm-cov --all-targets --all-features --html --output-dir coverage
+
+      - name: Export machine-readable coverage
+        run: |
+          cargo llvm-cov report --lcov --output-path coverage/coverage.lcov
+          cargo llvm-cov report --json --summary-only --output-path coverage/summary.json
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage
+          path: coverage/
+          if-no-files-found: warn
