@@ -348,20 +348,27 @@ There is no telemetry, and runx makes no network requests beyond fetching runtim
 - [Architecture](docs/architecture.md) — isolation guarantees, atomic installs
 - [Benchmarks](docs/benchmarks.md) — shell-overhead methodology, freshness checks
 - [Comparison](docs/comparison.md) — per-tool matrix vs nvm/Volta/pyenv/asdf/mise
+- [Changelog](CHANGELOG.md) — every release from v0.1.0 onward
 
 ---
 
 ## Contributing
 
-Contributions are welcome. Please ensure:
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the
+branch → PR → CI workflow and how releases are cut. Please ensure:
 
 - Runtime installers remain portable
 - Downloads are deterministic
 - Existing tests continue to pass; new features include tests
 - Documentation is updated
 
+You need a stable Rust toolchain ([rustup](https://rustup.rs)) with the
+`rustfmt` and `clippy` components — CI enforces all four commands below:
+
 ```bash
 git clone https://github.com/aryankahar31/runx.git && cd runx
+cargo fmt -- --check                                      # formatting
+cargo clippy --all-targets --all-features -- -D warnings  # lints, warnings are errors
 cargo test            # full suite
 cargo build --release # produce target/release/runx
 ```
