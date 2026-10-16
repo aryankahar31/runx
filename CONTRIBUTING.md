@@ -24,6 +24,20 @@ integration suite alone:
 cargo test --test cli_integration <name-filter>
 ```
 
+To measure coverage locally, install the Rust `llvm-tools-preview` component
+and `cargo-llvm-cov`, then run:
+
+```bash
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --version 0.9.1 --locked
+cargo llvm-cov --all-targets --all-features --html --output-dir coverage
+```
+
+The separate Coverage workflow runs the full suite on Ubuntu and uploads an
+HTML report, LCOV data, and a JSON summary as the `rust-coverage` artifact.
+Coverage is diagnostic, with no percentage threshold. Stable Rust measures
+line and region coverage; branch coverage currently requires nightly Rust.
+
 ## Workflow: branch → PR → CI → merge
 
 1. Branch from `main` using a scoped name (`feat/…`, `fix/…`, `docs/…`,
