@@ -518,6 +518,30 @@ mod tests {
         assert!(destination.join("LICENSE.md").exists());
     }
 
+    #[test]
+    fn zip_entries_cannot_escape_the_destination() {
+        let dir = tmp();
+        let archive = dir.path().join("runtime.zip");
+        write_zip(
+            &archive,
+            &[
+                ("wrapped/../../escape", b"outside"),
+                ("wrapped/bin/runtime", b"inside"),
+            ],
+        );
+
+        let destination = dir.path().join("dest");
+        fs::create_dir_all(&destination).unwrap();
+        extract_archive(&archive, &destination, ArchiveKind::Zip).expect("extracts safe entries");
+
+        assert!(!dir.path().join("escape").exists());
+        assert!(!destination.join("escape").exists());
+        assert_eq!(
+            fs::read(destination.join("bin/runtime")).unwrap(),
+            b"inside"
+        );
+    }
+
     // ── link target validation ───────────────────────────────────────────────
 
     #[test]
