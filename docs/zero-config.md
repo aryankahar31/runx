@@ -121,7 +121,28 @@ Installing node 22.11.0
 Pin the result with `runx lock` if you need that choice to stay fixed ([lockfiles](lockfile.md)).
 
 ## Configuration Precedence
-
-- If `runx.toml` exists → it is the sole source of truth. Auto-detection is never consulted, and the file is never modified.
-- Auto-detection is the fallback *only* when no `runx.toml` is present.
-- Auto-detection **never writes to disk**. To persist a detected configuration, run `runx init` which creates a starter `runx.toml`.
+ 
+ - If `runx.toml` exists → it is the sole source of truth. Auto-detection is never consulted, and the file is never modified.
+ - Auto-detection is the fallback *only* when no `runx.toml` is present.
+ - Auto-detection **never writes to disk**. To persist a detected configuration, run `runx init` which creates a starter `runx.toml`.
+ 
+ ## Dependency-manager detection
+ 
+ Runx also auto-detects dependency managers from project files. When you run `runx install` (or `runx --install <key>`) without an explicit `runx.toml`, runx scans for these files:
+ 
+ | Lockfile / Manifest | Manager | Install command |
+ |---------------------|---------|-----------------|
+ | `package-lock.json` | npm | `npm ci` |
+ | `yarn.lock` | Yarn | `yarn install` |
+ | `pnpm-lock.yaml` | pnpm | `pnpm install` |
+ | `bun.lock` / `bun.lockb` | Bun | `bun install` |
+ | `pyproject.toml` | pip | `pip install -e .` or individual deps |
+ | `requirements.txt` | pip | `pip install -r requirements.txt` |
+ | `go.mod` | Go | `go mod download` |
+ | `deno.lock` | Deno | `deno install` |
+ 
+ Multiple managers can be detected and installed together in a single `runx install` call. If multiple JavaScript lockfiles are present, npm wins (see [README](README.md#js-package-manager-conflict-resolution) for conflict resolution details).
+ 
+ **Python isolation:** Python dependencies are always installed into a project-local `.venv/` directory — never into the shared runx-managed Python's `site-packages`. Each project gets complete isolation.
+ 
+ **JS conflict resolution:** If multiple JavaScript lockfiles are present, npm (package-lock.json) wins with a clear warning. Priority: npm > pnpm > Yarn > Bun.
