@@ -75,6 +75,13 @@ fn extract_archive_with(
     }
 }
 
+#[cfg(unix)]
+fn set_zip_permissions(output: &File, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    output.set_permissions(fs::Permissions::from_mode(mode & 0o777))
+}
+
 fn extract_zip(archive_path: &Path, destination: &Path, strip_first: bool) -> Result<()> {
     let file = File::open(archive_path)
         .with_context(|| format!("Failed to open {}", archive_path.display()))?;
@@ -132,11 +139,9 @@ fn extract_zip(archive_path: &Path, destination: &Path, strip_first: bool) -> Re
         // extractable on Unix and silently losing `+x` is a confusing failure.
         #[cfg(unix)]
         if let Some(mode) = entry.unix_mode() {
-            use std::os::unix::fs::PermissionsExt;
             // ZIP external attributes are controlled by the archive. Preserve
             // rwx bits, but never install SUID, SGID, or sticky permissions.
-            output
-                .set_permissions(fs::Permissions::from_mode(mode & 0o777))
+            set_zip_permissions(&output, mode)
                 .with_context(|| format!("Failed to set mode on {}", output_path.display()))?;
         }
     }
@@ -555,6 +560,28 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn zip_permission_setter_masks_special_bits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp();
+        let path = dir.path().join("runtime");
+        let output = File::create(&path).unwrap();
+
+        set_zip_permissions(&output, 0o7755).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+            0o755
+        );
+
+        set_zip_permissions(&output, 0o1640).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+            0o640
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn zip_entries_cannot_install_privileged_unix_modes() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -573,13 +600,15 @@ mod tests {
         bytes[central + 5] = 3; // Unix host system in "version made by".
         let archived_mode = 0o100000_u32 | 0o7755;
         bytes[central + 38..central + 42].copy_from_slice(&(archived_mode << 16).to_le_bytes());
+        let stored_mode =
+            u32::from_le_bytes(bytes[central + 38..central + 42].try_into().unwrap()) >> 16;
+        assert_eq!(stored_mode & 0o7777, 0o7755);
         fs::write(&archive_path, bytes).unwrap();
 
         let mut archive = ZipArchive::new(File::open(&archive_path).unwrap()).unwrap();
-        assert_eq!(
-            archive.by_index(0).unwrap().unix_mode().unwrap() & 0o7777,
-            0o7755
-        );
+        let decoded_mode = archive.by_index(0).unwrap().unix_mode().unwrap();
+        assert_eq!(decoded_mode & 0o777, 0o755);
+        assert_eq!(decoded_mode & 0o7000, 0);
 
         let destination = dir.path().join("dest");
         fs::create_dir_all(&destination).unwrap();
