@@ -530,31 +530,18 @@ fn provision(
             chosen.version
         };
 
-        let mut spec = runtime::resolve_runtime(&entry.tool, &version)
-            .with_context(|| format!("Failed to resolve runtime {} {version}", entry.tool))?;
-        if entry.pinned_sha256.is_some() {
-            let recorded_url = lockfile
+        let spec = if let Some(digest) = &entry.pinned_sha256 {
+            let url = lockfile
                 .as_ref()
                 .and_then(|lock| lock.get(&entry.tool))
                 .and_then(|runtime| runtime.artifacts.get(&lock::current_platform()))
-                .map(|artifact| artifact.url.as_str());
-            if recorded_url != Some(spec.url.as_str()) {
-                return Err(error::UserError::new(format!(
-                    "runx.lock records a different artifact URL for {} {} on this platform. \
-                     Run `runx lock` to regenerate it.",
-                    entry.tool, version
-                ))
-                .into());
-            }
+                .map(|artifact| artifact.url.as_str())
+                .expect("planned digest came from a current-platform lock artifact");
+            runtime::resolve_locked_runtime(&entry.tool, &version, url, digest)
+        } else {
+            runtime::resolve_runtime(&entry.tool, &version)
         }
-        // A recorded artifact makes the digest itself the integrity
-        // constraint: verify against the bytes the lockfile captured rather
-        // than whatever the vendor's checksum document lists right now, so a
-        // vendor-side mutation of a published archive cannot flow into an
-        // install that is supposed to be reproducible.
-        if let Some(digest) = &entry.pinned_sha256 {
-            spec.pin_digest(digest);
-        }
+        .with_context(|| format!("Failed to resolve runtime {} {version}", entry.tool))?;
         specs.push((spec, requirement));
     }
 

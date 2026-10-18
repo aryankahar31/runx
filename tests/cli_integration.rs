@@ -1928,6 +1928,50 @@ fn matching_lock_runs_offline_but_inconsistent_url_fails() {
     assert!(!stdout_of(&mismatched).contains("LOCKED_CHILD_RAN"));
 }
 
+#[cfg(unix)]
+#[test]
+fn matching_python_lock_runs_offline_without_release_cache() {
+    use runx::lock;
+
+    let project = tmp();
+    let home = tmp();
+    plant_python(home.path(), "3.12.3", "echo PYTHON_LOCKED");
+    fs::write(
+        config_path(project.path()),
+        "[runtimes]\npython = \"3.12.3\"\n[run]\ncheck = \"python --version\"\n",
+    )
+    .unwrap();
+    let platform = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        other => panic!("unsupported test host: {other:?}"),
+    };
+    let url = format!(
+        "https://github.com/astral-sh/python-build-standalone/releases/download/20240107/\
+         cpython-3.12.3+20240107-{platform}-install_only.tar.gz"
+    );
+    let mut locked = lock::Lockfile::new();
+    locked.record("python", "3.12.3", "3.12.3", &url, Some(&"a".repeat(64)));
+    locked.save(project.path()).unwrap();
+
+    let output = runx_with_home(project.path(), home.path(), &["--offline", "check"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    assert!(stdout_of(&output).contains("PYTHON_LOCKED"));
+    assert!(!home.path().join("python-release-cache.json").exists());
+
+    fs::write(
+        config_path(project.path()),
+        "[runtimes]\npython = \"3.11.9\"\n[run]\ncheck = \"python --version\"\n",
+    )
+    .unwrap();
+    let stale = runx_with_home(project.path(), home.path(), &["--offline", "check"]);
+    assert_ne!(stale.status.code(), Some(0));
+    assert!(stderr_of(&stale).contains("using runx.toml"));
+    assert!(!stdout_of(&stale).contains("PYTHON_LOCKED"));
+}
+
 #[test]
 fn locked_cache_requires_authenticated_bytes_and_metadata() {
     use runx::{cache, downloader, lock};
