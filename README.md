@@ -103,23 +103,22 @@ Initialize a project:
 runx init
 ```
 
-This creates a starter `runx.toml`:
+`runx init` uses the same version files as [zero-config detection](#zero-config-detection). For example, a directory with `.python-version` containing `3.12.3` gets:
 
 ```toml
 [runtimes]
-node = "20.11.0"
-python = "3.11.7"
+python = "3.12.3"
 
 [run]
-dev = "npm run dev"
-build = "npm run build"
-test = "npm test"
+python = "python --version"
 ```
 
-Run:
+If `package.json` defines scripts, those become `[run]` commands. In an empty directory, init writes a runnable `hello` example with no runtimes; edit it to suit your project. It refuses to replace an existing `runx.toml` or use invalid version hints.
+
+Run a configured command key:
 
 ```bash
-runx dev
+runx python
 ```
 
 Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproject.toml`, or similar, just run `runx dev` ([detection rules](#zero-config-detection)).
