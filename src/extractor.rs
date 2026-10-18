@@ -75,6 +75,13 @@ fn extract_archive_with(
     }
 }
 
+#[cfg(unix)]
+fn set_zip_permissions(output: &File, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    output.set_permissions(fs::Permissions::from_mode(mode & 0o777))
+}
+
 fn extract_zip(archive_path: &Path, destination: &Path, strip_first: bool) -> Result<()> {
     let file = File::open(archive_path)
         .with_context(|| format!("Failed to open {}", archive_path.display()))?;
@@ -112,6 +119,14 @@ fn extract_zip(archive_path: &Path, destination: &Path, strip_first: bool) -> Re
             create_dir_all_no_symlinks(destination, parent)?;
         }
         ensure_no_symlink_components(destination, &relative)?;
+        if fs::symlink_metadata(&output_path)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            anyhow::bail!(
+                "Refusing to extract through the symlink {} (archive may be malicious)",
+                output_path.display()
+            );
+        }
 
         let mut output = File::create(&output_path)
             .with_context(|| format!("Failed to create {}", output_path.display()))?;
@@ -124,8 +139,9 @@ fn extract_zip(archive_path: &Path, destination: &Path, strip_first: bool) -> Re
         // extractable on Unix and silently losing `+x` is a confusing failure.
         #[cfg(unix)]
         if let Some(mode) = entry.unix_mode() {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&output_path, fs::Permissions::from_mode(mode))
+            // ZIP external attributes are controlled by the archive. Preserve
+            // rwx bits, but never install SUID, SGID, or sticky permissions.
+            set_zip_permissions(&output, mode)
                 .with_context(|| format!("Failed to set mode on {}", output_path.display()))?;
         }
     }
@@ -516,6 +532,122 @@ mod tests {
             "wrapped entry must land at the root"
         );
         assert!(destination.join("LICENSE.md").exists());
+    }
+
+    #[test]
+    fn zip_entries_cannot_escape_the_destination() {
+        let dir = tmp();
+        let archive = dir.path().join("runtime.zip");
+        write_zip(
+            &archive,
+            &[
+                ("wrapped/../../escape", b"outside"),
+                ("wrapped/bin/runtime", b"inside"),
+            ],
+        );
+
+        let destination = dir.path().join("dest");
+        fs::create_dir_all(&destination).unwrap();
+        extract_archive(&archive, &destination, ArchiveKind::Zip).expect("extracts safe entries");
+
+        assert!(!dir.path().join("escape").exists());
+        assert!(!destination.join("escape").exists());
+        assert_eq!(
+            fs::read(destination.join("bin/runtime")).unwrap(),
+            b"inside"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_permission_setter_masks_special_bits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp();
+        let path = dir.path().join("runtime");
+        let output = File::create(&path).unwrap();
+
+        set_zip_permissions(&output, 0o7755).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+            0o755
+        );
+
+        set_zip_permissions(&output, 0o1640).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+            0o640
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_entries_cannot_install_privileged_unix_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp();
+        let archive_path = dir.path().join("runtime.zip");
+        write_zip(&archive_path, &[("wrapped/bin/runtime", b"executable")]);
+
+        // ZipWriter::unix_permissions intentionally discards special bits.
+        // Patch the central-directory metadata to model an untrusted ZIP that
+        // declares set-user-ID, set-group-ID, and sticky bits on an executable.
+        let mut bytes = fs::read(&archive_path).unwrap();
+        let central = bytes
+            .windows(4)
+            .rposition(|window| window == b"PK\x01\x02")
+            .expect("central directory entry");
+        bytes[central + 5] = 3; // Unix host system in "version made by".
+        let archived_mode = 0o100000_u32 | 0o7755;
+        bytes[central + 38..central + 42].copy_from_slice(&(archived_mode << 16).to_le_bytes());
+        let stored_mode =
+            u32::from_le_bytes(bytes[central + 38..central + 42].try_into().unwrap()) >> 16;
+        assert_eq!(stored_mode & 0o7777, 0o7755);
+        fs::write(&archive_path, bytes).unwrap();
+
+        let mut archive = ZipArchive::new(File::open(&archive_path).unwrap()).unwrap();
+        let decoded_mode = archive.by_index(0).unwrap().unix_mode().unwrap();
+        assert_eq!(decoded_mode & 0o777, 0o755);
+        assert_eq!(decoded_mode & 0o7000, 0);
+
+        let destination = dir.path().join("dest");
+        fs::create_dir_all(&destination).unwrap();
+        extract_archive(&archive_path, &destination, ArchiveKind::Zip).unwrap();
+
+        let extracted = destination.join("bin/runtime");
+        assert_eq!(fs::read(&extracted).unwrap(), b"executable");
+        let mode = fs::metadata(&extracted).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o7000,
+            0,
+            "ZIP metadata must not set special mode bits"
+        );
+        assert_eq!(mode & 0o111, 0o111, "keep executable permissions");
+        assert!(!dir.path().join("bin/runtime").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_entries_cannot_write_through_an_existing_destination_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp();
+        let archive_path = dir.path().join("runtime.zip");
+        write_zip(&archive_path, &[("wrapped/bin/runtime", b"new bytes")]);
+
+        let destination = dir.path().join("dest");
+        fs::create_dir_all(destination.join("bin")).unwrap();
+        let outside = dir.path().join("outside");
+        fs::write(&outside, b"original").unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&outside, destination.join("bin/runtime")).unwrap();
+
+        assert!(extract_archive(&archive_path, &destination, ArchiveKind::Zip).is_err());
+        assert_eq!(fs::read(&outside).unwrap(), b"original");
+        assert_eq!(
+            fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     // ── link target validation ───────────────────────────────────────────────

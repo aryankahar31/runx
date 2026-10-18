@@ -362,7 +362,7 @@ branch → PR → CI workflow and how releases are cut. Please ensure:
 - Existing tests continue to pass; new features include tests
 - Documentation is updated
 
-You need a stable Rust toolchain ([rustup](https://rustup.rs)) with the
+You need a stable Rust toolchain (1.88 or newer, via [rustup](https://rustup.rs)) with the
 `rustfmt` and `clippy` components — CI enforces all four commands below:
 
 ```bash

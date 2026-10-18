@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-A stable Rust toolchain via [rustup](https://rustup.rs), including the
+A stable Rust toolchain (1.88 or newer) via [rustup](https://rustup.rs), including the
 `rustfmt` and `clippy` components — CI runs all three.
 
 ## Build and test
