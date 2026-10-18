@@ -119,6 +119,35 @@ pub fn detect_all(project_dir: &Path) -> Vec<DepDetection> {
     detections
 }
 
+/// Whether a JavaScript package actually declares dependencies that need an
+/// install. npm and Bun may leave out `node_modules` after a successful install
+/// of an empty project, so its absence alone cannot prove dependencies missing.
+/// An absent or unreadable manifest is treated conservatively as unknown.
+pub fn has_js_dependencies(project_dir: &Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(project_dir.join("package.json")) else {
+        return true;
+    };
+    let Ok(package) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return true;
+    };
+    let Some(package) = package.as_object() else {
+        return true;
+    };
+    [
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    ]
+    .iter()
+    .any(|key| match package.get(*key) {
+        None => false,
+        Some(entries) => entries
+            .as_object()
+            .is_none_or(|entries| !entries.is_empty()),
+    })
+}
+
 /// Return `true` if `pyproject.toml` contains a `[build-system]` table.
 ///
 /// Only buildable packages with a PEP 517 backend can use `pip install -e .`.
@@ -492,6 +521,23 @@ fn install_yarn(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn javascript_dependency_presence_uses_manifest_not_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = dir.path().join("package.json");
+        fs::write(&package, r#"{"dependencies":{},"devDependencies":{}}"#).unwrap();
+        assert!(!has_js_dependencies(dir.path()));
+        fs::write(&package, r#"{"devDependencies":{"tsx":"1.0.0"}}"#).unwrap();
+        assert!(has_js_dependencies(dir.path()));
+        fs::write(&package, "invalid JSON").unwrap();
+        assert!(
+            has_js_dependencies(dir.path()),
+            "unknown state stays conservative"
+        );
+        fs::write(&package, r#"{"dependencies":"invalid"}"#).unwrap();
+        assert!(has_js_dependencies(dir.path()));
+    }
 
     #[test]
     fn detects_npm_from_package_lock_json() {

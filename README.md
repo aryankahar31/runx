@@ -299,6 +299,8 @@ runx --install dev    # install project dependencies before running the command
 
 `runx --install <key>` does the same inline: install dependencies, then run the command. When dependencies are already up to date, the install is skipped.
 
+If a JavaScript project declares dependencies but has no `node_modules`, running a command suggests the detected install command. An empty `package.json` may legitimately have no `node_modules` after install, so it does not trigger that hint.
+
 Global flags work before any subcommand (`runx --json <command>`).
 
 Pass arguments through with `--`: `runx dev -- --port 3000`. Without `--`, extra arguments are rejected rather than silently dropped.

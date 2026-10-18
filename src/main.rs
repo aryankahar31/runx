@@ -845,8 +845,9 @@ fn deps_are_missing(project_dir: &Path, run_dir: &Path) -> bool {
             dep::DepManager::Npm { .. }
             | dep::DepManager::Yarn { .. }
             | dep::DepManager::Pnpm { .. } => {
-                !(run_dir.join("node_modules").is_dir()
-                    || project_dir.join("node_modules").is_dir())
+                dep::has_js_dependencies(project_dir)
+                    && !(run_dir.join("node_modules").is_dir()
+                        || project_dir.join("node_modules").is_dir())
             }
             dep::DepManager::PythonPyproject { .. }
             | dep::DepManager::PythonRequirements { .. } => {
@@ -856,8 +857,9 @@ fn deps_are_missing(project_dir: &Path, run_dir: &Path) -> bool {
                     || project_dir.join("venv").is_dir())
             }
             dep::DepManager::Bun { .. } => {
-                !(run_dir.join("node_modules").is_dir()
-                    || project_dir.join("node_modules").is_dir())
+                dep::has_js_dependencies(project_dir)
+                    && !(run_dir.join("node_modules").is_dir()
+                        || project_dir.join("node_modules").is_dir())
             }
             dep::DepManager::Go { .. } => !project_dir.join("go.sum").is_file(),
             dep::DepManager::Deno { lockfile } => match std::fs::read_to_string(lockfile) {
@@ -875,7 +877,11 @@ fn deps_are_missing(project_dir: &Path, run_dir: &Path) -> bool {
 
     // Fallback: if no lockfile-based managers detected but package.json exists,
     // consider deps missing (matching legacy fallback to npm).
-    if !any_missing && detections.is_empty() && project_dir.join("package.json").is_file() {
+    if !any_missing
+        && detections.is_empty()
+        && project_dir.join("package.json").is_file()
+        && dep::has_js_dependencies(project_dir)
+    {
         // Check if node_modules is missing
         any_missing =
             !(run_dir.join("node_modules").is_dir() || project_dir.join("node_modules").is_dir());
