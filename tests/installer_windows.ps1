@@ -71,6 +71,19 @@ function Invoke-WebRequest {
     $upgrade = Invoke-Installer
     if ($upgrade.Code -ne 0) { throw "Upgrade failed: $($upgrade.Output)" }
     Assert-Version
+
+    $originalArchitecture = $env:PROCESSOR_ARCHITECTURE
+    $env:PROCESSOR_ARCHITECTURE = "ARM64"
+    try {
+        $unsupported = Invoke-Installer
+        if ($unsupported.Code -eq 0 -or $unsupported.Output -notmatch "ARM64 release assets") {
+            throw "Unsupported Windows ARM64 target was not rejected clearly: $($unsupported.Output)"
+        }
+    }
+    finally {
+        $env:PROCESSOR_ARCHITECTURE = $originalArchitecture
+    }
+    Assert-Version
     if ((Get-ChildItem $installDir -Filter ".runx-*").Count -ne 0) {
         throw "Installer left staging files behind"
     }

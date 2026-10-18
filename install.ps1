@@ -10,7 +10,7 @@ $InstallDir = if ($env:RUNX_INSTALL_DIR) { $env:RUNX_INSTALL_DIR } else { Join-P
 
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
     "AMD64" { "x64" }
-    "ARM64" { "arm64" }
+    "ARM64" { throw "Windows ARM64 release assets are not published yet; use an x64 Windows host." }
     default { throw "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE" }
 }
 
