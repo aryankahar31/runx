@@ -1,7 +1,7 @@
 use crate::detect;
 use crate::error::UserError;
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
@@ -10,7 +10,7 @@ use std::{
 
 pub const CONFIG_FILE: &str = "runx.toml";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RunxConfig {
     #[serde(default)]
     pub runtimes: BTreeMap<String, String>,
@@ -288,15 +288,40 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
     })
 }
 
-pub fn starter_config() -> &'static str {
-    r#"[runtimes]
-node = "20.11.0"
-bun = "1.2.3"
+/// Build a starter file from the same version hints used by auto-detection.
+/// When there are no usable hints, provide a runtime-free example that works
+/// without a download. Never guess a runtime version for an unknown project.
+pub fn starter_config_for(dir: &Path) -> Result<String> {
+    let detected = detect::detect_runtimes(dir);
+    let unresolvable = detected.unresolvable();
+    if !unresolvable.is_empty() {
+        return Err(UserError::new(format!(
+            "Cannot create runx.toml from invalid version hints:\n{}\n\
+             Hint: correct the project version files before running `runx init`.",
+            unresolvable.join("\n")
+        ))
+        .into());
+    }
 
-[run]
-dev = "npm run dev"
-build = "npm run build"
-"#
+    let runtimes = detect::detected_runtimes_map(&detected);
+    let mut run = detected.inferred_commands;
+    if run.is_empty() {
+        if runtimes.is_empty() {
+            run.insert("hello".into(), "echo Hello from runx".into());
+        } else {
+            for tool in runtimes.keys() {
+                let command = if tool == "go" {
+                    "go version".to_string()
+                } else {
+                    format!("{tool} --version")
+                };
+                run.insert(tool.clone(), command);
+            }
+        }
+    }
+
+    let config = RunxConfig::from_parts(runtimes, run)?;
+    toml::to_string_pretty(&config).context("Failed to generate starter config")
 }
 
 #[cfg(test)]

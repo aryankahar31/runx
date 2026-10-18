@@ -429,6 +429,87 @@ fn generated_starter_config_is_usable() {
         contents.contains("[runtimes]"),
         "starter config should show a [runtimes] example"
     );
+    let config = runx::config::RunxConfig::parse_toml(&contents).unwrap();
+    assert!(
+        config.runtimes.is_empty(),
+        "empty projects need no download"
+    );
+    assert_eq!(config.run["hello"], "echo Hello from runx");
+    let hello = runx(dir.path(), &["hello"]);
+    assert_eq!(hello.status.code(), Some(0));
+    assert!(stdout_of(&hello).contains("Hello from runx"));
+}
+
+#[test]
+fn init_uses_only_python_in_a_python_project() {
+    let dir = tmp();
+    fs::write(dir.path().join(".python-version"), "3.12.3\n").unwrap();
+
+    assert_eq!(runx(dir.path(), &["init"]).status.code(), Some(0));
+    let config = runx::config::RunxConfig::load_from_dir(dir.path()).unwrap();
+    assert_eq!(config.runtimes.len(), 1);
+    assert_eq!(config.runtimes["python"], "3.12.3");
+    assert_eq!(config.run["python"], "python --version");
+}
+
+#[test]
+fn init_uses_node_version_and_package_scripts() {
+    let dir = tmp();
+    fs::write(dir.path().join(".nvmrc"), "20.11.0\n").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"echo NODE_DEV"}}"#,
+    )
+    .unwrap();
+
+    assert_eq!(runx(dir.path(), &["init"]).status.code(), Some(0));
+    let config = runx::config::RunxConfig::load_from_dir(dir.path()).unwrap();
+    assert_eq!(config.runtimes.len(), 1);
+    assert_eq!(config.runtimes["node"], "20.11.0");
+    assert_eq!(config.run["dev"], "npm run dev");
+}
+
+#[test]
+fn init_keeps_each_detected_runtime_in_mixed_project() {
+    let dir = tmp();
+    fs::write(dir.path().join(".nvmrc"), "20.11.0\n").unwrap();
+    fs::write(dir.path().join(".python-version"), "3.12.3\n").unwrap();
+
+    assert_eq!(runx(dir.path(), &["init"]).status.code(), Some(0));
+    let config = runx::config::RunxConfig::load_from_dir(dir.path()).unwrap();
+    assert_eq!(config.runtimes.len(), 2);
+    assert_eq!(config.runtimes["node"], "20.11.0");
+    assert_eq!(config.runtimes["python"], "3.12.3");
+    assert_eq!(config.run["node"], "node --version");
+    assert_eq!(config.run["python"], "python --version");
+}
+
+#[test]
+fn init_supports_bun_go_and_deno_version_hints() {
+    for (hint, version, tool, command) in [
+        (".bun-version", "1.2.3", "bun", "bun --version"),
+        (".go-version", "1.22.5", "go", "go version"),
+        (".deno-version", "2.0.0", "deno", "deno --version"),
+    ] {
+        let dir = tmp();
+        fs::write(dir.path().join(hint), version).unwrap();
+        assert_eq!(runx(dir.path(), &["init"]).status.code(), Some(0));
+        let config = runx::config::RunxConfig::load_from_dir(dir.path()).unwrap();
+        assert_eq!(config.runtimes.len(), 1);
+        assert_eq!(config.runtimes[tool], version);
+        assert_eq!(config.run[tool], command);
+    }
+}
+
+#[test]
+fn init_rejects_invalid_version_hints_without_writing_config() {
+    let dir = tmp();
+    fs::write(dir.path().join(".nvmrc"), "lts/iron\n").unwrap();
+
+    let output = runx(dir.path(), &["init"]);
+    assert_ne!(output.status.code(), Some(0));
+    assert!(stderr_of(&output).contains("invalid version hints"));
+    assert!(!config_path(dir.path()).exists());
 }
 
 // ── Isolation guarantees ─────────────────────────────────────────────────────

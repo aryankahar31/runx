@@ -300,7 +300,13 @@ fn init_config() -> Result<()> {
             path.display()
         );
     }
-    fs::write(&path, config::starter_config())
+    let contents = config::starter_config_for(&cwd)?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .with_context(|| format!("Failed to create {} (it may already exist)", path.display()))?;
+    file.write_all(contents.as_bytes())
         .with_context(|| format!("Failed to write {}", path.display()))?;
     println!("Created {}", path.display());
     Ok(())
