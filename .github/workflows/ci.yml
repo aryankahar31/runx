@@ -41,6 +41,11 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
+      - name: Exercise Windows installer in a disposable directory
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/installer_windows.ps1
+
       - name: Smoke test runx on Unix
         if: runner.os != 'Windows'
         shell: bash

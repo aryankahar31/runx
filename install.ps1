@@ -10,7 +10,7 @@ $InstallDir = if ($env:RUNX_INSTALL_DIR) { $env:RUNX_INSTALL_DIR } else { Join-P
 
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
     "AMD64" { "x64" }
-    "ARM64" { "arm64" }
+    "ARM64" { throw "Windows ARM64 release assets are not published yet; use an x64 Windows host." }
     default { throw "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE" }
 }
 
@@ -78,6 +78,8 @@ function Update-UserPath {
 }
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+$staged = $null
+$backup = $null
 New-Item -ItemType Directory -Path $tmp | Out-Null
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
@@ -220,10 +222,35 @@ artifact has been tampered with. Aborting.
         exit 1
     }
 
-    Copy-Item -Path $extracted -Destination (Join-Path $InstallDir "runx.exe") -Force
-    Write-Host "Installed runx to $(Join-Path $InstallDir "runx.exe")"
+    # Copy beside the destination so replacement is atomic on this volume.
+    # A failed copy or version check leaves the existing executable untouched.
+    $staged = Join-Path $InstallDir (".runx-install-" + [System.Guid]::NewGuid().ToString() + ".exe")
+    Copy-Item -Path $extracted -Destination $staged
+    $reportedVersion = (& $staged --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $reportedVersion.StartsWith("runx ")) {
+        throw "Downloaded runx binary failed its --version check."
+    }
+    if ($Version -ne "latest" -and $reportedVersion -ne "runx $($Version.TrimStart('v'))") {
+        throw "Downloaded binary reports $reportedVersion, expected runx $($Version.TrimStart('v'))."
+    }
+
+    $destination = Join-Path $InstallDir "runx.exe"
+    if (Test-Path -Path $destination -PathType Container) {
+        throw "$destination is a directory; cannot install the binary."
+    }
+    if (Test-Path -Path $destination) {
+        $backup = Join-Path $InstallDir (".runx-backup-" + [System.Guid]::NewGuid().ToString() + ".exe")
+        [System.IO.File]::Replace($staged, $destination, $backup)
+    } else {
+        [System.IO.File]::Move($staged, $destination)
+    }
+    $staged = $null
+    Write-Host "Installed runx to $destination"
+    Write-Host $reportedVersion
     Update-UserPath -PathToAdd $InstallDir
 }
 finally {
+    if ($staged -and (Test-Path $staged)) { Remove-Item -Force $staged }
+    if ($backup -and (Test-Path $backup)) { Remove-Item -Force $backup }
     Remove-Item -Recurse -Force $tmp
 }
