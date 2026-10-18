@@ -29,7 +29,15 @@ fi
 url="${base_url}/${asset}"
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+staged=""
+cleanup() {
+  rm -rf "$tmp"
+  if [ -n "$staged" ]; then rm -f "$staged"; fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ---------------------------------------------------------------------------
 # SHA-256 checksum verification
@@ -200,9 +208,32 @@ if [ ! -f "$tmp/runx" ]; then
   exit 1
 fi
 
-install -m 0755 "$tmp/runx" "$INSTALL_DIR/runx"
+# Stage in the destination directory, so the final rename stays on one
+# filesystem. An interrupted copy or failed version check leaves an existing
+# installation intact.
+staged="$(mktemp "$INSTALL_DIR/.runx-install.XXXXXX")"
+install -m 0755 "$tmp/runx" "$staged"
+reported_version="$("$staged" --version)" || {
+  echo "Error: downloaded runx binary failed its --version check." >&2
+  exit 1
+}
+case "$reported_version" in
+  "runx "*) ;;
+  *) echo "Error: downloaded binary did not identify itself as runx." >&2; exit 1 ;;
+esac
+if [ "$VERSION" != "latest" ] && [ "$reported_version" != "runx ${VERSION#v}" ]; then
+  echo "Error: downloaded binary reports $reported_version, expected runx ${VERSION#v}." >&2
+  exit 1
+fi
+if [ -d "$INSTALL_DIR/runx" ]; then
+  echo "Error: $INSTALL_DIR/runx is a directory; cannot install the binary." >&2
+  exit 1
+fi
+mv -f "$staged" "$INSTALL_DIR/runx"
+staged=""
 
 echo "Installed runx to $INSTALL_DIR/runx"
+echo "$reported_version"
 
 # Add the install directory only with the user's permission.  In particular,
 # an installer invoked as `curl ... | sh` must not wait for input that cannot

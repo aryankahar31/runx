@@ -96,6 +96,7 @@ iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 | iex
 ```
 
 Both scripts verify the downloaded binary against its published SHA-256 checksum before installing — see [Security](#security).
+The macOS/Linux installer needs `curl`, `tar`, and a SHA-256 tool (`sha256sum`, `shasum`, or `openssl`). Windows PowerShell uses `Invoke-WebRequest`, `Get-FileHash`, and `Expand-Archive`. Both installers check the downloaded binary's `--version` output before replacing an existing installation. If a download, extraction, or version check fails, or an install is interrupted, rerun the installer; an interruption before replacement leaves the previous binary in place. The scripts print PATH instructions when automatic setup is unavailable.
 
 Initialize a project:
 
