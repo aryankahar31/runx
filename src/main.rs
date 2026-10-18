@@ -532,6 +532,21 @@ fn provision(
 
         let mut spec = runtime::resolve_runtime(&entry.tool, &version)
             .with_context(|| format!("Failed to resolve runtime {} {version}", entry.tool))?;
+        if entry.pinned_sha256.is_some() {
+            let recorded_url = lockfile
+                .as_ref()
+                .and_then(|lock| lock.get(&entry.tool))
+                .and_then(|runtime| runtime.artifacts.get(&lock::current_platform()))
+                .map(|artifact| artifact.url.as_str());
+            if recorded_url != Some(spec.url.as_str()) {
+                return Err(error::UserError::new(format!(
+                    "runx.lock records a different artifact URL for {} {} on this platform. \
+                     Run `runx lock` to regenerate it.",
+                    entry.tool, version
+                ))
+                .into());
+            }
+        }
         // A recorded artifact makes the digest itself the integrity
         // constraint: verify against the bytes the lockfile captured rather
         // than whatever the vendor's checksum document lists right now, so a

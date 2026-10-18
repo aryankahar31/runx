@@ -1903,6 +1903,32 @@ fn locked_node_fixture() -> (
 }
 
 #[test]
+fn matching_lock_runs_offline_but_inconsistent_url_fails() {
+    use runx::lock;
+
+    let (project, home, _, _) = locked_node_fixture();
+    let matching = runx_with_home(project.path(), home.path(), &["--offline", "run", "check"]);
+    assert_eq!(matching.status.code(), Some(0), "{}", stderr_of(&matching));
+    assert!(stdout_of(&matching).contains("LOCKED_CHILD_RAN"));
+
+    let mut lockfile = lock::Lockfile::load(project.path()).unwrap().unwrap();
+    lockfile
+        .runtimes
+        .get_mut("node")
+        .unwrap()
+        .artifacts
+        .get_mut(&lock::current_platform())
+        .unwrap()
+        .url = "https://example.invalid/different.tar.gz".into();
+    lockfile.save(project.path()).unwrap();
+
+    let mismatched = runx_with_home(project.path(), home.path(), &["--offline", "run", "check"]);
+    assert_eq!(mismatched.status.code(), Some(1));
+    assert!(stderr_of(&mismatched).contains("different artifact URL"));
+    assert!(!stdout_of(&mismatched).contains("LOCKED_CHILD_RAN"));
+}
+
+#[test]
 fn locked_cache_requires_authenticated_bytes_and_metadata() {
     use runx::{cache, downloader, lock};
 
