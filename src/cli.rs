@@ -23,11 +23,11 @@ pub(crate) const RESERVED_COMMANDS: &[&str] = &[
     name = "runx",
     version,
     about = "Universal project launcher with portable runtimes",
-    after_help = "Any other argument is treated as a command key from [run] in runx.toml,\n\
-                  e.g. `runx dev`. If runx.toml is missing, runx auto-detects runtimes\n\
-                  from standard project files (.nvmrc, .node-version, package.json,\n\
-                  .python-version, pyproject.toml).\n\n\
-                  Pass arguments through to the command after `--`, e.g. `runx dev -- --port 3000`.\n\
+    after_help = "Run a command key from [run] in runx.toml, e.g. `runx dev`.\n\
+                  Without runx.toml, package.json scripts can become command keys.\n\
+                  To run an executable directly, first define a [run] key such as\n\
+                  `node_version = \"node --version\"`, then run `runx node_version`.\n\n\
+                  Pass arguments through after `--`, e.g. `runx dev -- --port 3000`.\n\
                   Use `runx run <key>` if a command key collides with a built-in\n\
                   subcommand name."
 )]

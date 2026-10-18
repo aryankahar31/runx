@@ -310,6 +310,35 @@ fn unknown_key_lists_available_commands_and_exits_one() {
     );
 }
 
+#[test]
+fn executable_names_are_explained_as_command_keys() {
+    let dir = tmp();
+    write_config(dir.path(), "dev = \"echo configured\"\n");
+
+    for args in [
+        &["node", "--", "--version"][..],
+        &["npm", "--", "install", "--package-lock-only"][..],
+        &["--quiet", "--", "node", "--version"][..],
+        &["--quiet", "--", "npm", "install", "--package-lock-only"][..],
+    ] {
+        let output = runx(dir.path(), args);
+        assert_ne!(output.status.code(), Some(0), "{args:?}");
+        let stderr = stderr_of(&output);
+        assert!(stderr.contains("command key"), "{args:?}: {stderr}");
+        assert!(!stdout_of(&output).contains("configured"));
+    }
+}
+
+#[test]
+fn help_explains_how_to_run_a_managed_executable() {
+    let dir = tmp();
+    let output = runx(dir.path(), &["--help"]);
+    assert_eq!(output.status.code(), Some(0));
+    let help = stdout_of(&output);
+    assert!(help.contains("node_version"), "{help}");
+    assert!(help.contains("-- --port 3000"), "{help}");
+}
+
 /// The exit status of the underlying command must propagate, or `runx test` in
 /// CI would report success for a failing suite.
 #[test]

@@ -127,7 +127,7 @@ fn dispatch_external(args: Vec<String>, install: bool) -> Result<()> {
 
     if !junk.is_empty() {
         let hint = format!(
-            "Hint: pass arguments after `--`: `runx {key} -- {junk}`",
+            "Hint: `{key}` must be a configured command key. Pass its arguments after `--`: `runx {key} -- {junk}`",
             junk = junk.join(" ")
         );
         return Err(error::UserError::new(format!(
