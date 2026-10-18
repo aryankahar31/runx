@@ -738,7 +738,7 @@ fn auto_detected_bun_missing_deps_prints_hint() {
     fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"tsx":"1.0.0"}}"#,
     )
     .unwrap();
     // No runx.toml - auto-detection infers dev = "bun run dev"
@@ -2092,6 +2092,65 @@ fn locked_cache_rejects_link_mode_and_unreadable_file_changes() {
 
 // ── Missing-dependencies hint ────────────────────────────────────────────────
 
+#[cfg(unix)]
+#[test]
+fn empty_npm_project_has_no_false_hint_after_install() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let node_root = plant_executable(&home, "node", "0.0.0", "exit 0");
+    let npm = node_root.join("bin/npm");
+    fs::write(
+        &npm,
+        "#!/bin/sh\nprintf 'called\\n' >> \"$PWD/npm-calls\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&npm, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"dev":"echo EMPTY_NPM"},"dependencies":{},"devDependencies":{}}"#,
+    )
+    .unwrap();
+    fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n[run]\ndev = \"echo EMPTY_NPM\"\n",
+    )
+    .unwrap();
+
+    let install = runx_with_home(dir.path(), &home, &["install"]);
+    assert_eq!(install.status.code(), Some(0), "{}", stderr_of(&install));
+    assert!(stderr_of(&install).contains("Dependencies installed successfully"));
+
+    for args in [&["dev"][..], &["--install", "dev"][..]] {
+        let output = runx_with_home(dir.path(), &home, args);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+        assert!(stdout_of(&output).contains("EMPTY_NPM"));
+        assert!(!stderr_of(&output).contains("dependencies are not installed"));
+    }
+    assert!(!dir.path().join("node_modules").exists());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("npm-calls"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn empty_bun_project_needs_no_dependency_hint() {
+    let dir = tmp();
+    fs::write(dir.path().join("package.json"), r#"{"scripts":{}}"#).unwrap();
+    fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
+    write_config(dir.path(), "dev = \"echo EMPTY_BUN\"\n");
+
+    let output = runx(dir.path(), &["dev"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!stderr_of(&output).contains("dependencies are not installed"));
+}
+
 /// When a command fails and the project has package.json + a lockfile but no
 /// node_modules, stderr must hint at `bun install`.
 #[cfg(unix)]
@@ -2103,7 +2162,7 @@ fn failed_command_with_missing_node_modules_suggests_bun_install() {
     // Package with bun.lock but no node_modules.
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
@@ -2137,7 +2196,7 @@ fn auto_detected_bun_missing_deps_nested_failure_prints_hint() {
     fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"tsx server.ts"}}"#,
+        r#"{"scripts":{"dev":"tsx server.ts"},"devDependencies":{"tsx":"1.0.0"}}"#,
     )
     .unwrap();
     // No runx.toml - auto-detection infers dev = "bun run dev"
@@ -2160,7 +2219,7 @@ fn failed_command_with_missing_node_modules_suggests_npm_install() {
     plant_executable(&home, "node", "0.0.0", "exit 1");
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
@@ -2188,7 +2247,7 @@ fn failed_command_with_missing_node_modules_suggests_bun_install_from_lockb() {
     plant_executable(&home, "node", "0.0.0", "exit 1");
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(dir.path().join("bun.lockb"), "{}\n").unwrap();
@@ -2216,7 +2275,7 @@ fn failed_command_with_missing_node_modules_suggests_yarn_install() {
     plant_executable(&home, "node", "0.0.0", "exit 1");
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(dir.path().join("yarn.lock"), "# yarn lockfile\n").unwrap();
@@ -2244,7 +2303,7 @@ fn failed_command_with_missing_node_modules_suggests_pnpm_install() {
     plant_executable(&home, "node", "0.0.0", "exit 1");
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(
@@ -2276,7 +2335,7 @@ fn failed_command_with_missing_node_modules_fallbacks_to_npm() {
     plant_executable(&home, "node", "0.0.0", "exit 1");
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(
@@ -2302,7 +2361,7 @@ fn failed_command_with_node_modules_does_not_hint() {
     fs::create_dir_all(&home).unwrap();
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
@@ -2346,7 +2405,7 @@ fn missing_deps_bun_lock_shows_hint_before_execution() {
     fs::create_dir_all(&home).unwrap();
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
@@ -2373,7 +2432,7 @@ fn missing_deps_npm_lock_shows_hint_before_execution() {
     fs::create_dir_all(&home).unwrap();
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
@@ -2396,7 +2455,7 @@ fn missing_deps_pnpm_lock_shows_hint_before_execution() {
     fs::create_dir_all(&home).unwrap();
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(
@@ -2423,7 +2482,7 @@ fn missing_deps_yarn_lock_shows_hint_before_execution() {
     fs::create_dir_all(&home).unwrap();
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(dir.path().join("yarn.lock"), "# yarn lockfile\n").unwrap();
@@ -2446,7 +2505,7 @@ fn missing_deps_no_lockfile_falls_back_to_npm() {
     fs::create_dir_all(&home).unwrap();
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(config_path(dir.path()), "[run]\ndev = \"exit 1\"\n").unwrap();
@@ -2469,7 +2528,7 @@ fn deps_present_command_fails_does_not_hint() {
     fs::create_dir_all(dir.path().join("node_modules")).unwrap();
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"exit 1"}}"#,
+        r#"{"scripts":{"dev":"exit 1"},"devDependencies":{"left-pad":"1.3.0"}}"#,
     )
     .unwrap();
     fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
@@ -2491,7 +2550,11 @@ fn missing_deps_preserves_exit_code() {
     let dir = tmp();
     let home = dir.path().join("home");
     fs::create_dir_all(&home).unwrap();
-    fs::write(dir.path().join("package.json"), "{}").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"dependencies":{"left-pad":"1.3.0"}}"#,
+    )
+    .unwrap();
     fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
     fs::write(config_path(dir.path()), "[run]\ndev = \"exit 42\"\n").unwrap();
 
@@ -2518,7 +2581,11 @@ fn missing_deps_command_succeeds_still_hints() {
     let dir = tmp();
     let home = dir.path().join("home");
     fs::create_dir_all(&home).unwrap();
-    fs::write(dir.path().join("package.json"), "{}").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"dependencies":{"left-pad":"1.3.0"}}"#,
+    )
+    .unwrap();
     fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
     fs::write(config_path(dir.path()), "[run]\ndev = \"echo ok\"\n").unwrap();
 
@@ -2545,7 +2612,7 @@ fn missing_deps_bun_exits_zero_still_hints() {
     fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
     fs::write(
         dir.path().join("package.json"),
-        r#"{"scripts":{"dev":"tsx server.ts"}}"#,
+        r#"{"scripts":{"dev":"tsx server.ts"},"devDependencies":{"tsx":"1.0.0"}}"#,
     )
     .unwrap();
 
@@ -2699,7 +2766,11 @@ fn runx_dev_without_install_flag_does_not_install_deps() {
     let home = dir.path().join("home");
     let project = dir.path().join("project");
     fs::create_dir_all(&project).unwrap();
-    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        project.join("package.json"),
+        r#"{"dependencies":{"left-pad":"1.3.0"}}"#,
+    )
+    .unwrap();
     fs::write(project.join("package-lock.json"), "{}").unwrap();
     // No node_modules → deps are missing.
     fs::write(
@@ -3731,7 +3802,11 @@ fn missing_deps_bun_lockfile_shows_bun_install_hint() {
     let home = dir.path().join("home");
     fs::create_dir_all(&home).unwrap();
     fs::write(dir.path().join("bun.lock"), "{}\n").unwrap();
-    fs::write(dir.path().join("package.json"), "{}").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"dependencies":{"left-pad":"1.3.0"}}"#,
+    )
+    .unwrap();
     fs::write(config_path(dir.path()), "[run]\ndev = \"echo hi\"\n").unwrap();
 
     let output = runx_with_home(dir.path(), &home, &["dev"]);
@@ -4177,7 +4252,11 @@ fn runx_dev_without_install_flag_does_not_install_pnpm_deps() {
     let project = dir.path().join("project");
     fs::create_dir_all(&project).unwrap();
     fs::write(project.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
-    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        project.join("package.json"),
+        r#"{"dependencies":{"left-pad":"1.3.0"}}"#,
+    )
+    .unwrap();
     // No node_modules -> deps are missing.
     fs::write(
         config_path(&project),
@@ -4216,7 +4295,11 @@ fn missing_deps_pnpm_lockfile_shows_pnpm_install_hint() {
         "lockfileVersion: '9.0'\n",
     )
     .unwrap();
-    fs::write(dir.path().join("package.json"), "{}").unwrap();
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"dependencies":{"left-pad":"1.3.0"}}"#,
+    )
+    .unwrap();
     fs::write(config_path(dir.path()), "[run]\ndev = \"echo hi\"\n").unwrap();
 
     let output = runx_with_home(dir.path(), &home, &["dev"]);
