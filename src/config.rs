@@ -78,7 +78,10 @@ impl RunxConfig {
         self.run.get(key).map(String::as_str).ok_or_else(|| {
             let available = self.run.keys().cloned().collect::<Vec<_>>().join(", ");
             UserError::new(format!(
-                "No run command named `{key}` found in runx.toml.\nAvailable commands: {available}"
+                "No run command key named `{key}`.\n\
+                 Runx runs [run] keys (or inferred package.json scripts), not executable names.\n\
+                 Available command keys: {available}\n\
+                 Hint: add the command under [run] in runx.toml, then run `runx <key> -- <args>`."
             ))
             .into()
         })

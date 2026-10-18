@@ -282,6 +282,19 @@ runx --offline dev    # block runx network operations, not child networking
 runx --install dev    # install project dependencies before running the command
 ```
 
+The word after `runx` is a configured command key, not an executable name. To run an executable with the project's managed runtime, define it in `runx.toml`:
+
+```toml
+[runtimes]
+node = "20.11.0"
+
+[run]
+node_version = "node --version"
+npm_lock = "npm install --package-lock-only"
+```
+
+Then run `runx node_version` or `runx npm_lock`. Arguments after `--` are appended to the configured command: `runx dev -- --port 3000`. For a key that matches a built-in command, use `runx run <key> -- <args>`. Global flags go before the key, for example `runx --quiet node_version`.
+
 ### Dependency installation
 
 `runx install` detects the project's package manager and installs dependencies using the runx-managed runtime. Supported managers:
