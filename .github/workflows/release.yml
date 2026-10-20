@@ -153,21 +153,21 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
       - name: Upload packaged asset
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
           if-no-files-found: error
 
       - name: Upload checksum file
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}.sha256
           path: dist/${{ matrix.artifact }}.sha256
           if-no-files-found: error
 
       - name: Upload signature bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}.sigstore.json
           path: dist/${{ matrix.artifact }}.sigstore.json
