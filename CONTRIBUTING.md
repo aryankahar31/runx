@@ -24,6 +24,22 @@ integration suite alone:
 cargo test --test cli_integration <name-filter>
 ```
 
+## Coverage
+
+CI runs `cargo-llvm-cov` on Linux and fails the build below **85% line
+coverage** (the measured baseline at the time the gate was added is ~89.5%).
+The lcov report is uploaded as the `coverage-lcov` artifact on every run.
+
+To reproduce locally (requires [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov)
+and the `llvm-tools-preview` component):
+
+```bash
+cargo install cargo-llvm-cov
+rustup component add llvm-tools-preview
+cargo llvm-cov --summary-only                  # terminal summary
+cargo llvm-cov --lcov --output-path lcov.info  # full per-line lcov report
+```
+
 ## Workflow: branch → PR → CI → merge
 
 1. Branch from `main` using a scoped name (`feat/…`, `fix/…`, `docs/…`,

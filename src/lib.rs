@@ -2,6 +2,7 @@
 // modules without duplicating code.  The binary entry point remains `main.rs`.
 
 pub mod cache;
+pub mod cli_cache;
 pub mod config;
 pub mod dep;
 pub mod detect;
