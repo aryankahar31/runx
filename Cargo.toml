@@ -2,6 +2,9 @@
 name = "runx"
 version = "0.6.0"
 edition = "2021"
+# zip 9.x requires 1.88; declared so older toolchains get a clear cargo error
+# instead of a cryptic dependency compile failure. Documented in README/CONTRIBUTING.
+rust-version = "1.88"
 license = "MIT"
 description = "A universal project launcher with local runtime caching"
 

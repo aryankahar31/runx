@@ -8,6 +8,9 @@ on:
     branches:
       - main
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   test:
     name: Test (${{ matrix.os }})
@@ -90,3 +93,34 @@ jobs:
           finally {
               Pop-Location
           }
+
+  # Line/region coverage on Linux only: the unit+integration suite is
+  # platform-independent for coverage purposes, and Windows/macOS already run
+  # the full test job above. The threshold is set from the measured baseline
+  # (~89.5% lines at the time this job was added) with headroom so routine
+  # platform-specific branches cannot flap the gate.
+  coverage:
+    name: Coverage (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage report
+        run: cargo llvm-cov --lcov --output-path lcov.info --fail-under-lines=85
+
+      - name: Upload lcov artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: warn
