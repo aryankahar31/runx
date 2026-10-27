@@ -55,8 +55,31 @@ impl RuntimeSpec {
 }
 
 pub fn resolve_runtime(tool: &str, version: &str) -> Result<RuntimeSpec> {
+    resolve_runtime_inner(tool, version, None)
+}
+
+/// Resolve a lockfile artifact without consulting a release index. The URL is
+/// accepted only when it names the expected vendor and host-platform archive;
+/// the lockfile digest then authenticates the bytes on download.
+pub fn resolve_locked_runtime(
+    tool: &str,
+    version: &str,
+    url: &str,
+    sha256: &str,
+) -> Result<RuntimeSpec> {
+    if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(UserError::new("Invalid SHA-256 in runx.lock.").into());
+    }
+    resolve_runtime_inner(tool, version, Some((url, sha256)))
+}
+
+fn resolve_runtime_inner(
+    tool: &str,
+    version: &str,
+    locked: Option<(&str, &str)>,
+) -> Result<RuntimeSpec> {
     // Single security chokepoint. Every install path — explicit `runx.toml` and
-    // auto-detection alike — reaches the filesystem and network through here,
+    // auto-detection and lockfile alike — reaches the filesystem and network through here,
     // so the version string is validated once, at the point where it is about
     // to be interpolated into `~/.runx/runtimes/<tool>/<version>` (which gets
     // `remove_dir_all`'d on reinstall) and into the release download URL.
@@ -71,7 +94,88 @@ pub fn resolve_runtime(tool: &str, version: &str) -> Result<RuntimeSpec> {
             supported_list()
         ))
     })?;
-    (def.spec)(version)
+    let mut spec = match locked {
+        Some((url, _)) if tool == "python" => resolve_locked_python(version, url)?,
+        Some((url, _)) if tool == "go" => resolve_locked_go(version, url)?,
+        Some((url, _)) => {
+            let spec = (def.spec)(version)?;
+            if spec.url != url {
+                return Err(UserError::new(format!(
+                    "runx.lock records a different artifact URL for {tool} {version} on this platform. \
+                     Run `runx lock` to regenerate it."
+                ))
+                .into());
+            }
+            spec
+        }
+        None => (def.spec)(version)?,
+    };
+    if let Some((_, sha256)) = locked {
+        spec.pin_digest(sha256);
+    }
+    Ok(spec)
+}
+
+fn resolve_locked_python(version: &str, url: &str) -> Result<RuntimeSpec> {
+    let platform = python_platform()?;
+    let prefix = "https://github.com/astral-sh/python-build-standalone/releases/download/";
+    let valid = url.strip_prefix(prefix).is_some_and(|path| {
+        let Some((tag, filename)) = path.split_once('/') else {
+            return false;
+        };
+        let filename = filename.replace("%2B", "+").replace("%2b", "+");
+        !tag.is_empty()
+            && tag
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b".-_".contains(&byte))
+            && filename
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b".-_+".contains(&byte))
+            && filename.starts_with(&format!("cpython-{version}+"))
+            && filename.ends_with(&format!("-{platform}-install_only.tar.gz"))
+    });
+    if !valid {
+        return Err(UserError::new(format!(
+            "runx.lock records an unexpected Python artifact URL for {version} on {platform}."
+        ))
+        .into());
+    }
+    Ok(RuntimeSpec {
+        tool: "python".to_string(),
+        version: version.to_string(),
+        url: url.to_string(),
+        checksum_url: String::new(),
+        expected_sha256: None,
+        archive_kind: ArchiveKind::TarGz,
+        executable: executable_name("python"),
+        bin_dirs: python_bin_dirs(),
+    })
+}
+
+fn resolve_locked_go(version: &str, url: &str) -> Result<RuntimeSpec> {
+    let (platform, kind) = go_platform()?;
+    let extension = match kind {
+        ArchiveKind::Zip => "zip",
+        ArchiveKind::TarGz => "tar.gz",
+        ArchiveKind::TarXz => unreachable!(),
+    };
+    let expected = format!("https://go.dev/dl/go{version}.{platform}.{extension}");
+    if url != expected {
+        return Err(UserError::new(format!(
+            "runx.lock records an unexpected Go artifact URL for {version} on {platform}."
+        ))
+        .into());
+    }
+    Ok(RuntimeSpec {
+        tool: "go".to_string(),
+        version: version.to_string(),
+        url: url.to_string(),
+        checksum_url: String::new(),
+        expected_sha256: None,
+        archive_kind: kind,
+        executable: executable_name("go"),
+        bin_dirs: vec![PathBuf::from("bin")],
+    })
 }
 
 /// One entry of the static runtime registry: everything that varies per
@@ -764,6 +868,47 @@ mod tests {
         thread,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn locked_python_and_go_resolve_without_release_metadata() {
+        let digest = "a".repeat(64);
+        let python_url = format!(
+            "https://github.com/astral-sh/python-build-standalone/releases/download/20240107/\
+             cpython-3.12.3+20240107-{}-install_only.tar.gz",
+            python_platform().unwrap()
+        );
+        let python = resolve_locked_runtime("python", "3.12.3", &python_url, &digest).unwrap();
+        assert_eq!(python.url, python_url);
+        assert_eq!(python.expected_sha256.as_deref(), Some(digest.as_str()));
+        assert!(python.checksum_url.is_empty());
+
+        let (platform, kind) = go_platform().unwrap();
+        let extension = if kind == ArchiveKind::Zip {
+            "zip"
+        } else {
+            "tar.gz"
+        };
+        let go_url = format!("https://go.dev/dl/go1.22.5.{platform}.{extension}");
+        let go = resolve_locked_runtime("go", "1.22.5", &go_url, &digest).unwrap();
+        assert_eq!(go.url, go_url);
+        assert_eq!(go.expected_sha256.as_deref(), Some(digest.as_str()));
+    }
+
+    #[test]
+    fn locked_resolution_rejects_foreign_urls_and_traversal_versions() {
+        let digest = "a".repeat(64);
+        for tool in ["python", "go", "node"] {
+            assert!(
+                resolve_locked_runtime(tool, "../../../tmp", "https://go.dev/dl/x", &digest)
+                    .is_err()
+            );
+            assert!(
+                resolve_locked_runtime(tool, "20.11.0", "https://example.invalid/x", &digest)
+                    .is_err()
+            );
+        }
+        assert!(resolve_locked_runtime("node", "20.11.0", "https://nodejs.org", "bad").is_err());
+    }
 
     // ── Runtime registry table ───────────────────────────────────────────────
 

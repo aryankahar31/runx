@@ -151,6 +151,46 @@ impl Lockfile {
             .into());
         }
 
+        for (tool, entry) in &lock.runtimes {
+            if let Err(reason) = crate::version::validate_concrete(tool, &entry.version) {
+                return Err(UserError::new(format!(
+                    "Invalid version `{}` for `{tool}` in {}: {reason}. Run `runx lock` to regenerate it.",
+                    entry.version,
+                    path.display()
+                ))
+                .into());
+            }
+            let concrete = crate::version::Version::parse(&entry.version)
+                .expect("validate_concrete accepted this version");
+            if !entry.requirement.is_empty() {
+                let requirement = crate::version::Req::parse(&entry.requirement);
+                if !requirement
+                    .as_ref()
+                    .is_some_and(|req| req.matches(&concrete))
+                {
+                    return Err(UserError::new(format!(
+                        "{path} pins {tool} {} outside its recorded requirement `{}`. \
+                         Run `runx lock` to regenerate it.",
+                        entry.version,
+                        entry.requirement,
+                        path = path.display()
+                    ))
+                    .into());
+                }
+            }
+            for (platform, artifact) in &entry.artifacts {
+                if artifact.sha256.len() != 64
+                    || !artifact.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return Err(UserError::new(format!(
+                        "Invalid SHA-256 for {tool} on {platform} in {}.",
+                        path.display()
+                    ))
+                    .into());
+                }
+            }
+        }
+
         Ok(Some(lock))
     }
 
@@ -472,6 +512,32 @@ mod tests {
             Lockfile::load(dir.path()).is_err(),
             "a corrupt lockfile must be reported, not silently ignored"
         );
+    }
+
+    #[test]
+    fn rejects_inconsistent_or_unsafe_lock_entries() {
+        for (case, change, expected) in [
+            ("invalid version", 0, "Invalid version"),
+            (
+                "version outside requirement",
+                1,
+                "outside its recorded requirement",
+            ),
+            ("invalid digest", 2, "Invalid SHA-256"),
+        ] {
+            let dir = tmp();
+            let mut lock = locked();
+            let entry = lock.runtimes.get_mut("node").unwrap();
+            match change {
+                0 => entry.version = "../../../tmp".into(),
+                1 => entry.version = "22.0.0".into(),
+                2 => entry.artifacts.get_mut(&current_platform()).unwrap().sha256 = "bad".into(),
+                _ => unreachable!(),
+            }
+            lock.save(dir.path()).unwrap();
+            let err = Lockfile::load(dir.path()).expect_err(case);
+            assert!(format!("{err:#}").contains(expected), "{case}: {err:#}");
+        }
     }
 
     #[test]
