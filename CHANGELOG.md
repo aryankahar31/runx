@@ -6,6 +6,45 @@ tags and each tag's GitHub release notes (`gh release view`). Entries marked
 that release has no notes; every line is verifiable against the linked
 compare view or commit.
 
+## Unreleased
+
+### Fixed
+
+- **A dependency declared in `package.json` but absent from the lockfile is now
+  detected.** This is the state `npm ci` rejects with `EUSAGE`, but
+  `runx install` reported "Dependencies already installed", `runx doctor`
+  reported "installed and up to date", and both exited 0 — because the
+  installed tree was a faithful mirror of a lockfile that was itself stale.
+  `dep_state` now checks the two manifests against each other before comparing
+  the tree, and names the missing package.
+- **`runx doctor` no longer prints "everything looks healthy" above its own
+  warnings.** A project whose dependencies were not installed got a `~` line
+  and a healthy verdict in the same output, while `runx dev` exited 1. Warnings
+  now withhold the verdict, worded "unresolved checks" rather than "cannot run"
+  since some (an absent `runx.lock`) pin nothing but stop nothing. The exit code
+  still reflects cache health only, so doctor's contract as a gate is unchanged.
+- **A `package.json` with no dependencies is no longer reported as having
+  uninstalled ones.** A scripts-only manifest was told to run `npm install` on a
+  directory where `runx dev` already exited 0.
+- **A runx flag after the command key is named as such.** `runx dev --install`
+  advised `runx dev -- --install`, which forwards the flag to the child where it
+  does nothing. It now gives `runx --install dev`, and `--locked` gets
+  `runx run dev --locked`, its only working form.
+- **The missing-dependency warning prints before the command, not after it.** A
+  Node `MODULE_NOT_FOUND` dump is ~20 lines, which pushed the one actionable
+  line off the visible screen.
+- **A 404 on a release archive says the version does not exist.** `runx dev` on
+  `node 99.99.99` reported a raw `status code 404` against a URL.
+- **`runx install` without a lockfile says how to create one.** The hint listed
+  the lockfiles runx accepts but not the command that produces one.
+
+### Documentation
+
+- README records that `--locked` costs seconds rather than milliseconds (~2.1 s
+  versus 133 ms for the same run), since it re-extracts and compares every
+  runtime archive on each invocation. The headline benchmark covers unlocked
+  runs only.
+
 ## v0.6.1 — 2026-11-02
 
 - [fix: address the software testing & UX review (RX-UX-01..08) (#53)](https://github.com/aryankahar31/runx/pull/53)

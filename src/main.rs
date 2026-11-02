@@ -32,6 +32,14 @@ use std::{
 /// via the explicit `runx run <key>` form, and [`warn_about_shadowed_keys`]
 /// points that out rather than leaving the user to guess why `runx cache`
 /// stopped running their script.
+/// runx's global flags, which clap cannot see after an external subcommand key.
+///
+/// `runx dev --install` reaches [`dispatch_external`] as junk, where the
+/// generic "pass it after `--`" hint would send a runx flag to the child.
+/// `--locked` is deliberately absent: it belongs to `run`, not the top level,
+/// so it needs the `runx run <key> --locked` form instead.
+const GLOBAL_FLAGS: &[&str] = &["--install", "--offline", "--json", "--quiet"];
+
 const RESERVED_COMMANDS: &[&str] = &[
     "init",
     "run",
@@ -285,10 +293,22 @@ fn dispatch_external(args: Vec<String>, install: bool) -> Result<()> {
     };
 
     if !junk.is_empty() {
-        let hint = format!(
-            "Hint: pass arguments after `--`: `runx {key} -- {junk}`",
-            junk = junk.join(" ")
-        );
+        // A global flag placed after the key reads as a runx flag the user
+        // expects runx to act on, so `-- --install` is the wrong advice: it
+        // forwards the flag to the child, which silently does nothing.
+        let hint = if let Some(flag) = junk.iter().find(|arg| GLOBAL_FLAGS.contains(&arg.as_str()))
+        {
+            format!(
+                "Hint: `{flag}` is a runx flag, so it goes before the command: `runx {flag} {key}`"
+            )
+        } else if junk.iter().any(|arg| arg == "--locked") {
+            format!("Hint: `--locked` needs the explicit form: `runx run {key} --locked`")
+        } else {
+            format!(
+                "Hint: pass arguments after `--`: `runx {key} -- {junk}`",
+                junk = junk.join(" ")
+            )
+        };
         return Err(error::UserError::new(format!(
             "Unexpected argument{plural} after `{key}`: {junk}\n{hint}",
             plural = if junk.len() == 1 { "" } else { "s" },
@@ -336,7 +356,10 @@ fn init_config() -> Result<()> {
         None => println!("  package manager: none found"),
     }
     if commands.is_empty() {
-        println!("  commands: none inferred; the generated [run] section is an example");
+        // `starter_config_for` omits `[run]` entirely when it infers nothing,
+        // so promising an example section sent users looking for one that the
+        // file does not contain.
+        println!("  commands: none inferred; add a [run] section to define some");
     } else {
         println!(
             "  commands: {}",
@@ -380,11 +403,21 @@ fn install_command() -> Result<()> {
     let (_, project_dir, cfg) = load_project_runtimes_only()?;
     let detections = dep::detect_all(&project_dir);
     if detections.is_empty() {
-        return Err(error::UserError::new(format!(
-            "No supported dependency manager found in {}.\n\
-             Hint: ensure a package-lock.json (Node), yarn.lock (Yarn), pnpm-lock.yaml (pnpm), \
+        // A package.json with no lockfile is the common case here, and it has
+        // a one-command fix. The generic "ensure a lockfile exists" told the
+        // user what was missing but not how to produce it.
+        let hint = if project_dir.join("package.json").is_file() {
+            "Hint: package.json is present but no lockfile is. Run `npm install` \
+             to create package-lock.json, then `runx install` works."
+                .to_string()
+        } else {
+            "Hint: ensure a package-lock.json (Node), yarn.lock (Yarn), pnpm-lock.yaml (pnpm), \
              bun.lock (Bun), pyproject.toml (Python), \
-             go.mod (Go), deno.lock (Deno), or equivalent lockfile exists.",
+             go.mod (Go), deno.lock (Deno), or equivalent lockfile exists."
+                .to_string()
+        };
+        return Err(error::UserError::new(format!(
+            "No supported dependency manager found in {}.\n{hint}",
             project_dir.display()
         ))
         .into());
@@ -438,8 +471,14 @@ fn install_command() -> Result<()> {
             // this tree, so name the condition before the manager's own error
             // scrolls past, and say that nothing has been written yet.
             readiness::DepState::OutOfSync => {
+                // "changed after the last install" was an mtime-era claim runx
+                // no longer measures, and it named the wrong file for the
+                // commoner cause: package.json declaring a dependency the
+                // lockfile never recorded. `install_failure_context` prints the
+                // precise condition after the attempt; this line only has to be
+                // true before it.
                 eprintln!(
-                    "\nLockfile out of sync ({}): {} changed after the last install.\n\
+                    "\nLockfile out of sync ({}): {} and the installed tree disagree.\n\
                      No files have been modified yet.",
                     detection.label,
                     readiness::manifest_path(&detection.manager).display()
@@ -710,6 +749,17 @@ fn provision(
                              mutated upstream or the lockfile is stale",
                             spec.tool, spec.version
                         ))
+                    } else if format!("{err:#}").contains("status code 404") {
+                        // A 404 on a release archive means the version does not
+                        // exist upstream, which a raw "status code 404" leaves
+                        // the user to infer from a URL. Named here because this
+                        // is the only layer that knows the tool and version.
+                        err.context(format!(
+                            "{} {} does not exist upstream (the release archive returned 404).\n\
+                             Check the version in your project files against the vendor's \
+                             release list.",
+                            spec.tool, spec.version
+                        ))
                     } else {
                         err.context(format!("Failed to install {} {}", spec.tool, spec.version))
                     }
@@ -870,26 +920,29 @@ fn run_command(
     // unconditionally when deps are missing — a real JS runtime can exit 0
     // even when the inner command fails, so exit-code gating is unreliable.
     let deps_missing = deps_are_missing(&project_dir, &run_dir);
-
-    let status = executor::execute(&command, &runtimes, &run_dir, &project_dir, passthrough)?;
+    // Printed before the child starts, not after it fails. A Node
+    // MODULE_NOT_FOUND dump is ~20 lines, which pushed the one actionable line
+    // off the visible screen; the state is already known here.
     if deps_missing {
         let install_cmds = detect_install_commands(&project_dir);
         if install_cmds.len() == 1 {
             eprintln!(
-                "\nHint: project dependencies are not installed.\n\
-                 Run `{install_cmd}` in {dir}, then try again.",
+                "Warning: project dependencies are not installed.\n\
+                 Run `{install_cmd}` in {dir} if the command below fails.",
                 install_cmd = install_cmds[0],
                 dir = project_dir.display(),
             );
         } else if !install_cmds.is_empty() {
             eprintln!(
-                "\nHint: project dependencies are not installed.\n\
-                 Run one of the following in {dir}, then try again:\n  {cmds}",
+                "Warning: project dependencies are not installed.\n\
+                 Run one of the following in {dir} if the command below fails:\n  {cmds}",
                 dir = project_dir.display(),
                 cmds = install_cmds.join("\n  ")
             );
         }
     }
+
+    let status = executor::execute(&command, &runtimes, &run_dir, &project_dir, passthrough)?;
     // process::exit doesn't flush stdio; ensure the hint (eprintln!) is visible.
     std::io::stderr().flush().ok();
     process::exit(status.code().unwrap_or(1));
@@ -1241,9 +1294,15 @@ fn doctor_command(verify: bool) -> Result<()> {
             for note in &project_notes {
                 println!("  ~ {note}");
             }
+            // Warnings count here, not just blockers: a warn means a
+            // prerequisite is unmet, and printing "everything looks healthy"
+            // under a ✗ or ~ made `runx doctor` useless as a health gate —
+            // `runx dev` exited 1 on a project doctor had just called healthy.
+            // The exit code still reflects cache health only, so anyone using
+            // doctor as a gate keeps the contract they have.
             not_ready = report
-                .blockers()
-                .iter()
+                .checks()
+                .filter(|check| check.status != readiness::Status::Pass)
                 .map(|check| format!("{}: {}", check.subject, check.detail))
                 .collect();
         }
@@ -1265,14 +1324,17 @@ fn doctor_command(verify: bool) -> Result<()> {
     );
 
     if broken.is_empty() {
-        // Don't claim health while a readiness check above printed a ✗.
+        // Don't claim health while a readiness check above printed a ✗ or ~.
         if not_ready.is_empty() {
             println!("✓ everything looks healthy");
         } else {
+            // "unresolved checks", not "cannot run": a warn may be an absent
+            // runx.lock, which pins nothing but stops nothing. The ✗/~ marks
+            // in the section above already say which are fatal.
             println!(
                 "✓ the runtime cache is healthy\n\
-                 ~ this project is not ready to run: {}\n\
-                   See the project readiness section above for the fix.",
+                 ~ this project has unresolved checks: {}\n\
+                   See the project readiness section above for each fix.",
                 not_ready.join("; ")
             );
         }

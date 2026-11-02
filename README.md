@@ -230,6 +230,12 @@ Headline numbers on warm cache (macOS, Apple silicon, zsh — full method in [do
 
 Because runx adds no shell hook, prompts without `runx` pay nothing at all.
 
+`--locked` is the exception: it re-extracts each runtime's archive and compares
+it against the cached tree on every run, which costs **seconds, not
+milliseconds** (measured ~2.1 s for one runtime where the same run without
+`--locked` took 133 ms). That is the point of the flag — it trusts no cache
+receipt — so it suits CI and release builds rather than an edit-run loop.
+
 **[View full benchmark methodology →](docs/benchmarks.md)**
 
 ## Architecture

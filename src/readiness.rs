@@ -124,6 +124,13 @@ pub fn dep_state(project_dir: &Path, manager: &dep::DepManager) -> DepState {
     if !dep::deps_present(project_dir, manager) {
         return DepState::Missing;
     }
+    // package.json declaring a dependency the lockfile never recorded is the
+    // condition `npm ci` rejects with EUSAGE, so the tree cannot satisfy the
+    // project however complete it looks. Checked first: the installed tree can
+    // be a perfect mirror of a lockfile that is itself out of date.
+    if manifests_out_of_sync(project_dir, manager).is_some() {
+        return DepState::OutOfSync;
+    }
     match lockfile_satisfied(project_dir, manager) {
         // Proven incomplete: something the lockfile requires is not installed.
         Some(false) => DepState::OutOfSync,
@@ -249,9 +256,20 @@ pub fn dependency_checks(project_dir: &Path) -> Vec<Check> {
     // dependencies were missing — two different answers on one run.
     if detections.is_empty() && project_dir.join("package.json").is_file() {
         let subject = "dependencies (npm, no lockfile)".to_string();
+        // A package.json with only scripts declares nothing to install, so the
+        // project runs as-is. Reporting it as a problem told users to run
+        // `npm install` on a directory where `runx dev` already exits 0.
+        if !package_json_declares_dependencies(project_dir) {
+            return vec![Check::pass(subject, "none declared by package.json")];
+        }
         return vec![if project_dir.join("node_modules").is_dir() {
             Check::pass(subject, "installed")
         } else {
+            // Warn, not fail: `Fail` is what blocks an `--offline` run, and a
+            // lockfile-less project may run fine without its declared
+            // dependencies (a script that never imports them). The command is
+            // allowed to decide. `runx doctor` still withholds its healthy
+            // verdict on a warn, so the inconsistency this came from is gone.
             Check::warn(
                 subject,
                 "package.json declares dependencies but none are installed",
@@ -266,9 +284,11 @@ pub fn dependency_checks(project_dir: &Path) -> Vec<Check> {
             let subject = format!("dependencies ({})", detection.label);
             match dep_state(project_dir, &detection.manager) {
                 DepState::Installed => Check::pass(subject, "installed and up to date"),
-                DepState::OutOfSync => Check::warn(
+                // Fail, not warn: `npm ci` refuses this tree, so `runx install`
+                // and any command needing the missing package will not work.
+                DepState::OutOfSync => Check::fail(
                     subject,
-                    "installed, but the lockfile requires packages that are not in node_modules",
+                    out_of_sync_detail(project_dir, &detection.manager),
                     repair_command(&detection.manager),
                 ),
                 // `runx install` is the right fix here: nothing is installed,
@@ -636,6 +656,45 @@ fn manifests_out_of_sync(project_dir: &Path, manager: &dep::DepManager) -> Optio
         None
     } else {
         Some(missing)
+    }
+}
+
+/// Whether `package.json` names any dependency at all.
+///
+/// Unreadable or unparseable counts as "declares none": the file is npm's
+/// problem to report, and guessing a dependency state from a broken manifest
+/// would be worse than staying quiet.
+fn package_json_declares_dependencies(project_dir: &Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(project_dir.join("package.json")) else {
+        return false;
+    };
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    ["dependencies", "devDependencies", "optionalDependencies"]
+        .iter()
+        .any(|field| {
+            manifest
+                .get(field)
+                .and_then(|value| value.as_object())
+                .is_some_and(|table| !table.is_empty())
+        })
+}
+
+/// Why this tree is out of sync, naming whichever of the two causes applies.
+///
+/// `OutOfSync` covers a lockfile that omits a declared dependency and a tree
+/// missing something the lockfile requires. They need different commands, so
+/// the detail has to say which one was found rather than describe both.
+fn out_of_sync_detail(project_dir: &Path, manager: &dep::DepManager) -> String {
+    match manifests_out_of_sync(project_dir, manager) {
+        Some(missing) => format!(
+            "package.json and the lockfile are out of sync — {} declared but absent from it",
+            describe_missing(&missing)
+        ),
+        None => {
+            "installed, but the lockfile requires packages that are not in node_modules".to_string()
+        }
     }
 }
 
@@ -1014,13 +1073,90 @@ mod tests {
             .iter()
             .find(|check| check.subject.contains("npm"))
             .expect("npm must be detected");
-        assert_eq!(npm.status, Status::Warn);
+        // Fail, not warn: `npm ci` refuses this tree, so the project does not
+        // run until it is fixed, and a warn let doctor still print
+        // "everything looks healthy".
+        assert_eq!(npm.status, Status::Fail);
         assert_eq!(npm.fix.as_deref(), Some("npm install"));
         assert!(
             npm.detail.contains("not in node_modules"),
             "must name the condition, got: {}",
             npm.detail
         );
+    }
+
+    /// The v0.6.1 gap found by using the released binary: a package.json
+    /// declaring a dependency the lockfile never recorded is the EUSAGE state
+    /// `npm ci` refuses, but every runx surface called it installed because
+    /// the tree was a perfect mirror of the stale lockfile.
+    #[test]
+    fn a_dependency_missing_from_the_lockfile_is_out_of_sync() {
+        let dir = tmp();
+        let manager = npm_project(dir.path());
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"dependencies":{"express":"^4.19.2","is-odd":"3.0.1"}}"#,
+        )
+        .unwrap();
+        // The lockfile predates the is-odd edit, and node_modules matches it
+        // exactly — so `lockfile_satisfied` alone sees nothing wrong.
+        write_lockfile(dir.path(), &["express"]);
+        write_installed_manifest(dir.path(), &["express"]);
+
+        assert_eq!(
+            dep_state(dir.path(), &manager),
+            DepState::OutOfSync,
+            "is-odd is declared but absent from the lockfile"
+        );
+        let checks = dependency_checks(dir.path());
+        let npm = checks
+            .iter()
+            .find(|check| check.subject.contains("npm"))
+            .expect("npm must be detected");
+        assert_eq!(npm.status, Status::Fail);
+        assert!(
+            npm.detail.contains("out of sync") && npm.detail.contains("is-odd"),
+            "the detail must name the condition and the package, got: {}",
+            npm.detail
+        );
+    }
+
+    /// A package.json with only scripts declares nothing to install, so it is
+    /// ready. Reporting it as a problem told users to run `npm install` on a
+    /// directory where `runx dev` already exits 0.
+    #[test]
+    fn a_package_json_without_dependencies_is_ready() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"p","scripts":{"dev":"node -e 0"}}"#,
+        )
+        .unwrap();
+
+        let checks = dependency_checks(dir.path());
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, Status::Pass, "{:?}", checks[0]);
+    }
+
+    /// Declared dependencies with nothing installed warn rather than fail.
+    ///
+    /// `Fail` is what blocks an `--offline` run, and a lockfile-less project
+    /// may run fine without its declared dependencies — a script that never
+    /// imports them. Pinned because raising this to `Fail` broke exactly that
+    /// case: a passing `--offline` run started exiting 1.
+    #[test]
+    fn declared_dependencies_with_no_node_modules_warn_but_do_not_block() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"dependencies":{"express":"^4.19.2"}}"#,
+        )
+        .unwrap();
+
+        let checks = dependency_checks(dir.path());
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, Status::Warn, "{:?}", checks[0]);
+        assert_eq!(checks[0].fix.as_deref(), Some("npm install"));
     }
 
     /// A project with no manifest is "nothing to install", not a failure.
