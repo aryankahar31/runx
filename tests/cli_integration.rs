@@ -4896,3 +4896,607 @@ fn run_key_on_config_without_run_section_says_so() {
         "should point at init:\n{stderr}"
     );
 }
+
+// ── UX report: T-01..T-12 and RX-UX-01..08 ───────────────────────────────────
+//
+// Automated cases from section 5 of the testing/UX review. Each test names the
+// case it pins. T-01/T-02 (fresh vs warm cache) need a real download and stay
+// manual; everything else runs offline against planted fixtures.
+
+/// A project with an npm lockfile and a `dev` command, plus a planted runtime.
+///
+/// Returns `(project_dir, home)`. The runtime is a real executable on unix so
+/// the command can run; on Windows the fake is a `.cmd`-free stub that is only
+/// inspected, never executed, by the tests that use it.
+fn ux_project(dir: &Path, command: &str) -> std::path::PathBuf {
+    let home = dir.join("home");
+    fs::write(
+        dir.join("package.json"),
+        r#"{"name":"p","version":"1.0.0","scripts":{"dev":"echo hi"}}"#,
+    )
+    .expect("write package.json");
+    fs::write(dir.join("package-lock.json"), r#"{"lockfileVersion":3}"#)
+        .expect("write package-lock.json");
+    fs::write(
+        config_path(dir),
+        format!("[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"{command}\"\n"),
+    )
+    .expect("write runx.toml");
+    home
+}
+
+/// Mark dependencies installed by making `node_modules` newer than the lock.
+fn mark_deps_installed(dir: &Path) {
+    let nm = dir.join("node_modules");
+    fs::create_dir_all(&nm).expect("create node_modules");
+    // mtime resolution is coarse on some filesystems; rewrite the lockfile
+    // first so node_modules is unambiguously newer.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(nm.join(".marker"), "x").expect("touch node_modules");
+    let _ = fs::File::open(&nm);
+}
+
+/// T-03: a missing dependency tree is reported as such, with a recovery
+/// command, rather than as a generic failure.
+#[test]
+fn t03_missing_dependencies_are_named_with_a_recovery_command() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+
+    let output = runx_with_home(dir.path(), &home, &["--offline", "dev"]);
+    let combined = format!("{}{}", stderr_of(&output), stdout_of(&output));
+    assert!(
+        combined.contains("dependencies (npm)"),
+        "the dependency state must be named:\n{combined}"
+    );
+    assert!(
+        combined.contains("not installed"),
+        "the exact condition must be stated:\n{combined}"
+    );
+    assert!(
+        combined.contains("runx install"),
+        "a recovery command must be offered:\n{combined}"
+    );
+}
+
+/// T-04 / RX-UX-01: an out-of-sync lockfile is distinguished from a missing
+/// one, and recommends `npm install` — `npm ci`, which runx runs, is the
+/// command that refuses this state.
+#[test]
+fn t04_out_of_sync_lockfile_is_distinguished_from_missing_deps() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+    mark_deps_installed(dir.path());
+    // Edit the lockfile after the install, so the tree is stale rather than absent.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(
+        dir.path().join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{}}"#,
+    )
+    .expect("rewrite lockfile");
+
+    let output = runx_with_home(dir.path(), &home, &["--offline", "dev"]);
+    let combined = format!("{}{}", stderr_of(&output), stdout_of(&output));
+    assert!(
+        combined.contains("lockfile changed"),
+        "an out-of-sync tree must say so, not just 'not installed':\n{combined}"
+    );
+    assert!(
+        combined.contains("npm install"),
+        "npm ci refuses this state; npm install is the repair:\n{combined}"
+    );
+}
+
+/// T-05 / RX-UX-03: with every prerequisite present, an offline run executes
+/// the command and makes no network request.
+#[cfg(unix)]
+#[test]
+fn t05_offline_run_with_prerequisites_ready_needs_no_network() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_OFFLINE_RAN");
+    plant_executable(&home, "node", "0.0.0", "echo x");
+    mark_deps_installed(dir.path());
+
+    let output = runx_with_home(dir.path(), &home, &["--offline", "dev"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let combined = format!("{}{}", stderr_of(&output), stdout_of(&output));
+    assert!(
+        stdout_of(&output).contains("MARKER_OFFLINE_RAN"),
+        "the command must run:\n{combined}"
+    );
+    // The pre-flight must state the policy, and nothing may be downloaded.
+    assert!(
+        combined.contains("disabled by --offline"),
+        "the network policy must be reported:\n{combined}"
+    );
+    assert!(
+        !combined.contains("Downloading"),
+        "an offline run must not download:\n{combined}"
+    );
+    assert!(
+        !combined.contains("https://"),
+        "no URL should be fetched or named:\n{combined}"
+    );
+}
+
+/// T-06 / RX-UX-03: offline with an empty cache fails fast, names the runtime
+/// as the missing prerequisite, and does not print a download URL.
+#[test]
+fn t06_offline_with_a_missing_runtime_fails_fast_with_guidance() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+    mark_deps_installed(dir.path());
+
+    let output = runx_with_home(dir.path(), &home, &["--offline", "dev"]);
+    assert_eq!(output.status.code(), Some(1), "an offline miss must fail");
+    let combined = format!("{}{}", stderr_of(&output), stdout_of(&output));
+    assert!(
+        combined.contains("runtime node 0.0.0"),
+        "the missing runtime must be named:\n{combined}"
+    );
+    assert!(
+        combined.contains("not in the runtime cache"),
+        "the exact condition must be stated:\n{combined}"
+    );
+    assert!(
+        !stdout_of(&output).contains("MARKER_RAN"),
+        "the command must not run:\n{combined}"
+    );
+    assert!(
+        !combined.contains("Downloading"),
+        "it must fail before any download attempt:\n{combined}"
+    );
+}
+
+/// T-07 / RX-UX-03: offline with a cached runtime but no dependencies explains
+/// the dependency prerequisite rather than blaming the runtime.
+#[cfg(unix)]
+#[test]
+fn t07_offline_with_missing_dependencies_explains_the_prerequisite() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+    plant_executable(&home, "node", "0.0.0", "echo x");
+
+    let output = runx_with_home(dir.path(), &home, &["--offline", "dev"]);
+    let combined = format!("{}{}", stderr_of(&output), stdout_of(&output));
+    assert!(
+        combined.contains("runtime node 0.0.0: cached and ready"),
+        "the runtime must be reported ready, so the user looks elsewhere:\n{combined}"
+    );
+    assert!(
+        combined.contains("dependencies (npm)") && combined.contains("not installed"),
+        "the dependency prerequisite must be identified:\n{combined}"
+    );
+}
+
+/// T-08 / RX-UX-04: `--locked` without a lockfile is a clear error and creates
+/// nothing. Silent creation would defeat the point of the flag.
+#[test]
+fn t08_locked_without_a_lockfile_errors_and_creates_nothing() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+
+    let output = runx_with_home(dir.path(), &home, &["run", "dev", "--locked"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("no runx.lock is present"),
+        "the error must name the missing file:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("runx lock"),
+        "it must say how to create one:\n{stderr}"
+    );
+    assert!(
+        !dir.path().join("runx.lock").exists(),
+        "locked mode must never create the lockfile"
+    );
+}
+
+/// T-09 / RX-UX-04: a malformed lockfile gives a deterministic runx-level
+/// error, identically with and without `--locked`, and is never rewritten.
+#[test]
+fn t09_malformed_lockfile_is_deterministic_and_never_rewritten() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+    let lock = dir.path().join("runx.lock");
+    let corrupt = "this is not toml {{{\n";
+    fs::write(&lock, corrupt).expect("write corrupt lockfile");
+
+    for args in [
+        vec!["run", "dev", "--locked"],
+        vec!["dev"],
+        vec!["run", "dev", "--locked"],
+    ] {
+        let output = runx_with_home(dir.path(), &home, &args);
+        assert_eq!(output.status.code(), Some(1), "args: {args:?}");
+        let stderr = stderr_of(&output);
+        assert!(
+            stderr.contains("is not a valid runx lockfile"),
+            "args {args:?} must give the runx-level error:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("runx lock"),
+            "args {args:?} must state the recovery:\n{stderr}"
+        );
+        assert_eq!(
+            fs::read_to_string(&lock).expect("lockfile still readable"),
+            corrupt,
+            "args {args:?} must leave the lockfile byte-identical"
+        );
+    }
+}
+
+/// T-09 / RX-UX-04: a lockfile that pins a different version than runx.toml is
+/// rejected under `--locked`, names both versions, and is not rewritten.
+#[test]
+fn t09_stale_lockfile_names_both_versions_and_is_not_rewritten() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+    let lock = dir.path().join("runx.lock");
+    let stale = "version = 1\n\n[runtimes.node]\nversion = \"0.0.1\"\nrequirement = \"0.0.1\"\n";
+    fs::write(&lock, stale).expect("write stale lockfile");
+
+    let output = runx_with_home(dir.path(), &home, &["run", "dev", "--locked"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("0.0.1") && stderr.contains("0.0.0"),
+        "both the locked and requested versions must appear:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("runx lock"),
+        "the fix must be stated:\n{stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(&lock).expect("lockfile still readable"),
+        stale,
+        "locked mode must not rewrite a stale lockfile"
+    );
+}
+
+/// T-10 / RX-UX-07: the parent process environment is unchanged by a runx run,
+/// while the child receives the selected runtime on its PATH.
+///
+/// The report's evidence was one-sided: the child used a cached Node, but the
+/// parent's PATH was never compared before and after. This runs on all three
+/// CI runners, so the guarantee is pinned on every supported platform.
+#[test]
+fn t10_parent_path_is_unchanged_while_the_child_gets_the_runtime() {
+    let dir = tmp();
+    // No package.json here: this test is about PATH, so the project declares
+    // no runtimes and no dependencies and runs on every platform.
+    let home = dir.path().join("home");
+
+    // A known PATH passed explicitly, so the comparison is exact rather than
+    // dependent on the developer's ambient environment.
+    let sentinel_dir = dir.path().join("sentinel-bin");
+    fs::create_dir_all(&sentinel_dir).expect("create sentinel dir");
+    let parent_path = std::env::join_paths([
+        sentinel_dir.clone(),
+        std::path::PathBuf::from(if cfg!(windows) {
+            "C:\\Windows\\System32"
+        } else {
+            "/usr/bin"
+        }),
+    ])
+    .expect("join sentinel PATH");
+
+    // Read PATH the way a parent shell would, from a probe process, before and
+    // after the runx run. Comparing two in-test clones of the same String
+    // could never fail; this compares what a *subsequent* process actually
+    // inherits, which is the guarantee the report asked to see evidenced.
+    let probe = |label: &str| -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_runx"))
+            .args(["--offline", "echopath"])
+            .current_dir(dir.path())
+            .env("RUNX_HOME", &home)
+            .env("PATH", &parent_path)
+            .output()
+            .unwrap_or_else(|err| panic!("{label} probe failed: {err}"));
+        stdout_of(&out)
+    };
+
+    // `echopath` is served by a second config key so the probe never depends
+    // on a runtime being present. The command is a shell builtin, run by the
+    // same shell runx already uses, so no interpreter has to be findable on
+    // the restricted PATH this test installs.
+    fs::write(
+        config_path(dir.path()),
+        format!(
+            "[run]\ndev = \"echo ran\"\nechopath = \"{}\"\n",
+            if cfg!(windows) {
+                "echo %PATH%"
+            } else {
+                "echo \\\"$PATH\\\""
+            }
+        ),
+    )
+    .expect("write probe config");
+
+    let before = probe("before");
+    let run = Command::new(env!("CARGO_BIN_EXE_runx"))
+        .args(["--offline", "dev"])
+        .current_dir(dir.path())
+        .env("RUNX_HOME", &home)
+        .env("PATH", &parent_path)
+        .output()
+        .expect("failed to run the runx binary");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the run must succeed: {}",
+        stderr_of(&run)
+    );
+    let after = probe("after");
+
+    // Guard first: if the probe failed to echo a PATH at all, the equality
+    // assertion below would compare two empty strings and prove nothing.
+    let sentinel_str = sentinel_dir.display().to_string();
+    assert!(
+        before.contains(&sentinel_str),
+        "the probe must actually observe the PATH it was given, \
+         or this test proves nothing. Got:\n{before}"
+    );
+    assert_eq!(
+        before, after,
+        "the PATH a later process inherits must be identical before and after a runx run"
+    );
+    assert!(
+        !after.contains(&home.display().to_string()),
+        "no runx cache path may leak into the ambient PATH:\n{after}"
+    );
+}
+
+/// T-10 / RX-UX-07: the child's PATH starts with the selected runtime's bin
+/// directory, and the parent's entries survive after it.
+#[cfg(unix)]
+#[test]
+fn t10_child_path_starts_with_the_selected_runtime() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let node_root = plant_executable(&home, "node", "0.0.0", "echo x");
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\nshowpath = \"echo \\\"$PATH\\\"\"\n",
+    )
+    .expect("write runx.toml");
+
+    let sentinel = dir.path().join("sentinel-bin");
+    fs::create_dir_all(&sentinel).expect("create sentinel dir");
+    let parent_path =
+        std::env::join_paths([sentinel.clone(), std::path::PathBuf::from("/usr/bin")])
+            .expect("join PATH");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_runx"))
+        .args(["--offline", "showpath"])
+        .current_dir(dir.path())
+        .env("RUNX_HOME", &home)
+        .env("PATH", &parent_path)
+        .output()
+        .expect("failed to run the runx binary");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+
+    let child_path = stdout_of(&output);
+    let spec = runx::runtime::resolve_runtime("node", "0.0.0").expect("offline spec");
+    let node_bin = node_root.join(&spec.bin_dirs[0]);
+    assert!(
+        child_path.contains(&node_bin.display().to_string()),
+        "the child must receive the selected runtime:\n{child_path}"
+    );
+    assert!(
+        child_path.contains(&sentinel.display().to_string()),
+        "the parent's PATH entries must survive in the child:\n{child_path}"
+    );
+    // Prepended, not appended: the managed runtime must win over a system one.
+    let node_at = child_path
+        .find(&node_bin.display().to_string())
+        .expect("runtime present");
+    let sentinel_at = child_path
+        .find(&sentinel.display().to_string())
+        .expect("sentinel present");
+    assert!(
+        node_at < sentinel_at,
+        "the runtime must come before inherited entries:\n{child_path}"
+    );
+}
+
+/// T-11 / RX-UX-08: init on a project that already has a config refuses to
+/// overwrite and explains what is there.
+#[test]
+fn t11_init_with_an_existing_config_does_not_overwrite() {
+    let dir = tmp();
+    write_config(dir.path(), "dev = \"echo original\"\n");
+
+    let output = runx(dir.path(), &["init"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("already exists"),
+        "the refusal must say why:\n{stderr}"
+    );
+    let contents = fs::read_to_string(config_path(dir.path())).expect("config still readable");
+    assert!(
+        contents.contains("echo original"),
+        "the existing config must be byte-identical"
+    );
+}
+
+/// RX-UX-08: init in an empty directory says nothing was detected and still
+/// points at a next command.
+#[test]
+fn init_in_an_empty_directory_summarises_and_suggests_a_next_step() {
+    let dir = tmp();
+
+    let output = runx(dir.path(), &["init"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(stdout.contains("Created"), "{stdout}");
+    assert!(
+        stdout.contains("Detected:"),
+        "a summary must be printed:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("none"),
+        "an empty directory must say nothing was detected:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Next:"),
+        "a next command must be recommended:\n{stdout}"
+    );
+}
+
+/// RX-UX-08: init on an existing Node project reports the runtime it found,
+/// the source file it came from, the package manager, and the scripts.
+#[test]
+fn init_on_a_node_project_reports_what_it_detected() {
+    let dir = tmp();
+    fs::write(dir.path().join(".nvmrc"), "20.11.0\n").expect("write .nvmrc");
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"name":"n","scripts":{"dev":"vite","test":"jest"}}"#,
+    )
+    .expect("write package.json");
+    fs::write(
+        dir.path().join("package-lock.json"),
+        r#"{"lockfileVersion":3}"#,
+    )
+    .expect("write package-lock.json");
+
+    let output = runx(dir.path(), &["init"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("node 20.11.0") && stdout.contains(".nvmrc"),
+        "the runtime and its source must be named:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("package manager: npm"),
+        "the package manager must be reported:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("dev") && stdout.contains("test"),
+        "the inferred commands must be listed:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("runx install"),
+        "a project with dependencies must be told to install them:\n{stdout}"
+    );
+}
+
+/// RX-UX-05: the cache actions are discoverable from top-level help, without
+/// having to guess that `runx cache --help` exists.
+#[test]
+fn cache_actions_are_discoverable_from_top_level_help() {
+    let dir = tmp();
+    let output = runx(dir.path(), &["--help"]);
+    let stdout = stdout_of(&output);
+    for action in ["list", "size", "prune", "clean"] {
+        assert!(
+            stdout.contains(action),
+            "`{action}` must be discoverable from `runx --help`:\n{stdout}"
+        );
+    }
+}
+
+/// RX-UX-06: doctor states what it checked, including dependencies and the
+/// lockfile, and does not claim health while a prerequisite is missing.
+#[cfg(unix)]
+#[test]
+fn doctor_reports_project_readiness_and_withholds_a_healthy_verdict() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+    plant_executable(&home, "node", "0.0.0", "echo x");
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("Project readiness"),
+        "doctor must report project readiness:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("dependencies (npm)"),
+        "dependencies must be among the checks:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("lockfile runx.lock"),
+        "the lockfile must be among the checks:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("everything looks healthy"),
+        "a missing dependency must withhold the healthy verdict:\n{stdout}"
+    );
+}
+
+/// RX-UX-05: doctor reports cache size, so versions, verification state and
+/// disk usage come from one command.
+#[cfg(unix)]
+#[test]
+fn doctor_reports_cache_size_alongside_versions() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+    plant_executable(&home, "node", "0.0.0", "echo x");
+    mark_deps_installed(dir.path());
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("Cache:"),
+        "the cache total must be reported:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("runx cache list"),
+        "the managing commands must be named:\n{stdout}"
+    );
+}
+
+/// RX-UX-01: `runx dev` without `--install` must still only hint, never
+/// install. This is the byte-for-byte behaviour the report relied on.
+#[cfg(unix)]
+#[test]
+fn plain_run_still_only_hints_and_never_installs() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+    plant_executable(&home, "node", "0.0.0", "echo x");
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(
+        stdout_of(&output).contains("MARKER_RAN"),
+        "the command must still run"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Hint: project dependencies are not installed"),
+        "the existing hint must be unchanged:\n{stderr}"
+    );
+    assert!(
+        !dir.path().join("node_modules").exists(),
+        "a plain run must never install dependencies"
+    );
+}
