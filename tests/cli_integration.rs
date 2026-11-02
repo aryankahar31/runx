@@ -4962,28 +4962,93 @@ fn t03_missing_dependencies_are_named_with_a_recovery_command() {
 /// T-04 / RX-UX-01: an out-of-sync lockfile is distinguished from a missing
 /// one, and recommends `npm install` — `npm ci`, which runx runs, is the
 /// command that refuses this state.
+///
+/// Staleness is evidence-based: the lockfile requires `left-pad`, which
+/// `node_modules/.package-lock.json` (npm's record of what it installed) does
+/// not list. mtime order is deliberately not involved.
+#[cfg(unix)]
 #[test]
 fn t04_out_of_sync_lockfile_is_distinguished_from_missing_deps() {
     let dir = tmp();
     let home = ux_project(dir.path(), "echo MARKER_RAN");
-    mark_deps_installed(dir.path());
-    // Edit the lockfile after the install, so the tree is stale rather than absent.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    plant_executable(&home, "node", "0.0.0", "echo x");
+
     fs::write(
         dir.path().join("package-lock.json"),
-        r#"{"lockfileVersion":3,"packages":{}}"#,
+        r#"{"lockfileVersion":3,"packages":{"":{"name":"p"},
+            "node_modules/is-odd":{"version":"3.0.1"},
+            "node_modules/left-pad":{"version":"1.3.0"}}}"#,
     )
-    .expect("rewrite lockfile");
+    .expect("write lockfile");
+    fs::create_dir_all(dir.path().join("node_modules")).expect("create node_modules");
+    fs::write(
+        dir.path().join("node_modules").join(".package-lock.json"),
+        r#"{"packages":{"node_modules/is-odd":{"version":"3.0.1"}}}"#,
+    )
+    .expect("write installed manifest");
 
     let output = runx_with_home(dir.path(), &home, &["--offline", "dev"]);
     let combined = format!("{}{}", stderr_of(&output), stdout_of(&output));
     assert!(
-        combined.contains("lockfile changed"),
+        combined.contains("not in node_modules"),
         "an out-of-sync tree must say so, not just 'not installed':\n{combined}"
     );
     assert!(
         combined.contains("npm install"),
         "npm ci refuses this state; npm install is the repair:\n{combined}"
+    );
+}
+
+/// Issue #3: a project copied with `cp -R` must not be reported out of sync.
+/// The copy leaves the lockfile microseconds newer than `node_modules`, which
+/// the old mtime heuristic read as an edit since the last install.
+#[cfg(unix)]
+#[test]
+fn a_copied_project_is_not_reported_out_of_sync() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+    plant_executable(&home, "node", "0.0.0", "echo x");
+
+    let node_modules = dir.path().join("node_modules");
+    fs::create_dir_all(&node_modules).expect("create node_modules");
+    fs::write(
+        node_modules.join(".package-lock.json"),
+        r#"{"packages":{}}"#,
+    )
+    .expect("write installed manifest");
+    // Rewrite the lockfile last so it is strictly newer than node_modules —
+    // the mtime ordering `cp -R` produces. Asserted rather than assumed,
+    // because writing a file inside node_modules bumps the directory's own
+    // mtime and would otherwise mask the condition under test.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(
+        dir.path().join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"":{"name":"p"}}}"#,
+    )
+    .expect("rewrite lockfile");
+    let nm_mtime = fs::metadata(&node_modules)
+        .and_then(|meta| meta.modified())
+        .expect("node_modules mtime");
+    let lock_mtime = fs::metadata(dir.path().join("package-lock.json"))
+        .and_then(|meta| meta.modified())
+        .expect("lockfile mtime");
+    assert!(
+        lock_mtime > nm_mtime,
+        "fixture must leave the lockfile newer than node_modules, \
+         or it does not exercise the mtime trap"
+    );
+
+    // `doctor` reports every check unconditionally; a run would stop at the
+    // first blocker and might never reach the dependency line.
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    let combined = format!("{}{}", stdout_of(&output), stderr_of(&output));
+    assert!(
+        combined.contains("dependencies (npm): installed and up to date"),
+        "a newer lockfile alone must not warn:\n{combined}"
+    );
+    assert!(
+        !combined.contains("not in node_modules"),
+        "no staleness warning is warranted here:\n{combined}"
     );
 }
 
@@ -5542,5 +5607,173 @@ fn readiness_and_hint_agree_without_a_lockfile() {
     assert!(
         stdout_of(&output).contains("MARKER_RAN"),
         "the command must still run:\n{combined}"
+    );
+}
+
+// ── Verification round 2: issues found on the branch ──────────────────────────
+
+/// Issue #1: a runtime cached before archive retention cannot be verified under
+/// `--locked`. The error must name the runtime, explain why, give the exact
+/// recovery, and not leak a raw OS error.
+#[test]
+fn locked_run_without_a_retained_archive_explains_the_recovery() {
+    use runx::cache;
+
+    let (project, home, root, _spec) = locked_node_fixture();
+    // Simulate a pre-retention cache entry: everything present but the archive.
+    fs::remove_file(root.join(cache::CACHED_ARCHIVE)).expect("remove archive");
+
+    let output = runx_with_home(project.path(), home.path(), &["run", "check", "--locked"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+
+    assert!(
+        stderr.contains("node 20.11.0"),
+        "the runtime must be named:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(".runx-archive"),
+        "the missing file must be named:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("before runx retained release archives"),
+        "the cause must be explained:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("rm -rf") && stderr.contains(&root.display().to_string()),
+        "the exact recovery command must be given:\n{stderr}"
+    );
+    // A raw io::Error reads like a crash and restates the message.
+    assert!(
+        !stderr.contains("os error"),
+        "no raw OS error may be shown:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("No such file or directory"),
+        "no raw OS error text may be shown:\n{stderr}"
+    );
+    // runx must not delete a cached runtime on the user's behalf.
+    assert!(
+        root.join(cache::COMPLETION_MARKER).is_file(),
+        "the cache entry must be left intact"
+    );
+}
+
+/// Issue #1: `runx doctor` warns about a cache entry with no retained archive,
+/// names the `--locked` impact, and offers the fix.
+#[test]
+fn doctor_warns_about_a_runtime_without_a_retained_archive() {
+    use runx::cache;
+
+    let (project, home, root, _spec) = locked_node_fixture();
+    fs::remove_file(root.join(cache::CACHED_ARCHIVE)).expect("remove archive");
+
+    let output = runx_with_home(project.path(), home.path(), &["doctor"]);
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("no retained release archive"),
+        "doctor must warn about the missing archive:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--locked"),
+        "the warning must name the --locked impact:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("reinstall"),
+        "the warning must offer the fix:\n{stdout}"
+    );
+    // A missing archive does not stop ordinary runs, so it is a note and the
+    // cache is not called broken.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a missing archive is a warning, not a failure: {}",
+        stderr_of(&output)
+    );
+}
+
+/// Issue #4: a `--locked` run re-extracts the archive into a temp directory to
+/// compare trees. That is internal bookkeeping and must stay silent.
+#[test]
+fn locked_run_does_not_announce_internal_extraction() {
+    let (project, home, _root, _spec) = locked_node_fixture();
+
+    let output = runx_with_home(project.path(), home.path(), &["run", "check", "--locked"]);
+    assert!(
+        output.status.success(),
+        "the locked run must succeed: {}",
+        stderr_of(&output)
+    );
+    let combined = format!("{}{}", stdout_of(&output), stderr_of(&output));
+    assert!(
+        combined.contains("LOCKED_CHILD_RAN"),
+        "the command must run:\n{combined}"
+    );
+    assert!(
+        !combined.contains("Extracting to"),
+        "verification must not announce its temp directory:\n{combined}"
+    );
+}
+
+/// Issue #5: cache-wide findings belong under the cache heading, not under
+/// "Project readiness", and readiness lists only the runtimes the project uses.
+#[cfg(unix)]
+#[test]
+fn doctor_separates_cache_findings_from_project_readiness() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    // The project uses node; bun is cached but unrelated to it. Bun gets no
+    // retained archive, so it produces a cache-wide note — the kind that used
+    // to print under "Project readiness" for a project that never touches bun.
+    plant_executable(&home, "node", "0.0.0", "echo x");
+    let bun_root = plant_executable(&home, "bun", "0.0.0", "echo x");
+    fs::write(
+        home.join("runtimes")
+            .join("node")
+            .join("0.0.0")
+            .join(runx::cache::CACHED_ARCHIVE),
+        b"archive",
+    )
+    .expect("give node a retained archive");
+    assert!(
+        !bun_root.join(runx::cache::CACHED_ARCHIVE).exists(),
+        "bun must lack an archive for this test to mean anything"
+    );
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo MARKER_RAN\"\n",
+    )
+    .expect("write runx.toml");
+
+    let output = runx_with_home(dir.path(), &home, &["doctor"]);
+    let stdout = stdout_of(&output);
+
+    let readiness_at = stdout
+        .find("Project readiness")
+        .unwrap_or_else(|| panic!("no readiness section:\n{stdout}"));
+    let cache_at = stdout
+        .find("Cache:")
+        .unwrap_or_else(|| panic!("no cache section:\n{stdout}"));
+    assert!(
+        readiness_at < cache_at,
+        "readiness must come before the cache section:\n{stdout}"
+    );
+
+    // Only the project's own runtime is listed as a readiness check, and the
+    // unrelated bun finding sits after the cache heading.
+    let readiness = &stdout[readiness_at..cache_at];
+    assert!(
+        readiness.contains("runtime node 0.0.0"),
+        "the project's runtime must be checked:\n{readiness}"
+    );
+    assert!(
+        !readiness.contains("bun"),
+        "a cached runtime the project does not use must not appear under \
+         project readiness:\n{readiness}"
+    );
+    let cache_section = &stdout[cache_at..];
+    assert!(
+        cache_section.contains("bun 0.0.0") && cache_section.contains("no retained release"),
+        "the cache-wide finding must appear under the cache heading:\n{cache_section}"
     );
 }

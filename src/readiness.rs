@@ -102,7 +102,7 @@ impl Check {
 pub enum DepState {
     /// Installed and no newer lockfile edit since.
     Installed,
-    /// Installed, but the lockfile changed afterwards.
+    /// Installed, but the lockfile requires packages the tree does not have.
     OutOfSync,
     /// Never installed: no `node_modules` / `.venv` / `go.sum`.
     Missing,
@@ -110,20 +110,70 @@ pub enum DepState {
 
 /// Classify the dependency state for one detected manager.
 ///
-/// Deliberately built on [`dep::deps_installed`] so the state reported here
-/// and the install decision cannot disagree: whatever `deps_installed` calls
-/// installed is reported `Installed`. The extra work is distinguishing
-/// *why* it said no, which is the distinction the report asked for.
+/// `OutOfSync` requires *evidence* that the installed tree does not satisfy the
+/// lockfile, never an mtime comparison. mtimes are not a record of what was
+/// installed: `cp -R`, `git checkout`, a restored backup or an unpacked archive
+/// all reorder them, and `cp -R` in particular writes `node_modules` a few
+/// hundred microseconds before `package-lock.json`, which made a freshly copied
+/// project report "the lockfile changed since the last install".
+///
+/// `Missing` still defers to [`dep::deps_present`], and the install decision
+/// still belongs to [`dep::deps_installed`] — this function only classifies
+/// what to tell the user, so a report can never trigger an install.
 pub fn dep_state(project_dir: &Path, manager: &dep::DepManager) -> DepState {
-    if dep::deps_installed(project_dir, manager) {
-        return DepState::Installed;
+    if !dep::deps_present(project_dir, manager) {
+        return DepState::Missing;
     }
-    if dep::deps_present(project_dir, manager) {
-        // Present but `deps_installed` said no: the lockfile is newer.
-        DepState::OutOfSync
-    } else {
-        DepState::Missing
+    match lockfile_satisfied(project_dir, manager) {
+        // Proven incomplete: something the lockfile requires is not installed.
+        Some(false) => DepState::OutOfSync,
+        // Satisfied, or no evidence either way. Both report `Installed`: a
+        // warning no user can act on is worse than silence, and a real
+        // mismatch surfaces as the package manager's own error on the next run.
+        _ => DepState::Installed,
     }
+}
+
+/// Whether the installed tree satisfies the lockfile, when that is knowable.
+///
+/// `None` means "no evidence available" — an unsupported manager, or metadata
+/// that cannot be read or parsed. Only npm-family projects record enough to
+/// answer: npm, pnpm and yarn write `node_modules/.package-lock.json`, a
+/// mirror of what was actually installed.
+fn lockfile_satisfied(project_dir: &Path, manager: &dep::DepManager) -> Option<bool> {
+    match manager {
+        dep::DepManager::Npm { lockfile }
+        | dep::DepManager::Yarn { lockfile }
+        | dep::DepManager::Pnpm { lockfile } => {
+            let installed = installed_package_paths(
+                &project_dir.join("node_modules").join(".package-lock.json"),
+            )?;
+            let locked = installed_package_paths(lockfile)?;
+            // Every package the lockfile names must be present in the tree.
+            // The reverse (extra installed packages) is normal: a lockfile
+            // edit that *removes* a dependency leaves it on disk until the
+            // next install, which does not stop the project from running.
+            Some(locked.is_subset(&installed))
+        }
+        // Bun, Deno, Go and pip record no comparable manifest of what they
+        // installed, so there is nothing to compare and no warning to give.
+        _ => None,
+    }
+}
+
+/// The `packages` keys of an npm-style lockfile, excluding the root entry.
+fn installed_package_paths(path: &Path) -> Option<std::collections::BTreeSet<String>> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let packages = parsed.get("packages")?.as_object()?;
+    Some(
+        packages
+            .keys()
+            // "" is the project itself, present only in the real lockfile.
+            .filter(|key| !key.is_empty())
+            .cloned()
+            .collect(),
+    )
 }
 
 /// The package manager's own command that repairs this project.
@@ -179,7 +229,7 @@ pub fn dependency_checks(project_dir: &Path) -> Vec<Check> {
                 DepState::Installed => Check::pass(subject, "installed and up to date"),
                 DepState::OutOfSync => Check::warn(
                     subject,
-                    "installed, but the lockfile changed since the last install",
+                    "installed, but the lockfile requires packages that are not in node_modules",
                     repair_command(&detection.manager),
                 ),
                 // `runx install` is the right fix here: nothing is installed,
@@ -439,23 +489,41 @@ pub fn install_failure_context(
     project_dir: &Path,
 ) -> String {
     let manifest = manifest_path(&detection.manager);
-    let condition = match before {
-        DepState::OutOfSync => format!(
-            "Detected condition: {} changed after the last install, so the \
-             lockfile and the installed tree disagree.",
-            manifest.display()
-        ),
-        DepState::Missing => format!(
-            "Detected condition: no dependencies were installed for {}.",
-            detection.label
-        ),
-        // The install only runs when deps are not already usable, so this
-        // means the state changed underneath us.
-        DepState::Installed => format!(
-            "Detected condition: dependencies for {} looked installed when the \
-             install started.",
-            detection.label
-        ),
+    // Checked before `before` is consulted: npm exits EUSAGE when package.json
+    // and the lockfile disagree, a condition the pre-install state cannot see.
+    // The tree may be entirely absent (`Missing`) while the real fault is that
+    // the two manifests are out of sync — which is what the user must fix, and
+    // `npm install` is the only command that does it.
+    let condition = if let Some(missing) = manifests_out_of_sync(project_dir, &detection.manager) {
+        format!(
+            "Detected condition: package.json and {} are out of sync — {} \
+             declared in package.json but absent from the lockfile. \
+             `npm ci` refuses this by design; it is a lockfile problem, not a failed download.",
+            manifest
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "the lockfile".to_string()),
+            describe_missing(&missing),
+        )
+    } else {
+        match before {
+            DepState::OutOfSync => format!(
+                "Detected condition: {} requires packages that are not installed, so the \
+                 lockfile and the installed tree disagree.",
+                manifest.display()
+            ),
+            DepState::Missing => format!(
+                "Detected condition: no dependencies were installed for {}.",
+                detection.label
+            ),
+            // The install only runs when deps are not already usable, so this
+            // means the state changed underneath us.
+            DepState::Installed => format!(
+                "Detected condition: dependencies for {} looked installed when the \
+                 install started.",
+                detection.label
+            ),
+        }
     };
 
     let changed = if before == after {
@@ -474,6 +542,61 @@ pub fn install_failure_context(
         repair_command(&detection.manager),
         project_dir.display(),
     )
+}
+
+/// The dependencies `package.json` declares that the lockfile does not record.
+///
+/// This is the precise condition npm reports as `EUSAGE ... must be in sync`.
+/// Detected from the two manifests rather than by matching npm's output, since
+/// the install streams straight to the terminal (so runx never sees its text)
+/// and npm's wording changes between majors. `None` means in sync, not
+/// npm-family, or unreadable.
+fn manifests_out_of_sync(project_dir: &Path, manager: &dep::DepManager) -> Option<Vec<String>> {
+    let lockfile = match manager {
+        dep::DepManager::Npm { lockfile }
+        | dep::DepManager::Yarn { lockfile }
+        | dep::DepManager::Pnpm { lockfile } => lockfile,
+        _ => return None,
+    };
+
+    let raw = std::fs::read_to_string(project_dir.join("package.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let mut declared = std::collections::BTreeSet::new();
+    for field in ["dependencies", "devDependencies", "optionalDependencies"] {
+        if let Some(table) = manifest.get(field).and_then(|value| value.as_object()) {
+            declared.extend(table.keys().cloned());
+        }
+    }
+    if declared.is_empty() {
+        return None;
+    }
+
+    // Lockfile `packages` keys are paths like `node_modules/is-odd`; compare on
+    // the final component so nested entries still match their package name.
+    let locked: std::collections::BTreeSet<String> = installed_package_paths(lockfile)?
+        .iter()
+        .filter_map(|key| key.rsplit("node_modules/").next().map(str::to_string))
+        .collect();
+
+    let missing: Vec<String> = declared.difference(&locked).cloned().collect();
+    if missing.is_empty() {
+        None
+    } else {
+        Some(missing)
+    }
+}
+
+/// Render missing package names for a one-line condition, capped so a large
+/// mismatch does not flood the terminal.
+fn describe_missing(missing: &[String]) -> String {
+    const MAX: usize = 3;
+    let shown: Vec<&str> = missing.iter().take(MAX).map(String::as_str).collect();
+    let rendered = shown.join(", ");
+    match missing.len() {
+        1 => format!("`{rendered}` is"),
+        n if n <= MAX => format!("`{rendered}` are"),
+        n => format!("`{rendered}` and {} more are", n - MAX),
+    }
 }
 
 /// The path to a project's package manager manifest, for display.
@@ -520,6 +643,165 @@ mod tests {
         }
     }
 
+    /// Write npm's hidden lockfile, the record of what was actually installed.
+    fn write_installed_manifest(dir: &Path, packages: &[&str]) {
+        let entries: Vec<String> = packages
+            .iter()
+            .map(|name| format!("\"node_modules/{name}\": {{\"version\": \"1.0.0\"}}"))
+            .collect();
+        fs::create_dir_all(dir.join("node_modules")).unwrap();
+        fs::write(
+            dir.join("node_modules").join(".package-lock.json"),
+            format!("{{\"packages\": {{{}}}}}", entries.join(",")),
+        )
+        .unwrap();
+    }
+
+    /// Write a `package-lock.json` naming `packages`, plus the root entry.
+    fn write_lockfile(dir: &Path, packages: &[&str]) {
+        let mut entries = vec!["\"\": {\"name\": \"p\"}".to_string()];
+        entries.extend(
+            packages
+                .iter()
+                .map(|name| format!("\"node_modules/{name}\": {{\"version\": \"1.0.0\"}}")),
+        );
+        fs::write(
+            dir.join("package-lock.json"),
+            format!("{{\"packages\": {{{}}}}}", entries.join(",")),
+        )
+        .unwrap();
+    }
+
+    /// Issue #3: mtime order must never decide staleness. `cp -R` writes
+    /// node_modules a few hundred microseconds before the lockfile, which made
+    /// a freshly copied project report a changed lockfile.
+    #[test]
+    fn a_lockfile_newer_than_node_modules_is_not_stale_on_its_own() {
+        let dir = tmp();
+        fs::write(dir.path().join("package.json"), "{}").unwrap();
+        write_lockfile(dir.path(), &["is-odd"]);
+        write_installed_manifest(dir.path(), &["is-odd"]);
+        let manager = dep::DepManager::Npm {
+            lockfile: dir.path().join("package-lock.json"),
+        };
+
+        // Make the lockfile unambiguously newer, the exact mtime ordering that
+        // used to produce a false warning.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        write_lockfile(dir.path(), &["is-odd"]);
+
+        assert_eq!(
+            dep_state(dir.path(), &manager),
+            DepState::Installed,
+            "a newer lockfile with the same packages installed is not out of sync"
+        );
+    }
+
+    /// Issue #3: a genuine mismatch must still be caught — the lockfile
+    /// requires a package that is not in node_modules.
+    #[test]
+    fn a_package_missing_from_node_modules_is_out_of_sync() {
+        let dir = tmp();
+        fs::write(dir.path().join("package.json"), "{}").unwrap();
+        write_lockfile(dir.path(), &["is-odd", "left-pad"]);
+        write_installed_manifest(dir.path(), &["is-odd"]);
+        let manager = dep::DepManager::Npm {
+            lockfile: dir.path().join("package-lock.json"),
+        };
+
+        assert_eq!(
+            dep_state(dir.path(), &manager),
+            DepState::OutOfSync,
+            "left-pad is locked but not installed"
+        );
+    }
+
+    /// Issue #3: a manager that records nothing about what it installed gets
+    /// no warning, rather than a guess. Bun has no hidden lockfile.
+    #[test]
+    fn a_manager_without_an_install_record_is_never_reported_stale() {
+        let dir = tmp();
+        fs::write(dir.path().join("bun.lock"), "{}").unwrap();
+        fs::create_dir_all(dir.path().join("node_modules")).unwrap();
+        let manager = dep::DepManager::Bun {
+            lockfile: dir.path().join("bun.lock"),
+        };
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(dir.path().join("bun.lock"), "{}").unwrap();
+
+        assert_eq!(
+            dep_state(dir.path(), &manager),
+            DepState::Installed,
+            "no evidence means no warning the user cannot act on"
+        );
+    }
+
+    /// Issue #2: when package.json declares a dependency the lockfile lacks,
+    /// the condition names the out-of-sync manifests — the state npm reports
+    /// as EUSAGE — even though no dependencies are installed at all.
+    #[test]
+    fn install_failure_names_out_of_sync_manifests() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"dependencies":{"is-odd":"3.0.1"}}"#,
+        )
+        .unwrap();
+        write_lockfile(dir.path(), &[]);
+        let detection = dep::DepDetection {
+            manager: dep::DepManager::Npm {
+                lockfile: dir.path().join("package-lock.json"),
+            },
+            label: "npm",
+        };
+
+        let context =
+            install_failure_context(&detection, DepState::Missing, DepState::Missing, dir.path());
+        assert!(
+            context.contains("package.json and package-lock.json are out of sync"),
+            "must name the out-of-sync manifests, got:\n{context}"
+        );
+        assert!(
+            context.contains("is-odd"),
+            "must name the offending package:\n{context}"
+        );
+        assert!(
+            context.contains("npm install"),
+            "must give the repair command:\n{context}"
+        );
+    }
+
+    /// Issue #2: a failure with manifests *in* sync keeps the plain
+    /// missing-dependencies wording, so the new branch is not a blanket label.
+    #[test]
+    fn install_failure_without_a_mismatch_reports_missing_dependencies() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"dependencies":{"is-odd":"3.0.1"}}"#,
+        )
+        .unwrap();
+        write_lockfile(dir.path(), &["is-odd"]);
+        let detection = dep::DepDetection {
+            manager: dep::DepManager::Npm {
+                lockfile: dir.path().join("package-lock.json"),
+            },
+            label: "npm",
+        };
+
+        let context =
+            install_failure_context(&detection, DepState::Missing, DepState::Missing, dir.path());
+        assert!(
+            !context.contains("out of sync"),
+            "in-sync manifests must not be called out of sync:\n{context}"
+        );
+        assert!(
+            context.contains("no dependencies were installed"),
+            "{context}"
+        );
+    }
+
     /// The three dependency states RX-UX-01 asked to distinguish, each from a
     /// filesystem layout a user can actually produce.
     #[test]
@@ -533,21 +815,20 @@ mod tests {
             "no node_modules at all"
         );
 
-        fs::create_dir(dir.path().join("node_modules")).unwrap();
-        // node_modules created after the lockfile, so it is newer.
+        write_lockfile(dir.path(), &["is-odd"]);
+        write_installed_manifest(dir.path(), &["is-odd"]);
         assert_eq!(
             dep_state(dir.path(), &manager),
             DepState::Installed,
-            "node_modules newer than the lockfile"
+            "every locked package is installed"
         );
 
-        // Touch the lockfile so it is newer than node_modules.
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        // The lockfile now requires a package that is not in node_modules.
+        write_lockfile(dir.path(), &["is-odd", "left-pad"]);
         assert_eq!(
             dep_state(dir.path(), &manager),
             DepState::OutOfSync,
-            "lockfile edited after install"
+            "a locked package is missing from the installed tree"
         );
     }
 
@@ -558,9 +839,8 @@ mod tests {
     fn out_of_sync_npm_recommends_npm_install() {
         let dir = tmp();
         npm_project(dir.path());
-        fs::create_dir(dir.path().join("node_modules")).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        write_lockfile(dir.path(), &["is-odd", "left-pad"]);
+        write_installed_manifest(dir.path(), &["is-odd"]);
 
         let checks = dependency_checks(dir.path());
         let npm = checks
@@ -570,7 +850,7 @@ mod tests {
         assert_eq!(npm.status, Status::Warn);
         assert_eq!(npm.fix.as_deref(), Some("npm install"));
         assert!(
-            npm.detail.contains("lockfile changed"),
+            npm.detail.contains("not in node_modules"),
             "must name the condition, got: {}",
             npm.detail
         );

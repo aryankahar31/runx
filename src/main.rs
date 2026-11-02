@@ -1093,6 +1093,21 @@ fn doctor_command(verify: bool) -> Result<()> {
                 }
                 saw_runtime = true;
 
+                // A runtime installed before archive retention has no
+                // `.runx-archive`, so `--locked` cannot re-verify it and fails
+                // with an error that otherwise only appears at run time. Warn
+                // here, where the user is already looking for cache problems.
+                if cache::is_complete(&version_dir)
+                    && !version_dir.join(cache::CACHED_ARCHIVE).is_file()
+                {
+                    notes.push(format!(
+                        "{tool} {name}: no retained release archive, so `--locked` runs \
+                         cannot verify it (ordinary runs are unaffected) — delete {} \
+                         and re-run to reinstall it",
+                        version_dir.display()
+                    ));
+                }
+
                 let spec = runtime::resolve_runtime(&tool, &name).ok();
                 if cache::is_complete(&version_dir) {
                     if verify {
@@ -1203,9 +1218,14 @@ fn doctor_command(verify: bool) -> Result<()> {
     // exit code and the cache-repair advice. Keeping them apart preserves
     // doctor's exit-code contract for anyone running it as a health gate.
     let mut not_ready = Vec::new();
+    // Project-scoped notes are collected separately from the cache-wide ones
+    // gathered above. Printing both under one heading put cache findings — a
+    // Python with no recorded digest, say — inside "Project readiness" for a
+    // project that uses neither Python nor that runtime.
+    let mut project_notes = Vec::new();
     if let Ok(cwd) = env::current_dir() {
         if let Some(project_dir) = config::find_project_dir(&cwd) {
-            print_project_detection(&project_dir, &mut notes)?;
+            print_project_detection(&project_dir, &mut project_notes)?;
             let resolved = config::load_or_detect_runtimes_only(&project_dir)?;
             print_resolved_paths(&project_dir, &resolved.inner)?;
 
@@ -1218,6 +1238,9 @@ fn doctor_command(verify: bool) -> Result<()> {
             for line in readiness::render_section(&report) {
                 println!("{line}");
             }
+            for note in &project_notes {
+                println!("  ~ {note}");
+            }
             not_ready = report
                 .blockers()
                 .iter()
@@ -1226,15 +1249,19 @@ fn doctor_command(verify: bool) -> Result<()> {
         }
     }
 
+    println!(
+        "Cache: {} in {}",
+        cache::format_size(cache_total),
+        runtimes.display()
+    );
+    // Cache-wide findings belong here, under the cache heading, whether or not
+    // the current directory is a project at all.
     for note in &notes {
         println!("  ~ {note}");
     }
-
     println!(
-        "Cache: {} in {}\n  Manage it with `runx cache list`, `runx cache size`, \
-         `runx cache prune`, `runx cache clean`.",
-        cache::format_size(cache_total),
-        runtimes.display()
+        "  Manage it with `runx cache list`, `runx cache size`, \
+         `runx cache prune`, `runx cache clean`."
     );
 
     if broken.is_empty() {

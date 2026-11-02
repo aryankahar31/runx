@@ -41,11 +41,58 @@ installs, `--locked` still never creates or rewrites `runx.lock`, and
   condition, whether any files changed, and the repair command — for an
   out-of-sync npm lockfile that is `npm install`, since `npm ci` (which runx
   runs) refuses that state by design (RX-UX-01).
+- When `npm ci` fails because `package.json` and `package-lock.json` disagree,
+  the reported condition says so and names the packages missing from the
+  lockfile. Detected by comparing the two manifests, so it is accurate
+  regardless of npm's wording; npm's own output is still shown in full.
+- Dependency staleness is decided from evidence, not file timestamps. Previously
+  a lockfile with a newer mtime than `node_modules` was reported as "changed
+  since the last install", which fired on any freshly copied or checked-out
+  project: `cp -R` writes `node_modules` a few hundred microseconds before the
+  lockfile. The check now compares the lockfile's packages against
+  `node_modules/.package-lock.json`, npm's record of what it installed, and
+  warns only when a required package is genuinely absent. Managers that record
+  no equivalent manifest (Bun, Deno, Go, pip) are never reported stale.
+- A `--locked` run against a runtime cached before archive retention explains
+  that the release archive was never kept, that ordinary runs are unaffected,
+  and how to replace the entry. It previously failed with a raw
+  `No such file or directory (os error 2)`. runx does not delete or reinstall
+  the cached runtime itself: `--locked` exists to verify, and removing a
+  multi-hundred-megabyte runtime (or re-downloading it) as a side effect of a
+  verification flag would be a surprise, and would break `--offline --locked`.
+- `runx doctor` warns when a cached runtime has no retained archive, naming the
+  `--locked` impact and the fix.
+- `--locked` verification no longer prints `Extracting to <tempdir>`. It
+  re-extracts the archive to compare trees, which is internal bookkeeping about
+  a path the user cannot act on.
+- `runx doctor` prints cache-wide findings under the `Cache:` heading instead of
+  under `Project readiness`, which had put unrelated runtimes (a cached Python
+  with no recorded digest, say) inside the readiness section of a project that
+  does not use them. Project readiness lists only the runtimes the project
+  declares.
 - A malformed `runx.lock` reports a runx-level error naming the file and the
   recovery, with the parser's first line quoted, instead of a bare TOML parse
   error and caret diagram (RX-UX-04).
 - The four `runx cache` actions are named in top-level help, and `runx doctor`'s
   help states what it checks (RX-UX-05/06).
+
+### Exit codes
+
+Unchanged. Every `runx install` outcome exits as it did in v0.6.0; only the
+messages gained detail.
+
+| Outcome | Exit code |
+|---------|-----------|
+| Dependencies installed | 0 |
+| Already installed | 0 |
+| Lockfile out of sync (install attempted, manager failed) | 1 |
+| Install failed for any other reason | 1 |
+| Nothing to install — no recognised manifest in the project | 1 |
+
+"Nothing to install" exiting non-zero is pre-existing behaviour, not a change:
+`runx install` in a project with no lockfile or manifest has always been an
+error, on the grounds that the command was asked to do something it cannot do.
+Scripts that treat it as success must continue to special-case it.
 
 ### Not reproduced
 
