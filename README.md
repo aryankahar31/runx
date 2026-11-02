@@ -148,7 +148,8 @@ Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproj
 - No shell integration required, ever — nothing happens until you type `runx`
 - Cross-platform: Linux, macOS, Windows
 - Scripting modes: `--json`, `--quiet`, `--offline`
-- `runx doctor` (plus `doctor --verify`, an integrity sweep over cached executables), cache management (`list`/`size`/`clean`/`prune`), `self update`, shell completions
+- `runx doctor` — cache integrity, stale PATH shims, and project readiness (runtime, package manager, dependencies, lockfile) with a pass/warn/fail reason per check; `doctor --verify` adds an integrity sweep over cached executables
+- Cache management (`list`/`size`/`clean`/`prune`), `self update`, shell completions
 
 ## Supported Runtimes
 
@@ -289,15 +290,35 @@ runx --install dev    # install project dependencies before running the command
 | Lockfile | Manager | Install command |
 |----------|---------|-----------------|
 | `package-lock.json` | npm | `npm ci` |
-| `yarn.lock` | Yarn | `yarn install` |
-| `pnpm-lock.yaml` | pnpm | `pnpm install` |
+| `yarn.lock` | Yarn | `yarn install`, falling back to `npx yarn install` when Yarn is not installed |
+| `pnpm-lock.yaml` | pnpm | `pnpm install`, falling back to `npx pnpm install` when pnpm is not installed |
 | `bun.lock` / `bun.lockb` | Bun | `bun install` |
 | `pyproject.toml` | pip | `pip install -e .` or individual deps |
 | `requirements.txt` | pip | `pip install -r requirements.txt` |
 | `go.mod` | Go | `go mod download` |
-| `deno.lock` | Deno | `deno install` |
+| `deno.lock` | Deno | `deno install` (Deno 2.x), `deno cache <entrypoint>` (Deno 1.x) |
 
 `runx --install <key>` does the same inline: install dependencies, then run the command. When dependencies are already up to date, the install is skipped.
+
+#### What each command prepares
+
+Runtime readiness and dependency readiness are separate steps, and only `--install` does both:
+
+| Command | Runtimes | Project dependencies | Runs your command |
+|---------|----------|----------------------|-------------------|
+| `runx install` | installed if missing | installed | no |
+| `runx --install dev` | installed if missing | installed | yes |
+| `runx dev` | installed if missing | **no** — prints a hint if they are missing | yes |
+| `runx lock` | installed (a digest can only be recorded for verified bytes) | no | no |
+
+`runx doctor` reports both kinds of readiness without changing anything, and `runx --offline <key>` prints the same summary before it runs.
+
+Dependency state is reported as one of four conditions, each with the command that resolves it:
+
+- **already installed** — nothing to do
+- **not installed** — `runx install`
+- **lockfile out of sync** — the lockfile changed after the last install. For npm this is what `npm ci` refuses, so the fix is `npm install`
+- **nothing to install** — no recognised manifest in the project
 
 Global flags work before any subcommand (`runx --json <command>`).
 

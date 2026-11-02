@@ -99,6 +99,15 @@ pub enum Staleness {
     PlatformMissing { platform: String },
 }
 
+/// The first line of a multi-line parser message.
+///
+/// `toml`'s Display spans several lines with a caret diagram; the first line
+/// carries the position and expectation, which is the useful part in a
+/// one-line error.
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or(text).trim_end()
+}
+
 /// Stable identifier for the current OS/architecture pair.
 ///
 /// Uses Rust's built-in constants so it cannot drift from the values
@@ -137,8 +146,21 @@ impl Lockfile {
             }
         };
 
-        let lock: Self =
-            toml::from_str(&raw).with_context(|| format!("Failed to parse {}", path.display()))?;
+        // A corrupt lockfile used to surface as a bare TOML parse error with a
+        // caret diagram and no indication of what runx wanted or how to
+        // recover (RX-UX-04). The parser's detail is still worth keeping — it
+        // names the offending line — so it is quoted under runx's own
+        // explanation rather than replaced.
+        let lock: Self = toml::from_str(&raw).map_err(|err| {
+            UserError::new(format!(
+                "{} is not a valid runx lockfile.\n\
+                 Parse error: {}\n\
+                 Hint: runx never edits this file itself. Restore it from version \
+                 control, or delete it and run `runx lock` to regenerate it.",
+                path.display(),
+                first_line(&err.to_string()),
+            ))
+        })?;
 
         if lock.version > SCHEMA_VERSION {
             return Err(UserError::new(format!(

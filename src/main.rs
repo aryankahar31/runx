@@ -10,6 +10,7 @@ use runx::executor;
 use runx::extractor;
 use runx::flags;
 use runx::lock;
+use runx::readiness;
 use runx::registry;
 use runx::runtime;
 use runx::self_update;
@@ -105,13 +106,20 @@ enum Command {
     /// Write runx.lock, pinning the exact runtimes this project resolves to.
     Lock,
 
-    /// Inspect and maintain the runtime cache.
+    /// Inspect and maintain the runtime cache: list, size, prune, clean.
+    ///
+    /// RX-UX-05: the four actions were only visible from `runx cache --help`,
+    /// so naming them here makes them discoverable from the top level.
     Cache {
         #[command(subcommand)]
         action: CacheAction,
     },
 
-    /// Diagnose problems with the cache and PATH.
+    /// Diagnose the cache, PATH, and project readiness.
+    ///
+    /// Checks the runtime cache (completeness, and with --verify the recorded
+    /// digests), stale shims on PATH, and - when run inside a project - its
+    /// runtimes, dependencies and lockfile, with a reason for every result.
     Doctor {
         /// Also verify each runtime's executable against the digest recorded
         /// at install time. Slower (hashes every entry-point binary) but
@@ -301,13 +309,75 @@ fn init_config() -> Result<()> {
             path.display()
         );
     }
-    fs::write(&path, config::starter_config())
+    fs::write(&path, config::starter_config_for(&cwd))
         .with_context(|| format!("Failed to write {}", path.display()))?;
     println!("Created {}", path.display());
+
+    // RX-UX-08: `Created <path>` alone left a beginner with no idea what was
+    // detected, what the file contains, or what to run next.
+    let detected = detect::detect_runtimes(&cwd);
+    let runtimes = detect::detected_runtimes_map(&detected);
+    let manager = dep::detect(&cwd);
+    let commands: Vec<&String> = detected.inferred_commands.keys().collect();
+
+    println!("\nDetected:");
+    if runtimes.is_empty() {
+        println!("  runtimes: none; the generated [runtimes] section is an example");
+    } else {
+        for (tool, requirement) in &runtimes {
+            match detected_source(&detected, tool) {
+                Some(source) => println!("  {tool} {requirement} (from {source})"),
+                None => println!("  {tool} {requirement}"),
+            }
+        }
+    }
+    match &manager {
+        Some(detection) => println!("  package manager: {}", detection.label),
+        None => println!("  package manager: none found"),
+    }
+    if commands.is_empty() {
+        println!("  commands: none inferred; the generated [run] section is an example");
+    } else {
+        println!(
+            "  commands: {}",
+            commands
+                .iter()
+                .map(|key| key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    // The next command depends on what the project actually needs: deps first
+    // if it has any, otherwise straight to running something.
+    let next = if manager.is_some() {
+        "runx install    # install project dependencies"
+    } else if commands.is_empty() {
+        "runx dev        # after editing [run] in runx.toml"
+    } else {
+        "runx dev        # run the dev command"
+    };
+    println!("\nNext: {next}");
     Ok(())
 }
+
+/// The project file a detected runtime requirement came from, e.g. `.nvmrc`,
+/// for the init summary.
+fn detected_source<'a>(result: &'a detect::DetectionResult, tool: &str) -> Option<&'a str> {
+    let entry = match tool {
+        "node" => result.node.as_ref(),
+        "python" => result.python.as_ref(),
+        "bun" => result.bun.as_ref(),
+        "go" => result.go.as_ref(),
+        "deno" => result.deno.as_ref(),
+        _ => None,
+    };
+    entry
+        .and_then(|detected| detected.found())
+        .map(|runtime| runtime.source.as_str())
+}
 fn install_command() -> Result<()> {
-    let (_, project_dir, cfg) = load_project()?;
+    let (_, project_dir, cfg) = load_project_runtimes_only()?;
     let detections = dep::detect_all(&project_dir);
     if detections.is_empty() {
         return Err(error::UserError::new(format!(
@@ -359,12 +429,25 @@ fn install_command() -> Result<()> {
             continue;
         }
 
-        if dep::deps_installed(&project_dir, &detection.manager) {
-            eprintln!("\nDependencies already installed ({})", detection.label);
-            continue;
+        match readiness::dep_state(&project_dir, &detection.manager) {
+            readiness::DepState::Installed => {
+                eprintln!("\nDependencies already installed ({})", detection.label);
+                continue;
+            }
+            // RX-UX-01: the state the report hit. `npm ci` is about to refuse
+            // this tree, so name the condition before the manager's own error
+            // scrolls past, and say that nothing has been written yet.
+            readiness::DepState::OutOfSync => {
+                eprintln!(
+                    "\nLockfile out of sync ({}): {} changed after the last install.\n\
+                     No files have been modified yet.",
+                    detection.label,
+                    readiness::manifest_path(&detection.manager).display()
+                );
+                to_install.push(detection);
+            }
+            readiness::DepState::Missing => to_install.push(detection),
         }
-
-        to_install.push(detection);
     }
 
     if to_install.is_empty() {
@@ -383,8 +466,23 @@ fn install_command() -> Result<()> {
 
     let mut installed_any = false;
     for detection in &to_install {
+        let before = readiness::dep_state(&project_dir, &detection.manager);
         eprintln!("\nInstalling project dependencies ({})...", detection.label);
-        dep::install(&project_dir, detection, &runtimes)?;
+        // RX-UX-01: on failure the manager's own error is the only thing the
+        // user saw, which for npm is a raw EUSAGE dump. Add what runx knows:
+        // which state was detected, whether anything changed, and the exact
+        // recovery command.
+        if let Err(err) = dep::install(&project_dir, detection, &runtimes) {
+            let after = readiness::dep_state(&project_dir, &detection.manager);
+            // Printed rather than attached as context: anyhow renders a chain
+            // as `a: b`, which would fold this multi-line explanation onto one
+            // line and bury the manager's own error at the end of it.
+            eprintln!(
+                "\n{}",
+                readiness::install_failure_context(detection, before, after, &project_dir)
+            );
+            return Err(err);
+        }
         eprintln!("Dependencies installed successfully.");
         installed_any = true;
     }
@@ -441,6 +539,16 @@ struct Provisioned {
 /// project commands execute, while the root owns config, detection and the
 /// lockfile.
 fn load_project() -> Result<(PathBuf, PathBuf, config::RunxConfig)> {
+    load_project_impl(true)
+}
+
+/// Load a project for a command that needs runtimes but no `[run]` entry:
+/// `runx install` and `runx lock` work on projects with no inferable command.
+fn load_project_runtimes_only() -> Result<(PathBuf, PathBuf, config::RunxConfig)> {
+    load_project_impl(false)
+}
+
+fn load_project_impl(require_commands: bool) -> Result<(PathBuf, PathBuf, config::RunxConfig)> {
     let cwd = env::current_dir().context("Failed to determine current directory")?;
 
     // Walk up parent directories to find the project root.
@@ -465,7 +573,11 @@ fn load_project() -> Result<(PathBuf, PathBuf, config::RunxConfig)> {
     }
 
     // Load config from runx.toml, or fall back to auto-detection.
-    let resolved = config::load_or_detect(&project_dir)?;
+    let resolved = if require_commands {
+        config::load_or_detect(&project_dir)?
+    } else {
+        config::load_or_detect_runtimes_only(&project_dir)?
+    };
 
     // Print the transparency banner when auto-detection was used.
     if !resolved.detection_lines.is_empty() {
@@ -663,8 +775,46 @@ fn run_command(
 
     // Resolve the command before installing anything, so a typo fails fast
     // rather than after a long download.
+    if config.run.is_empty() {
+        return Err(error::UserError::new(format!(
+            "{} in {} defines no commands under [run].\n\
+             Hint: add one (e.g. `dev = \"npm run dev\"`), or run `runx init` to create one.",
+            config::CONFIG_FILE,
+            project_dir.display()
+        ))
+        .into());
+    }
     let command = config.command(command_key)?.to_string();
     let t1 = std::time::Instant::now();
+
+    // RX-UX-03: under --offline, state the prerequisites before doing any work.
+    // Without this the first sign of an uncached runtime was a refused download
+    // URL, which reads like a network error rather than a cache miss, and gave
+    // no way to tell a missing runtime from a missing dependency.
+    //
+    // Only under --offline: an online run can fix a cache miss by downloading,
+    // so there is nothing to warn about, and printing a summary on every
+    // healthy run would change long-standing output.
+    if flags::offline() {
+        let report = readiness::Report::collect(&project_dir, &config, true);
+        eprint!("{}", report.render_preflight());
+        if let Some(blocker) = report.blockers().first() {
+            // Name the subject as well as the condition: "not installed" alone
+            // does not say whether a runtime or a dependency is missing, which
+            // is the confusion RX-UX-03 reported.
+            return Err(error::UserError::new(format!(
+                "Cannot run `{command_key}` offline: {} is {}.{}",
+                blocker.subject,
+                blocker.detail,
+                blocker
+                    .fix
+                    .as_deref()
+                    .map(|fix| format!("\nFix: {fix}"))
+                    .unwrap_or_default()
+            ))
+            .into());
+        }
+    }
 
     let provisioned = provision(&project_dir, &config, locked)?;
     let t2 = std::time::Instant::now();
@@ -943,6 +1093,21 @@ fn doctor_command(verify: bool) -> Result<()> {
                 }
                 saw_runtime = true;
 
+                // A runtime installed before archive retention has no
+                // `.runx-archive`, so `--locked` cannot re-verify it and fails
+                // with an error that otherwise only appears at run time. Warn
+                // here, where the user is already looking for cache problems.
+                if cache::is_complete(&version_dir)
+                    && !version_dir.join(cache::CACHED_ARCHIVE).is_file()
+                {
+                    notes.push(format!(
+                        "{tool} {name}: no retained release archive, so `--locked` runs \
+                         cannot verify it (ordinary runs are unaffected) — delete {} \
+                         and re-run to reinstall it",
+                        version_dir.display()
+                    ));
+                }
+
                 let spec = runtime::resolve_runtime(&tool, &name).ok();
                 if cache::is_complete(&version_dir) {
                     if verify {
@@ -1016,6 +1181,11 @@ fn doctor_command(verify: bool) -> Result<()> {
         ));
     }
 
+    // RX-UX-05: versions and verification state are above; disk usage needed a
+    // separate `runx cache size`. Report it here so one command answers all
+    // three questions, and point at the commands that manage it.
+    let cache_total = cache::directory_size(&runtimes);
+
     if flags::json() {
         // Structured report on stdout; a failing doctor still exits non-zero
         // with its summary as a JSON error on stderr (via the top-level
@@ -1023,6 +1193,7 @@ fn doctor_command(verify: bool) -> Result<()> {
         let payload = serde_json::json!({
             "healthy": broken.is_empty(),
             "cache_dir": runtimes.display().to_string(),
+            "cache_bytes": cache_total,
             "runtimes": entries_json,
             "notes": notes,
             "broken": broken,
@@ -1041,19 +1212,70 @@ fn doctor_command(verify: bool) -> Result<()> {
 
     // Show the exact PATH runx would prepend for the current project, if run
     // from one — the direct answer to "why is the wrong version running".
+    //
+    // `not_ready` counts project-readiness failures separately from `broken`:
+    // a missing dependency is not a damaged cache, and `broken` drives both the
+    // exit code and the cache-repair advice. Keeping them apart preserves
+    // doctor's exit-code contract for anyone running it as a health gate.
+    let mut not_ready = Vec::new();
+    // Project-scoped notes are collected separately from the cache-wide ones
+    // gathered above. Printing both under one heading put cache findings — a
+    // Python with no recorded digest, say — inside "Project readiness" for a
+    // project that uses neither Python nor that runtime.
+    let mut project_notes = Vec::new();
     if let Ok(cwd) = env::current_dir() {
         if let Some(project_dir) = config::find_project_dir(&cwd) {
-            print_project_detection(&project_dir, &mut notes)?;
-            let resolved = config::load_or_detect(&project_dir)?;
+            print_project_detection(&project_dir, &mut project_notes)?;
+            let resolved = config::load_or_detect_runtimes_only(&project_dir)?;
             print_resolved_paths(&project_dir, &resolved.inner)?;
+
+            // RX-UX-06: the session could not tell whether doctor looked at
+            // dependencies, the lockfile or offline readiness. It did not.
+            // Every check carries its own pass/warn/fail reason.
+            let report =
+                readiness::Report::collect(&project_dir, &resolved.inner, flags::offline());
+            println!("Project readiness in {}:", project_dir.display());
+            for line in readiness::render_section(&report) {
+                println!("{line}");
+            }
+            for note in &project_notes {
+                println!("  ~ {note}");
+            }
+            not_ready = report
+                .blockers()
+                .iter()
+                .map(|check| format!("{}: {}", check.subject, check.detail))
+                .collect();
         }
     }
 
+    println!(
+        "Cache: {} in {}",
+        cache::format_size(cache_total),
+        runtimes.display()
+    );
+    // Cache-wide findings belong here, under the cache heading, whether or not
+    // the current directory is a project at all.
     for note in &notes {
         println!("  ~ {note}");
     }
+    println!(
+        "  Manage it with `runx cache list`, `runx cache size`, \
+         `runx cache prune`, `runx cache clean`."
+    );
+
     if broken.is_empty() {
-        println!("✓ everything looks healthy");
+        // Don't claim health while a readiness check above printed a ✗.
+        if not_ready.is_empty() {
+            println!("✓ everything looks healthy");
+        } else {
+            println!(
+                "✓ the runtime cache is healthy\n\
+                 ~ this project is not ready to run: {}\n\
+                   See the project readiness section above for the fix.",
+                not_ready.join("; ")
+            );
+        }
         return Ok(());
     }
 
@@ -1216,7 +1438,7 @@ fn runx_shims_on_path(home: &Path) -> Vec<(String, PathBuf)> {
 /// it was actually verified, so locking without installing would mean writing
 /// hashes runx never checked.
 fn lock_command() -> Result<()> {
-    let (_run_dir, project_dir, config) = load_project()?;
+    let (_run_dir, project_dir, config) = load_project_runtimes_only()?;
 
     if config.runtimes.is_empty() {
         return Err(

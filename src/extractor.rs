@@ -37,7 +37,21 @@ use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 pub fn extract_archive(archive: &Path, destination: &Path, kind: ArchiveKind) -> Result<()> {
-    extract_archive_with(archive, destination, kind, true)
+    extract_archive_with(archive, destination, kind, true, true)
+}
+
+/// Like [`extract_archive`] but prints nothing.
+///
+/// Used by locked verification, which extracts into a throwaway temp directory
+/// purely to compare trees. Announcing "Extracting to /var/.../.tmpAbC123" on
+/// every `--locked` run described an internal detail the user cannot act on,
+/// and read like an install was happening.
+pub fn extract_archive_quietly(
+    archive: &Path,
+    destination: &Path,
+    kind: ArchiveKind,
+) -> Result<()> {
+    extract_archive_with(archive, destination, kind, true, false)
 }
 
 /// Like [`extract_archive`] but keeps the archive's top-level structure.
@@ -50,7 +64,7 @@ pub fn extract_archive_keep_top_level(
     destination: &Path,
     kind: ArchiveKind,
 ) -> Result<()> {
-    extract_archive_with(archive, destination, kind, false)
+    extract_archive_with(archive, destination, kind, false, true)
 }
 
 fn extract_archive_with(
@@ -58,8 +72,11 @@ fn extract_archive_with(
     destination: &Path,
     kind: ArchiveKind,
     strip_first: bool,
+    announce: bool,
 ) -> Result<()> {
-    crate::flags::info(&format!("Extracting to {}", destination.display()));
+    if announce {
+        crate::flags::info(&format!("Extracting to {}", destination.display()));
+    }
     match kind {
         ArchiveKind::Zip => extract_zip(archive, destination, strip_first),
         ArchiveKind::TarGz => {

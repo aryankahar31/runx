@@ -14,6 +14,10 @@ pub const CONFIG_FILE: &str = "runx.toml";
 pub struct RunxConfig {
     #[serde(default)]
     pub runtimes: BTreeMap<String, String>,
+    /// `[run]` is optional: a project may only need `runx install`/`runx lock`,
+    /// which need runtimes but no commands. Dispatch rejects an empty map with
+    /// a message that names the missing section.
+    #[serde(default)]
     pub run: BTreeMap<String, String>,
 }
 
@@ -85,12 +89,6 @@ impl RunxConfig {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.run.is_empty() {
-            return Err(
-                UserError::new("runx.toml must contain at least one command under [run].").into(),
-            );
-        }
-
         for (tool, version) in &self.runtimes {
             if tool.trim().is_empty() || version.trim().is_empty() {
                 return Err(UserError::new("Runtime names and versions cannot be empty.").into());
@@ -189,6 +187,19 @@ pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
 ///
 /// Note: auto-detection never writes a file; only `runx init` does that.
 pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
+    load_or_detect_impl(dir, true)
+}
+
+/// Like [`load_or_detect`], but for commands that only need runtimes.
+///
+/// `runx install` and `runx lock` have no use for `[run]`, so a Go or Python
+/// project whose scripts cannot be inferred is a valid input rather than an
+/// error.
+pub fn load_or_detect_runtimes_only(dir: &Path) -> Result<ResolvedConfig> {
+    load_or_detect_impl(dir, false)
+}
+
+fn load_or_detect_impl(dir: &Path, require_commands: bool) -> Result<ResolvedConfig> {
     let toml_path = dir.join(CONFIG_FILE);
 
     // ── Branch 1: runx.toml present ──────────────────────────────────────────
@@ -252,7 +263,7 @@ pub fn load_or_detect(dir: &Path) -> Result<ResolvedConfig> {
     // separate problems: a project can have valid runtime requirements and no
     // package.json scripts at all. Every script becomes a command (keyed by
     // script name), so `runx test` works without a runx.toml.
-    if detected.inferred_commands.is_empty() {
+    if require_commands && detected.inferred_commands.is_empty() {
         let detected_block = if detection_lines.is_empty() {
             String::new()
         } else {
@@ -299,9 +310,50 @@ build = "npm run build"
 "#
 }
 
+/// The starter config `runx init` writes for `dir`: the runtimes the project
+/// already declares and the commands its package.json already implies.
+///
+/// The fixed [`starter_config`] names node and npm in a Python-only project,
+/// which then fails `runx install` — the generated file has to describe the
+/// directory it lands in. Falls back to the fixed starter when nothing is
+/// detected, so an empty directory still gets a runnable example.
+pub fn starter_config_for(dir: &Path) -> String {
+    let detected = detect::detect_runtimes(dir);
+    let mut runtimes = detect::detected_runtimes_map(&detected);
+    let commands = detected.inferred_commands;
+
+    if runtimes.is_empty() && commands.is_empty() {
+        return starter_config().to_string();
+    }
+    // Scripts with no version hint still need a runtime to run them.
+    if runtimes.is_empty() {
+        runtimes.insert("node".to_string(), "20.11.0".to_string());
+    }
+
+    let mut out = String::from("[runtimes]\n");
+    for (tool, requirement) in &runtimes {
+        out.push_str(&format!("{tool} = \"{}\"\n", toml_string(requirement)));
+    }
+    if !commands.is_empty() {
+        out.push_str("\n[run]\n");
+        for (key, command) in &commands {
+            out.push_str(&format!("{key} = \"{}\"\n", toml_string(command)));
+        }
+    }
+    out
+}
+
+/// Quote a value for a TOML basic string.
+fn toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{find_project_dir, load_or_detect, RunxConfig, CONFIG_FILE};
+    use super::{
+        find_project_dir, load_or_detect, load_or_detect_runtimes_only, starter_config,
+        starter_config_for, RunxConfig, CONFIG_FILE,
+    };
     use std::fs;
     use tempfile::TempDir;
 
@@ -622,6 +674,76 @@ test = "npm test"
             message.contains("runx init"),
             "should point at init: {message}"
         );
+    }
+
+    /// `runx install` and `runx lock` need runtimes, not commands: the project
+    /// that fails `runx dev` above loads cleanly when commands are optional.
+    #[test]
+    fn runtimes_only_load_tolerates_missing_commands() {
+        let dir = tmp();
+        fs::write(dir.path().join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+
+        load_or_detect(dir.path()).expect_err("run paths still demand a command");
+
+        let resolved =
+            load_or_detect_runtimes_only(dir.path()).expect("install must not need commands");
+        assert_eq!(resolved.inner.runtimes["go"], "1.22.5");
+        assert!(resolved.inner.run.is_empty());
+    }
+
+    /// `[run]` is optional: a config that only pins runtimes is valid for
+    /// install/lock, and run dispatch reports the missing section by name.
+    #[test]
+    fn toml_without_a_run_section_parses() {
+        let config =
+            RunxConfig::parse_toml("[runtimes]\nnode = \"20.11.0\"\n").expect("run is optional");
+        assert_eq!(config.runtimes["node"], "20.11.0");
+        assert!(config.run.is_empty());
+    }
+
+    /// `runx init` describes the project it lands in: Python runtimes from
+    /// `.python-version`, not the node/npm default that made `runx install`
+    /// fail on a Python-only directory.
+    #[test]
+    fn starter_config_describes_a_python_only_project() {
+        let dir = tmp();
+        fs::write(dir.path().join(".python-version"), "3.11.7\n").unwrap();
+
+        let starter = starter_config_for(dir.path());
+        assert!(starter.contains("python = \"3.11.7\""), "{starter}");
+        assert!(
+            !starter.contains("npm run"),
+            "a Python project must not get npm commands: {starter}"
+        );
+    }
+
+    /// Detected requirements and inferred scripts land in the starter, and the
+    /// generated document still parses as a runx config.
+    #[test]
+    fn starter_config_carries_detected_runtimes_and_commands() {
+        let dir = tmp();
+        fs::write(dir.path().join(".nvmrc"), "20.11.0\n").unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"dev": "node server.js"}}"#,
+        )
+        .unwrap();
+
+        let starter = starter_config_for(dir.path());
+        assert!(starter.contains("node = \"20.11.0\""), "{starter}");
+        assert!(starter.contains("dev = \"npm run dev\""), "{starter}");
+
+        let parsed = RunxConfig::parse_toml(&starter).expect("starter must parse");
+        assert_eq!(parsed.runtimes["node"], "20.11.0");
+        assert_eq!(parsed.run["dev"], "npm run dev");
+    }
+
+    /// Nothing detected → the fixed starter, so an empty directory still gets
+    /// a runnable example.
+    #[test]
+    fn starter_config_falls_back_when_nothing_is_detected() {
+        let dir = tmp();
+        assert_eq!(starter_config_for(dir.path()), starter_config());
     }
 
     /// `bun.lock` marks a project root even when nothing else does.

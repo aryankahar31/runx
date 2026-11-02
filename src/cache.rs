@@ -177,12 +177,28 @@ pub fn verify_locked_artifact(root: &Path, spec: &RuntimeSpec) -> Result<()> {
     );
     for name in [COMPLETION_MARKER, CACHED_ARCHIVE] {
         let path = root.join(name);
+        // A runtime installed before archive retention has no `.runx-archive`,
+        // so `--locked` cannot re-verify its bytes. That is a cache-shape
+        // problem with a one-command fix, not corruption: say which runtime,
+        // why --locked needs the file, and give the exact command. The raw
+        // io::Error is deliberately dropped — "No such file or directory
+        // (os error 2)" restates the message and reads like a crash.
+        let present = fs::symlink_metadata(&path).map(|meta| meta.is_file());
         ensure!(
-            fs::symlink_metadata(&path)
-                .with_context(|| format!("Cannot verify locked artifact: missing or unreadable {}. Remove this cache entry and reinstall.", path.display()))?
-                .is_file(),
-            "Locked cache metadata/archive must be a regular file: {}",
-            path.display()
+            matches!(present, Ok(true)),
+            "{tool} {version} cannot be verified against runx.lock: {name} is missing \
+             from {root}.\n\
+             This runtime was installed before runx retained release archives, so the \
+             original bytes are not on disk to re-check. It still works for ordinary runs; \
+             only --locked needs the archive.\n\
+             Fix: delete the directory and re-run to reinstall it with an archive:\n\
+             \x20 rm -rf {root}\n\
+             \x20 runx run <key>          # reinstalls, then `--locked` works again\n\
+             Or drop --locked for this run. runx will not remove a cached runtime for you.",
+            tool = spec.tool,
+            version = spec.version,
+            name = name,
+            root = root.display(),
         );
     }
     let receipt: InstallReceipt =
@@ -208,7 +224,7 @@ pub fn verify_locked_artifact(root: &Path, spec: &RuntimeSpec) -> Result<()> {
     // ponytail: re-extract on each locked run; a trusted tree digest in the
     // lockfile could avoid this cost, but an editable cache receipt cannot.
     let reference = tempfile::tempdir().context("Cannot create locked verification directory")?;
-    crate::extractor::extract_archive(&archive, reference.path(), spec.archive_kind)?;
+    crate::extractor::extract_archive_quietly(&archive, reference.path(), spec.archive_kind)?;
     normalize_runtime(reference.path(), spec)?;
     let mut directories = vec![PathBuf::new()];
     while let Some(relative) = directories.pop() {

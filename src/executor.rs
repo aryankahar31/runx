@@ -144,6 +144,42 @@ fn isolated_path(runtimes: &[CachedRuntime]) -> Result<OsString> {
 mod tests {
     use super::*;
 
+    /// RX-UX-07: PATH construction never consumes or rewrites the parent's
+    /// PATH — it builds a new value for the child only. Platform-independent,
+    /// so the guarantee is pinned on Windows too, where the integration test
+    /// relies on an unmodified inherited PATH reaching `cmd /C`.
+    #[test]
+    fn isolated_path_leaves_the_process_path_untouched() {
+        let before = env::var_os("PATH").expect("a PATH to inherit");
+
+        let built = isolated_path(&[]).expect("build PATH with no runtimes");
+        assert_eq!(
+            built, before,
+            "with no runtimes the child PATH is exactly the inherited one"
+        );
+
+        let fake = CachedRuntime {
+            root: PathBuf::from("/tmp/runx-test-root"),
+            bin_dirs: vec![PathBuf::from("/tmp/runx-test-root/bin")],
+        };
+        let built = isolated_path(std::slice::from_ref(&fake)).expect("build PATH");
+        let entries: Vec<PathBuf> = env::split_paths(&built).collect();
+        assert_eq!(
+            entries.first(),
+            Some(&fake.bin_dirs[0]),
+            "the runtime bin dir must be prepended"
+        );
+        assert!(
+            entries.len() > 1,
+            "the inherited entries must be kept after it"
+        );
+        assert_eq!(
+            env::var_os("PATH").expect("PATH still set"),
+            before,
+            "building a child PATH must not mutate the process environment"
+        );
+    }
+
     #[test]
     fn shell_quote_preserves_special_characters() {
         if cfg!(windows) {
