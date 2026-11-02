@@ -2460,6 +2460,46 @@ fn missing_deps_no_lockfile_falls_back_to_npm() {
     );
 }
 
+/// A runx flag placed after the command key must be named as such. The generic
+/// "pass it after `--`" advice told users to forward `--install` to the child,
+/// where it silently does nothing — found by using the released v0.6.1 binary.
+#[test]
+fn a_runx_flag_after_the_key_is_not_sent_to_the_child() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(config_path(dir.path()), "[run]\ndev = \"exit 0\"\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev", "--install"]);
+    assert!(!output.status.success());
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("runx --install dev"),
+        "must give the working form, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("-- --install"),
+        "must not advise forwarding a runx flag to the child:\n{stderr}"
+    );
+
+    // `--locked` belongs to `run`, not the top level, so it needs the other
+    // form. Pinned because advising `runx --locked dev` would not parse.
+    let output = runx_with_home(dir.path(), &home, &["dev", "--locked"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("runx run dev --locked"),
+        "--locked needs the explicit run form, got:\n{stderr}"
+    );
+
+    // A genuine child argument still gets the passthrough advice.
+    let output = runx_with_home(dir.path(), &home, &["dev", "--port"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("runx dev -- --port"),
+        "child arguments keep the passthrough hint, got:\n{stderr}"
+    );
+}
+
 /// When node_modules exists but the command fails, the hint must NOT appear —
 /// the failure is unrelated to missing dependencies.
 #[test]
@@ -5556,9 +5596,13 @@ fn plain_run_still_only_hints_and_never_installs() {
         "the command must still run"
     );
     let stderr = stderr_of(&output);
+    // Printed before the child, so it reads as a warning about what is about
+    // to run rather than a hint about what already failed. A Node
+    // MODULE_NOT_FOUND dump is ~20 lines, which pushed the old trailing hint
+    // off the visible screen.
     assert!(
-        stderr.contains("Hint: project dependencies are not installed"),
-        "the existing hint must be unchanged:\n{stderr}"
+        stderr.contains("project dependencies are not installed"),
+        "the dependency warning must still appear:\n{stderr}"
     );
     assert!(
         !dir.path().join("node_modules").exists(),
