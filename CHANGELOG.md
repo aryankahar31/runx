@@ -6,7 +6,9 @@ tags and each tag's GitHub release notes (`gh release view`). Entries marked
 that release has no notes; every line is verifiable against the linked
 compare view or commit.
 
-## Unreleased
+## v0.6.2 — 2026-11-02
+
+- [fix: seven UX gaps found by using the released v0.6.1 binary (#55)](https://github.com/aryankahar31/runx/pull/55)
 
 ### Fixed
 
@@ -44,6 +46,8 @@ compare view or commit.
   versus 133 ms for the same run), since it re-extracts and compares every
   runtime archive on each invocation. The headline benchmark covers unlocked
   runs only.
+
+[Full changelog](https://github.com/aryankahar31/runx/compare/v0.6.1...v0.6.2)
 
 ## v0.6.1 — 2026-11-02
 
