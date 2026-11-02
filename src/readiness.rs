@@ -386,17 +386,12 @@ fn indent_fix(rendered: &str) -> String {
     rendered.replace('\n', "\n  ")
 }
 
-/// The project-readiness section `runx doctor` prints.
+/// The readiness checks as indented lines, for `runx doctor`.
 ///
-/// Returned as lines so doctor controls the surrounding format, and so an
-/// empty project contributes nothing.
-pub fn doctor_section(
-    project_dir: &Path,
-    config: &config::RunxConfig,
-    offline: bool,
-) -> Vec<String> {
-    let report = Report::collect(project_dir, config, offline);
-    let mut lines = vec![format!("Project readiness in {}:", project_dir.display())];
+/// Returned as lines rather than printed so doctor owns the section header and
+/// the surrounding format.
+pub fn render_section(report: &Report) -> Vec<String> {
+    let mut lines = Vec::new();
     for check in &report.runtimes {
         lines.push(format!("  {}", indent_fix(&check.render())));
     }

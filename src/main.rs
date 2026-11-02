@@ -106,13 +106,20 @@ enum Command {
     /// Write runx.lock, pinning the exact runtimes this project resolves to.
     Lock,
 
-    /// Inspect and maintain the runtime cache.
+    /// Inspect and maintain the runtime cache: list, size, prune, clean.
+    ///
+    /// RX-UX-05: the four actions were only visible from `runx cache --help`,
+    /// so naming them here makes them discoverable from the top level.
     Cache {
         #[command(subcommand)]
         action: CacheAction,
     },
 
-    /// Diagnose problems with the cache and PATH.
+    /// Diagnose the cache, PATH, and project readiness.
+    ///
+    /// Checks the runtime cache (completeness, and with --verify the recorded
+    /// digests), stale shims on PATH, and - when run inside a project - its
+    /// runtimes, dependencies and lockfile, with a reason for every result.
     Doctor {
         /// Also verify each runtime's executable against the digest recorded
         /// at install time. Slower (hashes every entry-point binary) but
@@ -1097,6 +1104,11 @@ fn doctor_command(verify: bool) -> Result<()> {
         ));
     }
 
+    // RX-UX-05: versions and verification state are above; disk usage needed a
+    // separate `runx cache size`. Report it here so one command answers all
+    // three questions, and point at the commands that manage it.
+    let cache_total = cache::directory_size(&runtimes);
+
     if flags::json() {
         // Structured report on stdout; a failing doctor still exits non-zero
         // with its summary as a JSON error on stderr (via the top-level
@@ -1104,6 +1116,7 @@ fn doctor_command(verify: bool) -> Result<()> {
         let payload = serde_json::json!({
             "healthy": broken.is_empty(),
             "cache_dir": runtimes.display().to_string(),
+            "cache_bytes": cache_total,
             "runtimes": entries_json,
             "notes": notes,
             "broken": broken,
@@ -1122,19 +1135,58 @@ fn doctor_command(verify: bool) -> Result<()> {
 
     // Show the exact PATH runx would prepend for the current project, if run
     // from one — the direct answer to "why is the wrong version running".
+    //
+    // `not_ready` counts project-readiness failures separately from `broken`:
+    // a missing dependency is not a damaged cache, and `broken` drives both the
+    // exit code and the cache-repair advice. Keeping them apart preserves
+    // doctor's exit-code contract for anyone running it as a health gate.
+    let mut not_ready = Vec::new();
     if let Ok(cwd) = env::current_dir() {
         if let Some(project_dir) = config::find_project_dir(&cwd) {
             print_project_detection(&project_dir, &mut notes)?;
             let resolved = config::load_or_detect_runtimes_only(&project_dir)?;
             print_resolved_paths(&project_dir, &resolved.inner)?;
+
+            // RX-UX-06: the session could not tell whether doctor looked at
+            // dependencies, the lockfile or offline readiness. It did not.
+            // Every check carries its own pass/warn/fail reason.
+            let report =
+                readiness::Report::collect(&project_dir, &resolved.inner, flags::offline());
+            println!("Project readiness in {}:", project_dir.display());
+            for line in readiness::render_section(&report) {
+                println!("{line}");
+            }
+            not_ready = report
+                .blockers()
+                .iter()
+                .map(|check| format!("{}: {}", check.subject, check.detail))
+                .collect();
         }
     }
 
     for note in &notes {
         println!("  ~ {note}");
     }
+
+    println!(
+        "Cache: {} in {}\n  Manage it with `runx cache list`, `runx cache size`, \
+         `runx cache prune`, `runx cache clean`.",
+        cache::format_size(cache_total),
+        runtimes.display()
+    );
+
     if broken.is_empty() {
-        println!("✓ everything looks healthy");
+        // Don't claim health while a readiness check above printed a ✗.
+        if not_ready.is_empty() {
+            println!("✓ everything looks healthy");
+        } else {
+            println!(
+                "✓ the runtime cache is healthy\n\
+                 ~ this project is not ready to run: {}\n\
+                   See the project readiness section above for the fix.",
+                not_ready.join("; ")
+            );
+        }
         return Ok(());
     }
 
