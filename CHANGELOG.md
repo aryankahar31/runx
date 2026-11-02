@@ -6,7 +6,9 @@ tags and each tag's GitHub release notes (`gh release view`). Entries marked
 that release has no notes; every line is verifiable against the linked
 compare view or commit.
 
-## Unreleased
+## v0.6.1 — 2026-11-02
+
+- [fix: address the software testing & UX review (RX-UX-01..08) (#53)](https://github.com/aryankahar31/runx/pull/53)
 
 Addresses the software testing & UX review (RX-UX-01..08). Behaviour that
 already worked is unchanged: a plain `runx dev` still only hints and never
@@ -108,6 +110,8 @@ Investigated with clean fixtures; no code change was warranted.
 - RX-UX-07's leak: the parent PATH was already unmodified — nothing outside
   test code mutates the process environment. The gap was the missing
   regression test, which is now in place.
+
+[Full changelog](https://github.com/aryankahar31/runx/compare/v0.6.0...v0.6.1)
 
 ## v0.6.0 — 2026-10-01
 
