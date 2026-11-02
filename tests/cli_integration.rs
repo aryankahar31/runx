@@ -4661,3 +4661,238 @@ fn node_install_unchanged_by_phase5() {
         "npm ci should have created node_modules"
     );
 }
+
+// ── Projects with no [run] commands ─────────────────────────────────────────
+//
+// `runx install` and `runx init` are supposed to work on a project that has
+// runtimes but no inferable command — a Go or Python directory with no
+// package.json scripts. These pin that: install no longer demands a command,
+// and init writes the project it lands in rather than a node/npm default.
+
+/// A Go project with no runx.toml and no package.json: `runx install` must
+/// work from detection alone, without a command to infer.
+#[cfg(unix)]
+#[test]
+fn install_works_without_run_commands() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("go.mod"), "module m\n\ngo 1.22.5\n").unwrap();
+
+    plant_go_release_cache(&home, "1.22.5");
+    let go_root = plant_executable(&home, "go", "1.22.5", "");
+    let fake_go = go_root.join("bin").join("go");
+    fs::write(
+        &fake_go,
+        "#!/bin/sh\nif [ \"$1\" = \"mod\" ] && [ \"$2\" = \"download\" ]; then\n  echo installed > \"$PWD/go.sum\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_go, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install must not require a run command, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join("go.sum").is_file(),
+        "fake go should have created go.sum"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Dependencies installed successfully"),
+        "should show success, got:\n{stderr}"
+    );
+}
+
+/// `runx init` in a Python-only project writes Python, then `runx install`
+/// succeeds on what it wrote. Before, init wrote node/bun/npm defaults and
+/// install failed with "Python runtime not provisioned".
+#[cfg(unix)]
+#[test]
+fn init_then_install_on_python_only_project() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join(".python-version"), "3.11.7\n").unwrap();
+    fs::write(
+        project.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\n\n[project.dependencies]\nrequests = \">=2.28\"\n",
+    )
+    .unwrap();
+
+    let init = runx_with_home(&project, &home, &["init"]);
+    assert!(
+        init.status.success(),
+        "init should succeed, stderr:\n{}",
+        stderr_of(&init)
+    );
+    let starter = fs::read_to_string(config_path(&project)).expect("runx.toml written");
+    assert!(
+        starter.contains("python = \"3.11.7\""),
+        "init should write the detected runtime:\n{starter}"
+    );
+    assert!(
+        !starter.contains("npm run"),
+        "a Python project must not get npm commands:\n{starter}"
+    );
+
+    let py_root = plant_python(&home, "3.11.7", "");
+    let bin = py_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_python = bin.join("python");
+    fs::write(
+        &fake_python,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"-m\" ] && [ \"$2\" = \"venv\" ]; then\n\
+           venv_dir=\"$3\"\n\
+           mkdir -p \"$venv_dir/bin\"\n\
+           printf '#!/bin/sh\n\
+if [ \"$1\" = \"install\" ]; then\n\
+  mkdir -p \"$PWD/.venv\"\n\
+  echo installed > \"$PWD/.venv/.deps\"\n\
+fi\n' > \"$venv_dir/bin/pip\"\n\
+           chmod +x \"$venv_dir/bin/pip\"\n\
+         fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_python, fs::Permissions::from_mode(0o755)).unwrap();
+    plant_python_release_cache(&home, "3.11.7");
+
+    let output = runx_with_home(&project, &home, &["install"]);
+    assert!(
+        output.status.success(),
+        "install should work on the config init wrote, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join(".venv/.deps").is_file(),
+        "fake pip should have created .venv/.deps"
+    );
+}
+
+/// pnpm is not bundled with Node. When it is missing from PATH, the install
+/// falls back to npx — which the managed Node does ship — instead of exit 127.
+#[cfg(unix)]
+#[test]
+fn install_falls_back_to_npx_when_pnpm_is_missing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    fs::write(project.join("package.json"), "{}").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo NPX_FALLBACK_MARKER\"\n",
+    )
+    .unwrap();
+
+    // Managed Node with npx but no pnpm anywhere on PATH.
+    let node_root = plant_executable(&home, "node", "0.0.0", "echo fake-node");
+    let bin = node_root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_npx = bin.join("npx");
+    fs::write(
+        &fake_npx,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"--yes\" ] && [ \"$2\" = \"pnpm\" ] && [ \"$3\" = \"install\" ]; then\n\
+           mkdir -p \"$PWD/node_modules\"\n\
+           echo ok > \"$PWD/node_modules/.npx-done\"\n\
+         fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_npx, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "dev"]);
+    assert!(
+        output.status.success(),
+        "install should succeed through npx, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join("node_modules/.npx-done").is_file(),
+        "the npx fallback should have installed dependencies"
+    );
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("NPX_FALLBACK_MARKER"),
+        "the command should still run, got:\n{stdout}"
+    );
+}
+
+/// Deno 1 has no bare `deno install` for project deps — it needs a command.
+/// The install must cache the project entrypoints instead, and Deno 2 keeps
+/// using `deno install`.
+#[cfg(unix)]
+#[test]
+fn deno_one_install_caches_entrypoints() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("deno.lock"), "{}\n").unwrap();
+    fs::write(project.join("main.ts"), "export {};\n").unwrap();
+    fs::write(
+        config_path(&project),
+        "[runtimes]\ndeno = \"1.40.0\"\n\n[run]\nhello = \"echo DENO1_MARKER\"\n",
+    )
+    .unwrap();
+
+    let deno_root = plant_executable(&home, "deno", "1.40.0", "");
+    let fake_deno = deno_root.join("deno");
+    fs::write(
+        &fake_deno,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"cache\" ] && [ \"$2\" = \"main.ts\" ]; then\n\
+           echo ok > \"$PWD/.deno-cached\"\n\
+         fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_deno, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = runx_with_home(&project, &home, &["--install", "hello"]);
+    assert!(
+        output.status.success(),
+        "deno 1 install should succeed, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(
+        project.join(".deno-cached").is_file(),
+        "should have run `deno cache main.ts`, stderr:\n{}",
+        stderr_of(&output)
+    );
+    assert!(stdout_of(&output).contains("DENO1_MARKER"));
+}
+
+/// A runx.toml with `[runtimes]` but no `[run]` is valid for install; running
+/// a key names the missing section instead of showing an empty command list.
+#[test]
+fn run_key_on_config_without_run_section_says_so() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::write(config_path(dir.path()), "[runtimes]\n").unwrap();
+
+    let output = runx_with_home(dir.path(), &home, &["dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("[run]"),
+        "should name the missing section:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("runx init"),
+        "should point at init:\n{stderr}"
+    );
+}

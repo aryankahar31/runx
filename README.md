@@ -289,13 +289,13 @@ runx --install dev    # install project dependencies before running the command
 | Lockfile | Manager | Install command |
 |----------|---------|-----------------|
 | `package-lock.json` | npm | `npm ci` |
-| `yarn.lock` | Yarn | `yarn install` |
-| `pnpm-lock.yaml` | pnpm | `pnpm install` |
+| `yarn.lock` | Yarn | `yarn install`, falling back to `npx yarn install` when Yarn is not installed |
+| `pnpm-lock.yaml` | pnpm | `pnpm install`, falling back to `npx pnpm install` when pnpm is not installed |
 | `bun.lock` / `bun.lockb` | Bun | `bun install` |
 | `pyproject.toml` | pip | `pip install -e .` or individual deps |
 | `requirements.txt` | pip | `pip install -r requirements.txt` |
 | `go.mod` | Go | `go mod download` |
-| `deno.lock` | Deno | `deno install` |
+| `deno.lock` | Deno | `deno install` (Deno 2.x), `deno cache <entrypoint>` (Deno 1.x) |
 
 `runx --install <key>` does the same inline: install dependencies, then run the command. When dependencies are already up to date, the install is skipped.
 

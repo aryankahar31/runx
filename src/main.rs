@@ -301,13 +301,13 @@ fn init_config() -> Result<()> {
             path.display()
         );
     }
-    fs::write(&path, config::starter_config())
+    fs::write(&path, config::starter_config_for(&cwd))
         .with_context(|| format!("Failed to write {}", path.display()))?;
     println!("Created {}", path.display());
     Ok(())
 }
 fn install_command() -> Result<()> {
-    let (_, project_dir, cfg) = load_project()?;
+    let (_, project_dir, cfg) = load_project_runtimes_only()?;
     let detections = dep::detect_all(&project_dir);
     if detections.is_empty() {
         return Err(error::UserError::new(format!(
@@ -441,6 +441,16 @@ struct Provisioned {
 /// project commands execute, while the root owns config, detection and the
 /// lockfile.
 fn load_project() -> Result<(PathBuf, PathBuf, config::RunxConfig)> {
+    load_project_impl(true)
+}
+
+/// Load a project for a command that needs runtimes but no `[run]` entry:
+/// `runx install` and `runx lock` work on projects with no inferable command.
+fn load_project_runtimes_only() -> Result<(PathBuf, PathBuf, config::RunxConfig)> {
+    load_project_impl(false)
+}
+
+fn load_project_impl(require_commands: bool) -> Result<(PathBuf, PathBuf, config::RunxConfig)> {
     let cwd = env::current_dir().context("Failed to determine current directory")?;
 
     // Walk up parent directories to find the project root.
@@ -465,7 +475,11 @@ fn load_project() -> Result<(PathBuf, PathBuf, config::RunxConfig)> {
     }
 
     // Load config from runx.toml, or fall back to auto-detection.
-    let resolved = config::load_or_detect(&project_dir)?;
+    let resolved = if require_commands {
+        config::load_or_detect(&project_dir)?
+    } else {
+        config::load_or_detect_runtimes_only(&project_dir)?
+    };
 
     // Print the transparency banner when auto-detection was used.
     if !resolved.detection_lines.is_empty() {
@@ -663,6 +677,15 @@ fn run_command(
 
     // Resolve the command before installing anything, so a typo fails fast
     // rather than after a long download.
+    if config.run.is_empty() {
+        return Err(error::UserError::new(format!(
+            "{} in {} defines no commands under [run].\n\
+             Hint: add one (e.g. `dev = \"npm run dev\"`), or run `runx init` to create one.",
+            config::CONFIG_FILE,
+            project_dir.display()
+        ))
+        .into());
+    }
     let command = config.command(command_key)?.to_string();
     let t1 = std::time::Instant::now();
 
@@ -1044,7 +1067,7 @@ fn doctor_command(verify: bool) -> Result<()> {
     if let Ok(cwd) = env::current_dir() {
         if let Some(project_dir) = config::find_project_dir(&cwd) {
             print_project_detection(&project_dir, &mut notes)?;
-            let resolved = config::load_or_detect(&project_dir)?;
+            let resolved = config::load_or_detect_runtimes_only(&project_dir)?;
             print_resolved_paths(&project_dir, &resolved.inner)?;
         }
     }
@@ -1216,7 +1239,7 @@ fn runx_shims_on_path(home: &Path) -> Vec<(String, PathBuf)> {
 /// it was actually verified, so locking without installing would mean writing
 /// hashes runx never checked.
 fn lock_command() -> Result<()> {
-    let (_run_dir, project_dir, config) = load_project()?;
+    let (_run_dir, project_dir, config) = load_project_runtimes_only()?;
 
     if config.runtimes.is_empty() {
         return Err(

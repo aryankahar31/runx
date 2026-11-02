@@ -425,67 +425,126 @@ fn install_go(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
 
 /// Install project dependencies via Deno.
 ///
-/// Uses the runx-managed Deno runtime to run `deno install` which
-/// reads the lockfile and installs dependencies.
+/// Deno 2 installs project deps with a bare `deno install`. Deno 1 has no
+/// project-wide equivalent — `deno install` there installs binaries and needs
+/// a command — so the module graph is cached from the project entrypoints
+/// instead, which is what "installed" means on 1.x.
 fn install_deno(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
     let deno = find_runtime(runtimes, "deno")
         .context("Deno runtime not provisioned — cannot run deno install")?;
     let path = build_path(deno)?;
-    let status = run_shell_command("deno install", project_dir, &path)?;
+    // The version is the cache path's last component: runtimes/deno/1.40.0.
+    let version = deno
+        .root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("2");
+    let command = deno_install_command(project_dir, version)?;
+    let status = run_shell_command(&command, project_dir, &path)?;
     if status.success() {
         Ok(())
     } else {
         Err(anyhow::anyhow!(
-            "`deno install` failed in {} with exit code {}",
+            "`{command}` failed in {} with exit code {}",
             project_dir.display(),
             status.code().unwrap_or(-1)
         ))
     }
+}
+
+/// The dep-install command for a Deno of `version`, in `project_dir`.
+fn deno_install_command(project_dir: &Path, version: &str) -> Result<String> {
+    let major: u32 = version
+        .split('.')
+        .next()
+        .and_then(|part| part.parse().ok())
+        .unwrap_or(2);
+    if major >= 2 {
+        return Ok("deno install".to_string());
+    }
+
+    const ENTRYPOINTS: &[&str] = &[
+        "main.ts",
+        "main.tsx",
+        "main.js",
+        "mod.ts",
+        "mod.js",
+        "index.ts",
+        "index.tsx",
+        "index.js",
+        "src/main.ts",
+        "src/main.js",
+        "src/index.ts",
+        "src/index.js",
+    ];
+    let found: Vec<&str> = ENTRYPOINTS
+        .iter()
+        .copied()
+        .filter(|entry| project_dir.join(entry).is_file())
+        .collect();
+    if found.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Deno {version} has no project-wide install command, and no entrypoint \
+             (main.ts, mod.ts, index.ts, …) was found to cache.\n\
+             Hint: pin a Deno 2.x in runx.toml, or add an entrypoint file."
+        ));
+    }
+    Ok(format!("deno cache {}", found.join(" ")))
 }
 
 /// Install project dependencies via pnpm.
 ///
-/// pnpm is a separate package manager — it is NOT bundled with Node.
-/// The user's system must have pnpm installed (e.g. `npm install -g pnpm`
-/// or via corepack). This function finds the managed Node runtime so the
-/// correct Node version is on PATH, then delegates to the system pnpm.
+/// pnpm is a separate package manager — it is NOT bundled with Node, so the
+/// managed Node only supplies the runtime. This function finds it so the
+/// correct Node version is on PATH, then delegates to [`install_js_tool`].
 fn install_pnpm(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
     let node = find_runtime(runtimes, "node")
         .context("Node runtime not provisioned — cannot run pnpm install")?;
     let path = build_path(node)?;
-    let status = run_shell_command("pnpm install", project_dir, &path)?;
+    install_js_tool(project_dir, &path, "pnpm")
+}
+
+/// Install project dependencies via Yarn.
+///
+/// Like pnpm, Yarn is a separate package manager — it is NOT bundled with
+/// Node. This function finds the managed Node so the correct Node version is
+/// on PATH, then delegates to [`install_js_tool`].
+fn install_yarn(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
+    let node = find_runtime(runtimes, "node")
+        .context("Node runtime not provisioned — cannot run yarn install")?;
+    let path = build_path(node)?;
+    install_js_tool(project_dir, &path, "yarn")
+}
+
+/// Install dependencies with a JS package manager no managed runtime bundles.
+///
+/// The tool is run directly first. When the shell reports "command not found"
+/// it is retried through `npx`, which does ship with the managed Node — so a
+/// machine that never installed pnpm/yarn globally still gets an install
+/// instead of exit code 127.
+fn install_js_tool(project_dir: &Path, path: &std::ffi::OsString, tool: &str) -> Result<()> {
+    let direct = format!("{tool} install");
+    let mut command = direct.clone();
+    let mut status = run_shell_command(&direct, project_dir, path)?;
+    if is_command_not_found(&status) {
+        command = format!("npx --yes {tool} install");
+        status = run_shell_command(&command, project_dir, path)?;
+    }
     if status.success() {
         Ok(())
     } else {
         Err(anyhow::anyhow!(
-            "`pnpm install` failed in {} with exit code {}\n\
-             Hint: ensure pnpm is installed (npm install -g pnpm) or available via corepack.",
+            "`{command}` failed in {} with exit code {}\n\
+             Hint: ensure {tool} is installed (npm install -g {tool}) or available via corepack.",
             project_dir.display(),
             status.code().unwrap_or(-1)
         ))
     }
 }
 
-/// Install project dependencies via Yarn.
-///
-/// Like pnpm, Yarn is a separate package manager — it is NOT bundled with Node.
-/// The user's system must have yarn installed. This function finds the managed
-/// Node runtime so the correct Node version is on PATH, then delegates to the system yarn.
-fn install_yarn(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
-    let node = find_runtime(runtimes, "node")
-        .context("Node runtime not provisioned — cannot run yarn install")?;
-    let path = build_path(node)?;
-    let status = run_shell_command("yarn install", project_dir, &path)?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!(
-            "`yarn install` failed in {} with exit code {}\n\
-             Hint: ensure yarn is installed (npm install -g yarn) or via corepack.",
-            project_dir.display(),
-            status.code().unwrap_or(-1)
-        ))
-    }
+/// 127 is POSIX "command not found"; 9009 is cmd.exe's exit code for it.
+fn is_command_not_found(status: &std::process::ExitStatus) -> bool {
+    matches!(status.code(), Some(127) | Some(9009))
 }
 
 #[cfg(test)]
