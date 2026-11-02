@@ -257,6 +257,28 @@ pub fn deps_installed(project_dir: &Path, manager: &DepManager) -> bool {
     }
 }
 
+/// True when a dependency tree exists at all, regardless of freshness.
+///
+/// [`deps_installed`] answers "are deps usable right now", which conflates
+/// never-installed with installed-then-lockfile-edited. Those need different
+/// recovery commands (RX-UX-01), so this reports only presence and lets
+/// `readiness::dep_state` tell the two apart.
+pub fn deps_present(project_dir: &Path, manager: &DepManager) -> bool {
+    match manager {
+        DepManager::Npm { .. }
+        | DepManager::Yarn { .. }
+        | DepManager::Pnpm { .. }
+        | DepManager::Bun { .. } => project_dir.join("node_modules").is_dir(),
+        DepManager::PythonPyproject { .. } | DepManager::PythonRequirements { .. } => {
+            project_dir.join(".venv").is_dir() || project_dir.join("venv").is_dir()
+        }
+        DepManager::Go { .. } => project_dir.join("go.sum").is_file(),
+        // deno.lock is manifest and proof at once, so presence and freshness
+        // are the same question; defer to the freshness check.
+        DepManager::Deno { .. } => deps_installed(project_dir, manager),
+    }
+}
+
 /// Install project dependencies using the runx-managed runtime.
 pub fn install(
     project_dir: &Path,
