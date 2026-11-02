@@ -312,7 +312,69 @@ fn init_config() -> Result<()> {
     fs::write(&path, config::starter_config_for(&cwd))
         .with_context(|| format!("Failed to write {}", path.display()))?;
     println!("Created {}", path.display());
+
+    // RX-UX-08: `Created <path>` alone left a beginner with no idea what was
+    // detected, what the file contains, or what to run next.
+    let detected = detect::detect_runtimes(&cwd);
+    let runtimes = detect::detected_runtimes_map(&detected);
+    let manager = dep::detect(&cwd);
+    let commands: Vec<&String> = detected.inferred_commands.keys().collect();
+
+    println!("\nDetected:");
+    if runtimes.is_empty() {
+        println!("  runtimes: none; the generated [runtimes] section is an example");
+    } else {
+        for (tool, requirement) in &runtimes {
+            match detected_source(&detected, tool) {
+                Some(source) => println!("  {tool} {requirement} (from {source})"),
+                None => println!("  {tool} {requirement}"),
+            }
+        }
+    }
+    match &manager {
+        Some(detection) => println!("  package manager: {}", detection.label),
+        None => println!("  package manager: none found"),
+    }
+    if commands.is_empty() {
+        println!("  commands: none inferred; the generated [run] section is an example");
+    } else {
+        println!(
+            "  commands: {}",
+            commands
+                .iter()
+                .map(|key| key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    // The next command depends on what the project actually needs: deps first
+    // if it has any, otherwise straight to running something.
+    let next = if manager.is_some() {
+        "runx install    # install project dependencies"
+    } else if commands.is_empty() {
+        "runx dev        # after editing [run] in runx.toml"
+    } else {
+        "runx dev        # run the dev command"
+    };
+    println!("\nNext: {next}");
     Ok(())
+}
+
+/// The project file a detected runtime requirement came from, e.g. `.nvmrc`,
+/// for the init summary.
+fn detected_source<'a>(result: &'a detect::DetectionResult, tool: &str) -> Option<&'a str> {
+    let entry = match tool {
+        "node" => result.node.as_ref(),
+        "python" => result.python.as_ref(),
+        "bun" => result.bun.as_ref(),
+        "go" => result.go.as_ref(),
+        "deno" => result.deno.as_ref(),
+        _ => None,
+    };
+    entry
+        .and_then(|detected| detected.found())
+        .map(|runtime| runtime.source.as_str())
 }
 fn install_command() -> Result<()> {
     let (_, project_dir, cfg) = load_project_runtimes_only()?;
