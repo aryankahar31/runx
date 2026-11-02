@@ -10,6 +10,7 @@ use runx::executor;
 use runx::extractor;
 use runx::flags;
 use runx::lock;
+use runx::readiness;
 use runx::registry;
 use runx::runtime;
 use runx::self_update;
@@ -359,12 +360,25 @@ fn install_command() -> Result<()> {
             continue;
         }
 
-        if dep::deps_installed(&project_dir, &detection.manager) {
-            eprintln!("\nDependencies already installed ({})", detection.label);
-            continue;
+        match readiness::dep_state(&project_dir, &detection.manager) {
+            readiness::DepState::Installed => {
+                eprintln!("\nDependencies already installed ({})", detection.label);
+                continue;
+            }
+            // RX-UX-01: the state the report hit. `npm ci` is about to refuse
+            // this tree, so name the condition before the manager's own error
+            // scrolls past, and say that nothing has been written yet.
+            readiness::DepState::OutOfSync => {
+                eprintln!(
+                    "\nLockfile out of sync ({}): {} changed after the last install.\n\
+                     No files have been modified yet.",
+                    detection.label,
+                    readiness::manifest_path(&detection.manager).display()
+                );
+                to_install.push(detection);
+            }
+            readiness::DepState::Missing => to_install.push(detection),
         }
-
-        to_install.push(detection);
     }
 
     if to_install.is_empty() {
@@ -383,8 +397,23 @@ fn install_command() -> Result<()> {
 
     let mut installed_any = false;
     for detection in &to_install {
+        let before = readiness::dep_state(&project_dir, &detection.manager);
         eprintln!("\nInstalling project dependencies ({})...", detection.label);
-        dep::install(&project_dir, detection, &runtimes)?;
+        // RX-UX-01: on failure the manager's own error is the only thing the
+        // user saw, which for npm is a raw EUSAGE dump. Add what runx knows:
+        // which state was detected, whether anything changed, and the exact
+        // recovery command.
+        if let Err(err) = dep::install(&project_dir, detection, &runtimes) {
+            let after = readiness::dep_state(&project_dir, &detection.manager);
+            // Printed rather than attached as context: anyhow renders a chain
+            // as `a: b`, which would fold this multi-line explanation onto one
+            // line and bury the manager's own error at the end of it.
+            eprintln!(
+                "\n{}",
+                readiness::install_failure_context(detection, before, after, &project_dir)
+            );
+            return Err(err);
+        }
         eprintln!("Dependencies installed successfully.");
         installed_any = true;
     }
@@ -688,6 +717,35 @@ fn run_command(
     }
     let command = config.command(command_key)?.to_string();
     let t1 = std::time::Instant::now();
+
+    // RX-UX-03: under --offline, state the prerequisites before doing any work.
+    // Without this the first sign of an uncached runtime was a refused download
+    // URL, which reads like a network error rather than a cache miss, and gave
+    // no way to tell a missing runtime from a missing dependency.
+    //
+    // Only under --offline: an online run can fix a cache miss by downloading,
+    // so there is nothing to warn about, and printing a summary on every
+    // healthy run would change long-standing output.
+    if flags::offline() {
+        let report = readiness::Report::collect(&project_dir, &config, true);
+        eprint!("{}", report.render_preflight());
+        if let Some(blocker) = report.blockers().first() {
+            // Name the subject as well as the condition: "not installed" alone
+            // does not say whether a runtime or a dependency is missing, which
+            // is the confusion RX-UX-03 reported.
+            return Err(error::UserError::new(format!(
+                "Cannot run `{command_key}` offline: {} is {}.{}",
+                blocker.subject,
+                blocker.detail,
+                blocker
+                    .fix
+                    .as_deref()
+                    .map(|fix| format!("\nFix: {fix}"))
+                    .unwrap_or_default()
+            ))
+            .into());
+        }
+    }
 
     let provisioned = provision(&project_dir, &config, locked)?;
     let t2 = std::time::Instant::now();

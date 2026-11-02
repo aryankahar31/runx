@@ -83,12 +83,12 @@ impl Check {
         }
     }
 
-    /// `subject: detail` plus the fix on its own line, indented to align under
-    /// the subject.
+    /// `✓ subject: detail`, plus `Fix: …` on a second line indented to sit
+    /// under the subject rather than under the glyph.
     pub fn render(&self) -> String {
         let mut out = format!("{} {}: {}", self.status.glyph(), self.subject, self.detail);
         if let Some(fix) = &self.fix {
-            out.push_str(&format!("\n    Fix: {fix}"));
+            out.push_str(&format!("\n  Fix: {fix}"));
         }
         out
     }
@@ -126,23 +126,16 @@ pub fn dep_state(project_dir: &Path, manager: &dep::DepManager) -> DepState {
     }
 }
 
-/// The install command a user should run for `manager`, by hand.
+/// The package manager's own command that repairs this project.
 ///
-/// This is the *user-facing* recovery command, which is not always the command
-/// runx runs internally: for an out-of-sync npm project `npm ci` is exactly
-/// what fails, and `npm install` is what repairs it.
-fn manual_install_command(manager: &dep::DepManager, out_of_sync: bool) -> &'static str {
+/// Never `runx install`: this is used where `runx install` has just failed or
+/// cannot help, so recommending it again would loop. For npm the distinction
+/// matters — runx runs `npm ci`, which *refuses* an out-of-sync lockfile by
+/// design, and only `npm install` rewrites it. That is the command the tester
+/// in RX-UX-01 had to discover by hand.
+fn repair_command(manager: &dep::DepManager) -> &'static str {
     match manager {
-        dep::DepManager::Npm { .. } => {
-            if out_of_sync {
-                // `npm ci` refuses an out-of-sync lockfile by design; only
-                // `npm install` rewrites it. This is the exact command the
-                // tester in the report had to discover by hand.
-                "npm install"
-            } else {
-                "runx install"
-            }
-        }
+        dep::DepManager::Npm { .. } => "npm install",
         dep::DepManager::Yarn { .. } => "yarn install",
         dep::DepManager::Pnpm { .. } => "pnpm install",
         dep::DepManager::Bun { .. } => "bun install",
@@ -168,13 +161,11 @@ pub fn dependency_checks(project_dir: &Path) -> Vec<Check> {
                 DepState::OutOfSync => Check::warn(
                     subject,
                     "installed, but the lockfile changed since the last install",
-                    manual_install_command(&detection.manager, true),
+                    repair_command(&detection.manager),
                 ),
-                DepState::Missing => Check::fail(
-                    subject,
-                    "not installed",
-                    manual_install_command(&detection.manager, false),
-                ),
+                // `runx install` is the right fix here: nothing is installed,
+                // so the manager's own clean-install path works.
+                DepState::Missing => Check::fail(subject, "not installed", "runx install"),
             }
         })
         .collect()
@@ -418,6 +409,57 @@ pub fn doctor_section(
     }
     lines.push(format!("  {}", indent_fix(&report.lockfile.render())));
     lines
+}
+
+/// Explain a failed dependency install: the condition, what changed on disk,
+/// and the exact recovery command.
+///
+/// RX-UX-01: a package manager's own failure says nothing about which of the
+/// four states runx detected or whether the tree was left half-written. `before`
+/// and `after` are sampled around the install, so "no files changed" is an
+/// observation rather than an assumption.
+pub fn install_failure_context(
+    detection: &dep::DepDetection,
+    before: DepState,
+    after: DepState,
+    project_dir: &Path,
+) -> String {
+    let manifest = manifest_path(&detection.manager);
+    let condition = match before {
+        DepState::OutOfSync => format!(
+            "Detected condition: {} changed after the last install, so the \
+             lockfile and the installed tree disagree.",
+            manifest.display()
+        ),
+        DepState::Missing => format!(
+            "Detected condition: no dependencies were installed for {}.",
+            detection.label
+        ),
+        // The install only runs when deps are not already usable, so this
+        // means the state changed underneath us.
+        DepState::Installed => format!(
+            "Detected condition: dependencies for {} looked installed when the \
+             install started.",
+            detection.label
+        ),
+    };
+
+    let changed = if before == after {
+        "File state: unchanged — the failed install wrote nothing that fixes this."
+    } else {
+        "File state: the dependency tree changed before the failure, so it may be partial."
+    };
+
+    format!(
+        "Installing {} dependencies failed in {}.\n\
+         {condition}\n\
+         {changed}\n\
+         Recovery: run `{}` in {}, then `runx install` again.",
+        detection.label,
+        project_dir.display(),
+        repair_command(&detection.manager),
+        project_dir.display(),
+    )
 }
 
 /// The path to a project's package manager manifest, for display.
