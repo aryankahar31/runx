@@ -51,8 +51,11 @@ installs, `--locked` still never creates or rewrites `runx.lock`, and
   project: `cp -R` writes `node_modules` a few hundred microseconds before the
   lockfile. The check now compares the lockfile's packages against
   `node_modules/.package-lock.json`, npm's record of what it installed, and
-  warns only when a required package is genuinely absent. Managers that record
-  no equivalent manifest (Bun, Deno, Go, pip) are never reported stale.
+  warns only when a required package is genuinely absent. Lockfile entries
+  marked `"optional": true` are excluded, because npm records every platform's
+  binary but installs only the host's — a healthy `esbuild` tree is missing 22
+  of its 25 lockfile entries. Managers that record no equivalent manifest
+  (Bun, Deno, Go, pip) are never reported stale.
 - A `--locked` run against a runtime cached before archive retention explains
   that the release archive was never kept, that ordinary runs are unaffected,
   and how to replace the entry. It previously failed with a raw

@@ -145,15 +145,21 @@ fn lockfile_satisfied(project_dir: &Path, manager: &dep::DepManager) -> Option<b
         dep::DepManager::Npm { lockfile }
         | dep::DepManager::Yarn { lockfile }
         | dep::DepManager::Pnpm { lockfile } => {
-            let installed = installed_package_paths(
+            let installed = lockfile_package_paths(
                 &project_dir.join("node_modules").join(".package-lock.json"),
+                Optionality::Any,
             )?;
-            let locked = installed_package_paths(lockfile)?;
-            // Every package the lockfile names must be present in the tree.
-            // The reverse (extra installed packages) is normal: a lockfile
-            // edit that *removes* a dependency leaves it on disk until the
-            // next install, which does not stop the project from running.
-            Some(locked.is_subset(&installed))
+            // Optional entries are skipped: npm records every platform's
+            // binary in the lockfile but installs only the one matching the
+            // host, so a healthy esbuild/swc/rollup/sharp tree is legitimately
+            // missing ~20 of them. Counting those as unsatisfied warned on
+            // every such project right after a successful `npm install`.
+            let required = lockfile_package_paths(lockfile, Optionality::RequiredOnly)?;
+            // Every required package must be present in the tree. The reverse
+            // (extra installed packages) is normal: a lockfile edit that
+            // *removes* a dependency leaves it on disk until the next install,
+            // which does not stop the project from running.
+            Some(required.is_subset(&installed))
         }
         // Bun, Deno, Go and pip record no comparable manifest of what they
         // installed, so there is nothing to compare and no warning to give.
@@ -161,17 +167,50 @@ fn lockfile_satisfied(project_dir: &Path, manager: &dep::DepManager) -> Option<b
     }
 }
 
+/// Which lockfile entries [`lockfile_package_paths`] should return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Optionality {
+    /// Every entry, whatever its `optional` flag.
+    Any,
+    /// Only entries npm is expected to install on every platform.
+    RequiredOnly,
+}
+
 /// The `packages` keys of an npm-style lockfile, excluding the root entry.
-fn installed_package_paths(path: &Path) -> Option<std::collections::BTreeSet<String>> {
+///
+/// With [`Optionality::RequiredOnly`], entries marked `"optional": true` are
+/// dropped. Those are the per-platform binaries that packages like esbuild,
+/// swc, rollup, sharp, Next.js, Vite and Tailwind v4 declare: the lockfile
+/// lists all of them, npm installs only the one matching the host, and the
+/// rest are absent from a perfectly healthy tree.
+///
+/// `optional` alone is the filter, not `os`/`cpu`. Matching `os`/`cpu` against
+/// the host would be stricter — it would notice an optional package that
+/// *should* have been installed here but was not — but it would have to
+/// reimplement npm's platform matching (`os`, `cpu`, `libc`, negations like
+/// `"!win32"`), and getting that subtly wrong reintroduces exactly the false
+/// positive this is fixing. The looser filter can only ever under-report, and
+/// an optional dependency missing on the current platform does not stop the
+/// project running, which is what this check is for.
+fn lockfile_package_paths(
+    path: &Path,
+    optionality: Optionality,
+) -> Option<std::collections::BTreeSet<String>> {
     let raw = std::fs::read_to_string(path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let packages = parsed.get("packages")?.as_object()?;
     Some(
         packages
-            .keys()
+            .iter()
             // "" is the project itself, present only in the real lockfile.
-            .filter(|key| !key.is_empty())
-            .cloned()
+            .filter(|(key, _)| !key.is_empty())
+            .filter(|(_, entry)| match optionality {
+                Optionality::Any => true,
+                Optionality::RequiredOnly => {
+                    entry.get("optional") != Some(&serde_json::Value::Bool(true))
+                }
+            })
+            .map(|(key, _)| key.clone())
             .collect(),
     )
 }
@@ -571,12 +610,26 @@ fn manifests_out_of_sync(project_dir: &Path, manager: &dep::DepManager) -> Optio
         return None;
     }
 
+    // `Optionality::Any` on purpose. This compares package.json against the
+    // *lockfile*, and npm records optional dependencies there even when it
+    // does not install them on this platform — verified: a package.json with
+    // `optionalDependencies: {fsevents}` on macOS produces a lockfile entry
+    // (`optional: true`) and no `node_modules/fsevents`. So an optional dep
+    // absent from the lockfile is a genuine mismatch that `npm ci` rejects,
+    // exactly like a required one, and must not be filtered out. The
+    // optional-entry problem belongs to `lockfile_satisfied`, which compares
+    // the lockfile against what was installed.
+    //
     // Lockfile `packages` keys are paths like `node_modules/is-odd`; compare on
     // the final component so nested entries still match their package name.
-    let locked: std::collections::BTreeSet<String> = installed_package_paths(lockfile)?
-        .iter()
-        .filter_map(|key| key.rsplit("node_modules/").next().map(str::to_string))
-        .collect();
+    // Note this collapses `node_modules/a/node_modules/b` to `b`, which is
+    // correct only because the comparison is against top-level package.json
+    // names — do not reuse this as a general lockfile index.
+    let locked: std::collections::BTreeSet<String> =
+        lockfile_package_paths(lockfile, Optionality::Any)?
+            .iter()
+            .filter_map(|key| key.rsplit("node_modules/").next().map(str::to_string))
+            .collect();
 
     let missing: Vec<String> = declared.difference(&locked).cloned().collect();
     if missing.is_empty() {
@@ -694,6 +747,120 @@ mod tests {
             dep_state(dir.path(), &manager),
             DepState::Installed,
             "a newer lockfile with the same packages installed is not out of sync"
+        );
+    }
+
+    /// Issue #3 (second pass): npm records every platform's binary in the
+    /// lockfile but installs only the host's, so a healthy tree is legitimately
+    /// missing the rest. Shape taken from a real `npm install esbuild@0.21.5`
+    /// on darwin-arm64: 25 lockfile entries, 2 installed, the 22 absent ones
+    /// all `"optional": true`.
+    ///
+    /// Packages that ship optional platform binaries this way include esbuild,
+    /// swc, rollup, sharp, Next.js, Vite and Tailwind v4, so this is the common
+    /// case rather than an edge one.
+    #[test]
+    fn optional_platform_packages_absent_from_node_modules_are_not_stale() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"dependencies":{"esbuild":"0.21.5"}}"#,
+        )
+        .unwrap();
+
+        // The lockfile lists the host binary plus binaries for other targets,
+        // every one of them optional, exactly as npm writes it.
+        fs::write(
+            dir.path().join("package-lock.json"),
+            r#"{"packages":{
+                "": {"name": "t"},
+                "node_modules/esbuild": {"version": "0.21.5"},
+                "node_modules/@esbuild/darwin-arm64": {
+                    "version": "0.21.5", "cpu": ["arm64"], "os": ["darwin"], "optional": true
+                },
+                "node_modules/@esbuild/linux-x64": {
+                    "version": "0.21.5", "cpu": ["x64"], "os": ["linux"], "optional": true
+                },
+                "node_modules/@esbuild/win32-x64": {
+                    "version": "0.21.5", "cpu": ["x64"], "os": ["win32"], "optional": true
+                },
+                "node_modules/@esbuild/aix-ppc64": {
+                    "version": "0.21.5", "cpu": ["ppc64"], "os": ["aix"], "optional": true
+                }
+            }}"#,
+        )
+        .unwrap();
+        // npm installed only the two entries that apply to this host.
+        write_installed_manifest(dir.path(), &["esbuild", "@esbuild/darwin-arm64"]);
+
+        let manager = dep::DepManager::Npm {
+            lockfile: dir.path().join("package-lock.json"),
+        };
+        assert_eq!(
+            dep_state(dir.path(), &manager),
+            DepState::Installed,
+            "optional binaries for other platforms are absent from every healthy tree"
+        );
+    }
+
+    /// The optional filter must not mask a genuinely missing *required*
+    /// package in a project that also has optional platform binaries.
+    #[test]
+    fn a_required_package_is_still_caught_among_optional_ones() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"dependencies":{"esbuild":"0.21.5"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("package-lock.json"),
+            r#"{"packages":{
+                "": {"name": "t"},
+                "node_modules/esbuild": {"version": "0.21.5"},
+                "node_modules/@esbuild/linux-x64": {
+                    "version": "0.21.5", "os": ["linux"], "optional": true
+                },
+                "node_modules/left-pad": {"version": "1.3.0"}
+            }}"#,
+        )
+        .unwrap();
+        write_installed_manifest(dir.path(), &["esbuild"]);
+
+        let manager = dep::DepManager::Npm {
+            lockfile: dir.path().join("package-lock.json"),
+        };
+        assert_eq!(
+            dep_state(dir.path(), &manager),
+            DepState::OutOfSync,
+            "left-pad is required, not optional, and is not installed"
+        );
+    }
+
+    /// An optional dependency missing from the *lockfile* is still a real
+    /// mismatch: npm records optional deps there even when it does not install
+    /// them, so `npm ci` rejects a lockfile that omits one.
+    #[test]
+    fn an_optional_dependency_missing_from_the_lockfile_is_out_of_sync() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"optionalDependencies":{"fsevents":"2.3.3"}}"#,
+        )
+        .unwrap();
+        write_lockfile(dir.path(), &[]);
+        let detection = dep::DepDetection {
+            manager: dep::DepManager::Npm {
+                lockfile: dir.path().join("package-lock.json"),
+            },
+            label: "npm",
+        };
+
+        let context =
+            install_failure_context(&detection, DepState::Missing, DepState::Missing, dir.path());
+        assert!(
+            context.contains("out of sync") && context.contains("fsevents"),
+            "an optional dep absent from the lockfile is a genuine EUSAGE:\n{context}"
         );
     }
 
