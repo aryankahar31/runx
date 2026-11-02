@@ -5500,3 +5500,47 @@ fn plain_run_still_only_hints_and_never_installs() {
         "a plain run must never install dependencies"
     );
 }
+
+/// A `package.json` with no lockfile must get the same answer from the
+/// readiness summary and the post-run hint. They used to disagree: readiness
+/// keyed off lockfiles and said "none declared" while the hint said
+/// dependencies were missing.
+#[cfg(unix)]
+#[test]
+fn readiness_and_hint_agree_without_a_lockfile() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_executable(&home, "node", "0.0.0", "echo x");
+    fs::write(
+        dir.path().join("package.json"),
+        r#"{"name":"p","dependencies":{"x":"1"},"scripts":{"dev":"echo hi"}}"#,
+    )
+    .expect("write package.json");
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo MARKER_RAN\"\n",
+    )
+    .expect("write runx.toml");
+
+    let output = runx_with_home(dir.path(), &home, &["--offline", "dev"]);
+    let combined = format!("{}{}", stderr_of(&output), stdout_of(&output));
+    assert!(
+        combined.contains("no lockfile"),
+        "the readiness summary must notice a lockfile-less project:\n{combined}"
+    );
+    assert!(
+        !combined.contains("dependencies: none declared"),
+        "it must not claim no dependencies while hinting they are missing:\n{combined}"
+    );
+    // A lockfile-less project may legitimately have nothing installed, so this
+    // is a warning: the run must still proceed.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a missing lockfile must not block the run: {combined}"
+    );
+    assert!(
+        stdout_of(&output).contains("MARKER_RAN"),
+        "the command must still run:\n{combined}"
+    );
+}

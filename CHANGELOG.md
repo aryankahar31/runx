@@ -6,6 +6,59 @@ tags and each tag's GitHub release notes (`gh release view`). Entries marked
 that release has no notes; every line is verifiable against the linked
 compare view or commit.
 
+## Unreleased
+
+Addresses the software testing & UX review (RX-UX-01..08). Behaviour that
+already worked is unchanged: a plain `runx dev` still only hints and never
+installs, `--locked` still never creates or rewrites `runx.lock`, and
+`runx init` still refuses to overwrite an existing config.
+
+### Added
+
+- Project readiness checks shared by `runx install`, `--offline` runs and
+  `runx doctor`: runtime, dependency and lockfile state, each with a
+  pass/warn/fail reason and the command that resolves it (RX-UX-02).
+- `--offline` prints runtime cache status, dependency state and the network
+  policy before doing any work, and names the missing prerequisite instead of
+  surfacing a refused download URL (RX-UX-03).
+- `runx doctor` reports a project-readiness section covering runtimes,
+  dependencies and the lockfile, plus total cache size, and no longer claims
+  "everything looks healthy" while a prerequisite is missing (RX-UX-05/06).
+- `runx init` summarises what was detected (runtimes with their source files,
+  package manager, inferred commands) and recommends the next command
+  (RX-UX-08).
+- 18 integration tests automating cases T-03..T-11 from the review, including
+  a cross-platform PATH isolation regression test that reads PATH from a probe
+  process before and after a run and asserts equality (RX-UX-07). It runs on
+  the Ubuntu, macOS and Windows CI runners.
+- README: a table of what `runx install`, `--install`, `runx dev` and
+  `runx lock` each prepare, and the four dependency states (RX-UX-02).
+
+### Changed
+
+- `runx install` distinguishes already-installed, lockfile-out-of-sync,
+  install-failed and nothing-to-install. A failure now states the detected
+  condition, whether any files changed, and the repair command — for an
+  out-of-sync npm lockfile that is `npm install`, since `npm ci` (which runx
+  runs) refuses that state by design (RX-UX-01).
+- A malformed `runx.lock` reports a runx-level error naming the file and the
+  recovery, with the parser's first line quoted, instead of a bare TOML parse
+  error and caret diagram (RX-UX-04).
+- The four `runx cache` actions are named in top-level help, and `runx doctor`'s
+  help states what it checks (RX-UX-05/06).
+
+### Not reproduced
+
+Investigated with clean fixtures; no code change was warranted.
+
+- RX-UX-04's core concern: `--locked` never creates or rewrites the lockfile.
+  Missing, stale and platform-incomplete lockfiles already produced distinct
+  errors naming the fix, and the file was byte-identical afterwards in every
+  case. Only the malformed-file message needed work.
+- RX-UX-07's leak: the parent PATH was already unmodified — nothing outside
+  test code mutates the process environment. The gap was the missing
+  regression test, which is now in place.
+
 ## v0.6.0 — 2026-10-01
 
 - [fix: locked execution hardening + missing-deps hint gate (#20)](https://github.com/aryankahar31/runx/pull/20)

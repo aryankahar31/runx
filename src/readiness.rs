@@ -152,7 +152,26 @@ fn repair_command(manager: &dep::DepManager) -> &'static str {
 /// "nothing-to-install" state, which callers report separately since it is not
 /// a problem.
 pub fn dependency_checks(project_dir: &Path) -> Vec<Check> {
-    dep::detect_all(project_dir)
+    let detections = dep::detect_all(project_dir);
+
+    // A package.json with no lockfile declares dependencies that npm can still
+    // install. `detect_all` keys off lockfiles, so without this a project in
+    // that state reported "none declared" here while the post-run hint said
+    // dependencies were missing — two different answers on one run.
+    if detections.is_empty() && project_dir.join("package.json").is_file() {
+        let subject = "dependencies (npm, no lockfile)".to_string();
+        return vec![if project_dir.join("node_modules").is_dir() {
+            Check::pass(subject, "installed")
+        } else {
+            Check::warn(
+                subject,
+                "package.json declares dependencies but none are installed",
+                "npm install",
+            )
+        }];
+    }
+
+    detections
         .iter()
         .map(|detection| {
             let subject = format!("dependencies ({})", detection.label);
