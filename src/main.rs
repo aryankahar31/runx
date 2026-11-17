@@ -49,6 +49,10 @@ const RESERVED_COMMANDS: &[&str] = &[
     "completions",
     "self",
     "install",
+    "list",
+    "which",
+    "upgrade",
+    "exec",
 ];
 
 #[derive(Debug, Parser)]
@@ -153,6 +157,27 @@ enum Command {
     /// runtime. Does not start any command.
     Install,
 
+    /// List cached runtimes (alias for `runx cache list`).
+    List,
+
+    /// Print the executable runx would use for a runtime in this project.
+    Which {
+        /// Runtime id, e.g. `node`, `python`, `java`.
+        tool: String,
+    },
+
+    /// Run a program with this project's runtimes on PATH.
+    ///
+    /// Unlike `run`, the program does not have to be declared in `[run]`.
+    Exec {
+        /// The program and arguments, after `--`.
+        #[arg(last = true, required = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+
+    /// Update runx itself (alias for `runx self update`).
+    Upgrade,
+
     /// Manage runx itself.
     Self_ {
         #[command(subcommand)]
@@ -192,11 +217,18 @@ enum CacheAction {
         #[arg(long, default_value_t = 30)]
         older_than: u64,
 
+        /// List what would be removed without deleting anything.
+        #[arg(long, conflicts_with = "yes")]
+        dry_run: bool,
+
         /// Actually delete. Without this, the runtimes that would be removed
         /// are only listed.
         #[arg(long)]
         yes: bool,
     },
+
+    /// Print the cache directory.
+    Dir,
 }
 
 fn main() {
@@ -239,6 +271,10 @@ fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Init) => init_config(),
         Some(Command::Install) => install_command(),
+        Some(Command::List) => cli_cache::cache_list(),
+        Some(Command::Which { tool }) => which_command(&tool),
+        Some(Command::Exec { command }) => exec_command(&command),
+        Some(Command::Upgrade) => self_update::update(),
         Some(Command::Run {
             key,
             locked,
@@ -249,7 +285,12 @@ fn run(cli: Cli) -> Result<()> {
             CacheAction::List => cli_cache::cache_list(),
             CacheAction::Size => cli_cache::cache_size(),
             CacheAction::Clean { yes } => cli_cache::cache_clean(yes),
-            CacheAction::Prune { older_than, yes } => cli_cache::cache_prune(older_than, yes),
+            CacheAction::Prune {
+                older_than,
+                dry_run,
+                yes,
+            } => cli_cache::cache_prune(older_than, yes && !dry_run),
+            CacheAction::Dir => cli_cache::cache_dir(),
         },
         Some(Command::Doctor { verify }) => doctor_command(verify),
         Some(Command::Completions { shell }) => completions_command(shell),
@@ -405,6 +446,117 @@ fn detected_source<'a>(result: &'a detect::DetectionResult, tool: &str) -> Optio
         .and_then(|detected| detected.found())
         .map(|runtime| runtime.source.as_str())
 }
+/// `runx which <tool>`: the exact executable a project run would use.
+///
+/// Prefers an exact requirement or a lockfile pin; a range without a lock is
+/// answered from the cache (newest installed match) rather than resolving over
+/// the network. `which` is a diagnostic and should stay instant and offline.
+fn which_command(tool: &str) -> Result<()> {
+    let tool = tool.trim().to_ascii_lowercase();
+    let home = cache::runx_home()?;
+    let cwd = env::current_dir().context("Failed to determine current directory")?;
+    let project_dir = config::find_project_dir(&cwd);
+
+    let (requirement, lockfile) = match &project_dir {
+        Some(dir) => {
+            let resolved = config::load_or_detect_runtimes_only(dir)?;
+            let requirement = resolved.inner.runtimes.get(&tool).cloned();
+            (requirement, lock::Lockfile::load(dir)?)
+        }
+        None => (None, None),
+    };
+
+    let locked = lockfile
+        .as_ref()
+        .and_then(|lockfile| lockfile.runtimes.get(&tool))
+        .filter(|entry| {
+            requirement
+                .as_deref()
+                .is_none_or(|req| entry.requirement.is_empty() || entry.requirement == req)
+        })
+        .map(|entry| entry.version.clone());
+
+    let version = match &requirement {
+        Some(req) if version::validate_concrete(&tool, req).is_ok() => req.clone(),
+        _ => locked
+            .or_else(|| newest_cached_matching(&home, &tool, requirement.as_deref()))
+            .ok_or_else(|| {
+                let what = requirement
+                    .as_deref()
+                    .map(|req| format!("{tool} `{req}`"))
+                    .unwrap_or_else(|| tool.clone());
+                error::UserError::new(format!(
+                    "No cached runtime satisfies {what}.\n\
+                 Hint: run the project command (e.g. `runx dev`) to install it, \
+                 or `runx cache list` to see what is available."
+                ))
+            })?,
+    };
+
+    let spec = runtime::resolve_runtime(&tool, &version)
+        .with_context(|| format!("Failed to resolve runtime {tool} {version}"))?;
+    let cached = cache::cached_runtime(&spec)?.ok_or_else(|| {
+        error::UserError::new(format!(
+            "{tool} {version} is not installed.\n\
+             Hint: run the project command (e.g. `runx dev`) or `runx install` to install it."
+        ))
+    })?;
+    let executable = cached
+        .bin_dirs
+        .first()
+        .map(|dir| dir.join(&spec.executable))
+        .ok_or_else(|| error::UserError::new(format!("{tool} {version} has no bin directory.")))?;
+
+    if flags::json() {
+        println!(
+            "{}",
+            serde_json::json!({
+                "tool": tool,
+                "version": version,
+                "path": executable.display().to_string(),
+                "source": project_dir.as_ref().map(|dir| dir.display().to_string()),
+            })
+        );
+    } else {
+        println!("{}", executable.display());
+    }
+    Ok(())
+}
+
+/// Newest cached version of `tool` matching `requirement` (open-ended if none).
+fn newest_cached_matching(home: &Path, tool: &str, requirement: Option<&str>) -> Option<String> {
+    let req = match requirement {
+        Some(raw) => version::Req::parse(raw)?,
+        None => version::Req::parse("*")?,
+    };
+    cache::list_cached(home)
+        .ok()?
+        .into_iter()
+        .filter(|entry| entry.tool == tool && entry.complete)
+        .filter_map(|entry| {
+            let parsed = version::Version::parse(&entry.version)?;
+            req.matches(&parsed).then_some(parsed)
+        })
+        .max()
+        .map(|version| version.to_three_parts())
+}
+
+/// `runx exec -- <program> ...`: run a program with this project's isolated
+/// runtime PATH. Arguments are passed as an argv vector, never through a shell.
+fn exec_command(argv: &[String]) -> Result<()> {
+    let (run_dir, project_dir, config) = load_project_runtimes_only()?;
+    let provisioned = provision(&project_dir, &config, false)?;
+    for entry in &provisioned {
+        cache::touch_last_used(&entry.cached.root);
+    }
+    let runtimes: Vec<cache::CachedRuntime> =
+        provisioned.into_iter().map(|entry| entry.cached).collect();
+
+    let status = executor::execute_argv(argv, &runtimes, &run_dir, &project_dir)?;
+    std::io::stderr().flush().ok();
+    process::exit(status.code().unwrap_or(1));
+}
+
 fn install_command() -> Result<()> {
     let (_, project_dir, cfg) = load_project_runtimes_only()?;
     let detections = dep::detect_all(&project_dir);

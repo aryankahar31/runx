@@ -18,16 +18,7 @@ pub fn execute(
     // pre-child work, so shell-overhead claims are measurable, not asserted.
     let timings = env::var_os("RUNX_TIMINGS").is_some();
     let start = std::time::Instant::now();
-    let mut path = isolated_path(runtimes)?;
-
-    // Prepend the project's .venv/bin (or venv/bin) to PATH so that commands
-    // use the project-local Python and its installed packages — mirroring how
-    // Node's node_modules/.bin is implicitly on PATH.
-    if let Some(venv_bin) = venv_bin_dir(project_dir) {
-        let mut paths: Vec<PathBuf> = std::env::split_paths(&path).collect();
-        paths.insert(0, venv_bin);
-        path = env::join_paths(paths).context("Failed to build PATH with venv")?;
-    }
+    let path = child_path(runtimes, project_dir)?;
     let command = append_passthrough(command, passthrough);
     crate::flags::info(&format!("Running `{command}`"));
 
@@ -50,6 +41,50 @@ pub fn execute(
     child
         .wait()
         .with_context(|| format!("Failed to wait for command `{command}`"))
+}
+
+/// Run an argv vector directly (no shell) with the same isolated PATH as
+/// `[run]` commands. Used by `runx exec`.
+pub fn execute_argv(
+    argv: &[String],
+    runtimes: &[CachedRuntime],
+    run_dir: &Path,
+    project_dir: &Path,
+) -> Result<ExitStatus> {
+    let Some(program) = argv.first() else {
+        anyhow::bail!("`runx exec` needs a program after `--`");
+    };
+    let path = child_path(runtimes, project_dir)?;
+    crate::flags::info(&format!("Running `{}`", argv.join(" ")));
+
+    let mut child = Command::new(program);
+    child
+        .args(&argv[1..])
+        .current_dir(run_dir)
+        .env("PATH", path)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let mut child = child
+        .spawn()
+        .with_context(|| format!("Failed to start program `{program}`"))?;
+    child
+        .wait()
+        .with_context(|| format!("Failed to wait for program `{program}`"))
+}
+
+/// PATH a child gets: runtime bins, then the project venv, then the system.
+fn child_path(runtimes: &[CachedRuntime], project_dir: &Path) -> Result<OsString> {
+    let mut path = isolated_path(runtimes)?;
+    // Prepend the project's .venv/bin (or venv/bin) to PATH so that commands
+    // use the project-local Python and its installed packages — mirroring how
+    // Node's node_modules/.bin is implicitly on PATH.
+    if let Some(venv_bin) = venv_bin_dir(project_dir) {
+        let mut paths: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        paths.insert(0, venv_bin);
+        path = env::join_paths(paths).context("Failed to build PATH with venv")?;
+    }
+    Ok(path)
 }
 
 fn shell_command(command: &str) -> Command {

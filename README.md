@@ -284,8 +284,11 @@ runx lock             # write runx.lock
 runx install          # install project dependencies (npm ci, pnpm install, pip, etc.)
 runx doctor           # diagnose cache, PATH and detection issues
 runx doctor --verify  # also hash each runtime against its install-time digest
-runx cache list       # also: size, clean, prune (--older-than N)
-runx self update      # verified atomic binary swap
+runx list             # cached runtimes (alias: runx cache list)
+runx which node       # executable this project's run would use
+runx exec -- make     # run an arbitrary program with the project's runtime PATH
+runx cache list       # also: size, dir, clean, prune (--older-than N, --dry-run)
+runx self update      # verified atomic binary swap (alias: runx upgrade)
 runx completions zsh  # bash, zsh, fish, powershell
 
 runx --json doctor    # machine-readable output (also: cache list/size)
