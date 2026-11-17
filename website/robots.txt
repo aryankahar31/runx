@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://runx-cli.vercel.app/sitemap.xml

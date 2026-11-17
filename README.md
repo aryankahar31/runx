@@ -414,7 +414,7 @@ built in CI or published by this repository.
 
 ## Documentation
 
-- [Website](https://runx-cli.vercel.app/) — overview, quick start, benchmarks
+- [Website](https://runx-cli.vercel.app/) — overview, quick start, benchmarks ([source](website/))
 - [Zero-Config Detection](docs/zero-config.md) — every detected file, priority order, inference rules
 - [Zero-admin machines](docs/zero-admin.md) — no root, no system installs, `RUNX_HOME` on locked-down hosts
 - [Runtime Resolution](docs/runtime-resolution.md) — range semantics, strict mode, registry freshness
