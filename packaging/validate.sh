@@ -27,7 +27,8 @@ for file in \
   npm/bin/runx.js \
   npm/README.md \
   render.sh \
-  test-render.sh; do
+  test-render.sh \
+  test-install-version.sh; do
   check "$file"
 done
 
@@ -50,5 +51,6 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 sh "$root/test-render.sh"
+sh "$root/test-install-version.sh"
 
 exit "$failed"
