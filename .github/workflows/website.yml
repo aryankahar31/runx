@@ -17,5 +17,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Check JavaScript syntax
+        run: |
+          node --check website/script.js
+          node --check website/scripts/build-data.mjs
+      - name: Build release metadata
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node website/scripts/build-data.mjs
       - name: Static site checks
         run: node website/scripts/check.mjs

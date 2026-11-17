@@ -1,7 +1,7 @@
 # Website
 
 Source of truth for <https://runx-cli.vercel.app/>. Static HTML, CSS and vanilla
-JS — no build step, no framework, no runtime dependencies.
+JS with a small build step, no framework, and no runtime dependencies.
 
 ## Structure
 
@@ -13,14 +13,16 @@ JS — no build step, no framework, no runtime dependencies.
 | `website/404.html` | Not-found page |
 | `website/assets/fonts/` | Self-hosted Inter + JetBrains Mono (Latin woff2, OFL licence) |
 | `website/og.png` | 1200×630 Open Graph image (regenerate with Chrome headless if the copy changes) |
+| `website/scripts/build-data.mjs` | Fetches release version and stars from GitHub into `data.json` |
 | `website/vercel.json` | Cache + security headers |
 | `website/scripts/check.mjs` | Local links, anchors, required meta and honesty checks |
 
 ## Updating content
 
-- **Version and stars** are fetched client-side from the GitHub API and cached for
-  10 minutes. Never hardcode them. If the API fails the page shows
-  "latest release" and "—" as fallbacks.
+- **Version and stars** are fetched during the Vercel build and refreshed
+  client-side from the GitHub API, cached for 10 minutes. Never hardcode them.
+  If either request fails, the page keeps the build-time value or shows the
+  "latest release" / "—" fallback.
 - **CLI reference** is hand-written from real `runx --help` output. Re-check the
   commands and descriptions against the released binary when the CLI changes.
 - **Benchmarks** must match `benchmarks/results.json` and
@@ -33,6 +35,9 @@ JS — no build step, no framework, no runtime dependencies.
 ## Checks
 
 ```sh
+node --check website/script.js
+node --check website/scripts/build-data.mjs
+node website/scripts/build-data.mjs
 node website/scripts/check.mjs
 ```
 
@@ -42,9 +47,10 @@ that touches `website/`.
 ## Deploy
 
 The Vercel project `runx-cli` is connected to this repository with **Root
-Directory = `website`**, build command empty, output directory `.`. Pushes to
-`main` deploy production; every PR gets a preview. No `vercel` CLI deploy is
-needed for normal changes.
+Directory = `website`**. Its build command is `node scripts/build-data.mjs` and
+its output directory is `.`. Pushes to `main` deploy production; every PR gets
+a preview. No `vercel` CLI deploy is needed for normal changes.
 
 If the project is ever recreated: set the same root directory, framework
-preset "Other", no build command, and production branch `main`.
+preset "Other", build command `node scripts/build-data.mjs`, output directory
+`.`, and production branch `main`.
