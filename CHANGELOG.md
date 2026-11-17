@@ -24,13 +24,19 @@ compare view or commit.
 - **uv and Poetry lockfiles** (`uv.lock`, `poetry.lock`) supersede pip detection
   and install via `uv sync --frozen` / `poetry install`.
 - **Packaging:** Cargo and cargo-binstall metadata, plus submission templates
-  for Homebrew, Winget, Scoop, AUR, Nix, and npm. Downstream package
-  submissions are not published yet; Winget still needs its version and
-  default-locale manifests, and Nix still needs release-specific source and
-  Cargo hashes. `packaging/render.sh` fills the version and archive digests;
-  `packaging/validate.sh` checks structure and selected placeholders only.
+  for Homebrew, Winget, Scoop, AUR, Nix, and npm. Install scripts and GitHub
+  binaries are available now for published releases; v0.7.0 is pending its
+  release. Cargo/cargo-binstall and all package-manager channels are planned /
+  pending v0.7.0 publication or submission. Winget has version, default-locale,
+  and installer manifests, but schema validation remains manual. Nix still
+  needs release-specific source and Cargo hashes. `packaging/render.sh` fills
+  the version and archive digests; `packaging/validate.sh` checks structure,
+  placeholders, and fail-closed checksum behavior. The renderer validates all
+  five SHA-256 values before writing manifests, and the npm wrapper rejects
+  `RUNX_VERSION` values outside numeric `MAJOR.MINOR.PATCH` form.
 - **CI and containers:** a composite `setup-runx` GitHub Action with cache and
-  lock enforcement, plus a multi-stage `Dockerfile` recipe and usage guide.
+  lock enforcement, planned / pending merge and consumer-workflow verification,
+  plus a multi-stage `Dockerfile` recipe and usage guide.
 - **Zero-admin guide:** no sudo, no system installs, `RUNX_HOME` recipes, and
   explicit limits.
 - Community files: `SECURITY.md`, `CODE_OF_CONDUCT.md`, `ROADMAP.md`, issue

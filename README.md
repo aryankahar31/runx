@@ -82,29 +82,34 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 
 ## Quick Start
 
-| Channel | Command |
-| --- | --- |
-| Install script (macOS / Linux) | `curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh \| sh` |
-| Install script (Windows) | `iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 \| iex` |
-| Cargo | `cargo install runx` |
-| cargo-binstall | `cargo binstall runx` |
-| npm (downloads and verifies the release binary) | `npx runx dev` |
+| Channel | v0.7.0 status | Command / destination |
+| --- | --- | --- |
+| Install script (macOS / Linux) | Available now for published releases; v0.7.0 pending | `curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh \| sh` |
+| Install script (Windows) | Available now for published releases; v0.7.0 pending | `iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 \| iex` |
+| GitHub release binaries | Available now for published releases; v0.7.0 pending | [Releases](https://github.com/aryankahar31/runx/releases) |
+| Cargo | Planned / pending v0.7.0 crates.io publication | `cargo install runx` |
+| cargo-binstall | Planned / pending v0.7.0 crate and release assets | `cargo binstall runx` |
+| npm | Planned / pending submission | `npx runx dev` |
+| Homebrew | Planned / pending submission | `homebrew-runx` tap |
+| Winget | Planned / pending submission | `microsoft/winget-pkgs` manifest PR |
+| Scoop | Planned / pending submission | Scoop bucket |
+| AUR | Planned / pending submission | `runx-bin` |
+| Nix | Planned / pending submission | flake / nixpkgs package |
 
 > Behind a network that blocks Fastly (`raw.githubusercontent.com`)? Use the jsDelivr mirror:
 > `curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh`
 
-The Cargo release, npm wrapper, and Homebrew, Winget, Scoop, AUR, and Nix files
-in [`packaging/`](packaging/) still need their separate publication steps. The
-package-manager files are submission templates, not published packages. The
-Winget file is an installer manifest only and needs companion manifests; the
-Nix package still needs release-specific hashes. The release workflow renders
-version and archive digests, but each package submission still needs review
-and publishing. See [`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.md).
+The scripts and binaries are available for releases that have already been
+published; v0.7.0 is still pending its release. Cargo/cargo-binstall and the
+package-manager files in [`packaging/`](packaging/) are planned / pending v0.7.0
+publication or submission. Their commands above are for use after those steps
+are complete. The release workflow renders package versions and archive
+digests; downstream packages still need review and publication. See
+[`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.md).
 
-Binary-download installers verify the release archive's SHA-256 checksum —
-see [Security](#security). `cargo install runx` builds the crate from
-crates.io, so that channel relies on Cargo registry integrity and your Rust
-toolchain.
+For published releases, the curl and PowerShell installers verify the release
+archive's SHA-256 checksum — see [Security](#security). Their v0.7.0 release is
+pending.
 
 Initialize a project:
 
@@ -390,8 +395,9 @@ libraries).
 
 ## CI and containers
 
-Use the composite action, which installs a SHA-256-verified release binary, caches
-`~/.runx/runtimes` and can enforce the lockfile:
+The composite `setup-runx` action is planned / pending merge and consumer
+workflow verification. Once merged, it installs a SHA-256-verified release
+binary, caches `~/.runx/runtimes`, and can enforce the lockfile:
 
 ```yaml
 - uses: actions/checkout@v4

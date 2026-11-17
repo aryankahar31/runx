@@ -14,11 +14,14 @@ daily-use commands for inspecting and running projects.
 - **Dependency installs:** pnpm and Yarn honor `packageManager` pins through
   Corepack with an `npx` fallback; `uv.lock` and `poetry.lock` take precedence
   over pip detection.
-- **CI and containers:** a composite `setup-runx` GitHub Action can cache
-  runtimes and enforce `runx.lock`. A multi-stage Dockerfile recipe and usage
-  guide are included.
+- **CI and containers:** the composite `setup-runx` GitHub Action is planned /
+  pending merge and consumer-workflow verification; it can cache runtimes and
+  enforce `runx.lock`. A multi-stage Dockerfile recipe and usage guide are
+  included.
 - **Packaging groundwork:** Cargo/cargo-binstall metadata and templates for
-  Homebrew, Winget, Scoop, AUR, Nix, and npm.
+  Homebrew, Winget, Scoop, AUR, Nix, and npm. The renderer validates all five
+  release-asset SHA-256 values before writing manifests; the npm wrapper
+  accepts only numeric `MAJOR.MINOR.PATCH` version overrides.
 - **Documentation and community files:** a zero-admin guide, security and
   conduct policies, roadmap, issue templates, scoped issue drafts, launch
   drafts, and a VHS demo.
@@ -29,8 +32,17 @@ daily-use commands for inspecting and running projects.
 - `cargo test`: 540 passed, 0 failed; one real-release cosign test is ignored
   by default.
 - The ignored cosign test passed against the existing v0.4.2 release archive.
-- `packaging/validate.sh` and the npm wrapper's two unit tests pass. These do
+- `packaging/validate.sh` and the npm wrapper's four tests pass. These do
   not validate downstream package-manager submissions.
+
+## Install-channel status
+
+- **Available now for published releases:** the curl and PowerShell install
+  scripts and GitHub release binaries. v0.7.0 assets are pending release.
+- **Planned / pending v0.7.0 publication:** Cargo and cargo-binstall.
+- **Planned / pending submission:** npm, Homebrew, Winget, Scoop, AUR, and Nix.
+  The package files are templates, not available packages.
+- **Planned / pending merge and verification:** the `setup-runx` GitHub Action.
 
 ## Known limitations
 
@@ -39,15 +51,11 @@ daily-use commands for inspecting and running projects.
 - The Dockerfile was not built in CI or locally, and no container image is
   published.
 - The `setup-runx` action has not been exercised by a consumer workflow.
-- Homebrew, Winget, Scoop, AUR, Nix, Cargo, and npm publication require separate
-  manual steps. The Winget draft is only an installer manifest and needs
-  companion manifests and schema validation; Nix still needs source and Cargo
-  hashes and corrected platform metadata. Windows ARM64 has no native runx
-  release asset.
-- The npm wrapper's `RUNX_VERSION` override needs path validation before that
-  package is published.
-- The packaging renderer's checksum-error path needs to fail closed before it
-  is used to generate downstream package manifests.
+- Cargo/cargo-binstall publication and npm, Homebrew, Winget, Scoop, AUR, and
+  Nix submissions remain manual steps. Winget has all three manifest files,
+  but schema validation with `wingetcreate` / `winget validate` remains manual.
+  Nix source and Cargo hashes remain release-specific placeholders. Windows
+  ARM64 has no native runx release asset.
 - Ruby, PHP, and .NET are not included in this release.
 
 [Full changelog](https://github.com/aryankahar31/runx/compare/v0.6.2...v0.7.0)
