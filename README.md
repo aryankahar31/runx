@@ -80,22 +80,25 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 
 ## Quick Start
 
-Install (macOS / Linux):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh | sh
-```
+| Channel | Command |
+| --- | --- |
+| Install script (macOS / Linux) | `curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh \| sh` |
+| Install script (Windows) | `iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 \| iex` |
+| Cargo | `cargo install runx` |
+| cargo-binstall | `cargo binstall runx` |
+| npm (downloads and verifies the release binary) | `npx runx dev` |
 
 > Behind a network that blocks Fastly (`raw.githubusercontent.com`)? Use the jsDelivr mirror:
 > `curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh`
 
-Windows PowerShell:
+Homebrew, winget, Scoop, AUR and Nix manifests are maintained as release-ready
+templates in [`packaging/`](packaging/) and rendered by the release workflow;
+they become installable once the tap/bucket/manifest PRs listed in
+[`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.md) are merged.
 
-```powershell
-iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 | iex
-```
-
-Both scripts verify the downloaded binary against its published SHA-256 checksum before installing — see [Security](#security).
+Every install path verifies the binary against its published SHA-256 checksum —
+see [Security](#security). `cargo install runx` compiles from crates.io, so that
+channel is only as verified as your Rust toolchain's registry.
 
 Initialize a project:
 

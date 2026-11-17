@@ -1,0 +1,31 @@
+{
+  "name": "runx",
+  "version": "__VERSION__",
+  "description": "Run any project with the exact runtime versions it declares",
+  "bin": {
+    "runx": "bin/runx.js"
+  },
+  "files": [
+    "bin/runx.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "runtime",
+    "version-manager",
+    "node",
+    "python",
+    "launcher"
+  ],
+  "homepage": "https://github.com/aryankahar31/runx",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aryankahar31/runx.git"
+  },
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test.js"
+  }
+}

@@ -178,6 +178,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download packaged assets
         uses: actions/download-artifact@v4
         with:
@@ -213,3 +216,19 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+
+      # Render the packaging templates with this release's version and real
+      # archive digests, so publishing a tap/manifest is copy-paste rather
+      # than manual checksum hunting. Nix hashes still need `nix build`.
+      - name: Render package manifests
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          packaging/render.sh "$version" dist packaging-rendered
+
+      - name: Upload rendered package manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaging-rendered
+          path: packaging-rendered
+          if-no-files-found: error
