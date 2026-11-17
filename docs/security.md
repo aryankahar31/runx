@@ -2,7 +2,7 @@
 
 ## Summary of hardening guarantees
 
-- **SHA-256 verification** before extraction using published checksums, except for older Deno releases described below
+- **SHA-256 verification** before extraction using published checksums (Node, Python, Bun, Go, Deno 2.0.1+, Java via Adoptium release metadata), except for older Deno releases described below
 - **Locked execution verifies against `runx.lock` itself**: `--locked` requires a platform artifact digest, authenticates the retained archive, and checks the installed runtime tree before execution
 - **Sigstore/cosign signatures** on runx's own release archives and `SHA256SUMS`; installers and self-update verify the archive signature, not vendor runtime signatures
 - **Staged installs**: extraction and locked verification finish before publication. Interrupted installs can leave staging files; replacement of an existing runtime is not crash-atomic

@@ -74,7 +74,7 @@ Modern projects pin runtime versions per project; your machine has one global `P
 
 Runx is not an IDE, build system, or language-specific package manager. It provisions and isolates the runtimes your project's commands run with — nothing more.
 
-- VS Code / any editor → terminal or task runner → `runx dev` → node/python/go/bun/deno → your app
+- VS Code / any editor → terminal or task runner → `runx dev` → node/python/go/bun/deno/java → your app
 - Android Studio → Gradle / Android SDK → (optionally) runx providing the underlying JVM/Node runtime
 
 If your workflow needs full IDE tooling, build orchestration, or platform-specific SDKs, those tools still own that job. Runx's job is narrower: resolve, verify, cache, isolate, and run the exact runtime version a project declares.
@@ -132,7 +132,7 @@ Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproj
 
 ### Runtime management
 
-- Node.js, Python, Bun, Go, Deno
+- Node.js, Python, Bun, Go, Deno, Java (Temurin 9+)
 - Automatic downloads with retry, exponential backoff and **resume**
 - Semver/range resolution to the newest matching release
 - Shared runtime cache across all projects
@@ -164,12 +164,12 @@ Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproj
 | Bun | ✅ |
 | Go | ✅ |
 | Deno | ✅ |
-| Java | 🚧 Planned |
-| .NET | 🚧 Planned |
+| Java (Eclipse Temurin, 9+) | ✅ |
+| Ruby, PHP, .NET | 🚧 Planned — see [ROADMAP.md](ROADMAP.md) |
 
 ## Zero-Config Detection
 
-Runx automatically detects runtimes from files your project already uses — `.nvmrc`, `.python-version`, `pyproject.toml`, `Pipfile`, `package.json` `engines`, `go.mod`, and Bun/Deno version files. Multiple runtimes are detected together and share one isolated environment, and every script in `package.json` becomes a run command (`runx dev`, `runx test`, `runx build`, …) without any configuration.
+Runx automatically detects runtimes from files your project already uses — `.nvmrc`, `.python-version`, `pyproject.toml`, `Pipfile`, `package.json` `engines`, `go.mod`, `.java-version`, `.sdkmanrc`, and Bun/Deno version files. Multiple runtimes are detected together and share one isolated environment, and every script in `package.json` becomes a run command (`runx dev`, `runx test`, `runx build`, …) without any configuration.
 
 Detection never writes to disk and never merges with an existing `runx.toml`; explicit configuration always wins.
 
@@ -356,14 +356,15 @@ There is no telemetry, and runx makes no network requests beyond fetching runtim
 
 **Current** (v0.5)
 
-- Node.js, Python, Bun, Go, Deno
-- `runx.lock` + `--locked`, Sigstore/cosign signing
+- Node.js, Python, Bun, Go, Deno, Java
+- `runx.lock` + `--locked` / `--frozen`, Sigstore/cosign signing
 - Cache management, `doctor`, `self update`, completions
 - Multi-runtime detection and isolated multi-runtime `PATH`
 
 **Next**
 
-- Java, .NET
+- Ruby (needs a checksum-published portable build; ruby-builder has none)
+- PHP, .NET (no portable, checksum-verified archive in runx's version model)
 - Monorepo / workspace support
 - Pre/post run hooks
 

@@ -95,6 +95,7 @@ pub struct DetectionResult {
     pub bun: Option<Detected>,
     pub go: Option<Detected>,
     pub deno: Option<Detected>,
+    pub java: Option<Detected>,
     /// Shell commands inferred from `package.json` `scripts`, keyed by script
     /// name: `"npm run <script>"` for npm-style projects, `"bun run <script>"`
     /// for Bun-managed ones. Every script becomes a command so `runx test`
@@ -110,13 +111,14 @@ impl DetectionResult {
     /// doctor's project report, and the runtimes map all iterate it, so a new
     /// runtime slots into detection output by adding one tuple here (plus its
     /// detector fn and struct field).
-    pub fn slots(&self) -> [(&'static str, Option<&Detected>); 5] {
+    pub fn slots(&self) -> [(&'static str, Option<&Detected>); 6] {
         [
             ("node", self.node.as_ref()),
             ("python", self.python.as_ref()),
             ("bun", self.bun.as_ref()),
             ("go", self.go.as_ref()),
             ("deno", self.deno.as_ref()),
+            ("java", self.java.as_ref()),
         ]
     }
 
@@ -152,6 +154,7 @@ pub fn detect_runtimes(dir: &Path) -> DetectionResult {
         bun: detect_bun(dir),
         go: detect_go(dir),
         deno: detect_deno(dir),
+        java: detect_java(dir),
         inferred_commands: infer_commands(dir),
     }
 }
@@ -221,6 +224,39 @@ fn detect_python_from_pipfile(dir: &Path) -> Option<Detected> {
         .and_then(|value| value.as_str())?;
 
     Some(record_hint(version, "Pipfile (python_version)"))
+}
+
+// ── Java detection ────────────────────────────────────────────────────────────
+
+/// Java version hints from the files jenv and SDKMAN already use.
+///
+/// Adoptium release names carry a build suffix (`21.0.5+11`) and SDKMAN appends
+/// a vendor (`21.0.5-tem`); both are stripped to the three-part version runx
+/// pins. Java 8's `1.8.0_432` scheme is reported as unresolvable rather than
+/// guessed.
+fn detect_java(dir: &Path) -> Option<Detected> {
+    if let Some(raw) = read_plain_version_file(dir, ".java-version") {
+        return Some(record_hint(&java_requirement(&raw), ".java-version"));
+    }
+
+    let raw = read_file_to_string_lossy(&dir.join(".sdkmanrc"))?;
+    for line in raw.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("java=") {
+            return Some(record_hint(&java_requirement(value), ".sdkmanrc (java)"));
+        }
+    }
+    None
+}
+
+/// `21.0.5+11` / `21.0.5-tem` -> `21.0.5`; bare `21` stays a range.
+fn java_requirement(raw: &str) -> String {
+    raw.trim()
+        .split(['+', '-'])
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 // ── Bun detection ─────────────────────────────────────────────────────────────
@@ -1363,6 +1399,51 @@ mod tests {
         let map = detected_runtimes_map(&detect_runtimes(dir.path()));
         assert_eq!(map.get("node").map(String::as_str), Some(">=20"));
         assert_eq!(map.get("python").map(String::as_str), Some("3.11.7"));
+    }
+
+    /// Java hints come from jenv/SDKMAN files; vendor and build suffixes are
+    /// stripped so the requirement is a normal version or range.
+    #[test]
+    fn java_version_files_are_detected_and_normalized() {
+        let dir = tmp();
+        fs::write(dir.path().join(".java-version"), "21.0.5+11\n").unwrap();
+        let detected = detect_runtimes(dir.path());
+        assert_eq!(
+            detected
+                .java
+                .as_ref()
+                .and_then(|d| d.found())
+                .map(|r| r.requirement.as_str()),
+            Some("21.0.5")
+        );
+
+        let dir = tmp();
+        fs::write(dir.path().join(".sdkmanrc"), "java=17.0.13-tem\n").unwrap();
+        let detected = detect_runtimes(dir.path());
+        assert_eq!(
+            detected
+                .java
+                .as_ref()
+                .and_then(|d| d.found())
+                .map(|r| r.requirement.as_str()),
+            Some("17.0.13")
+        );
+    }
+
+    #[test]
+    fn java_version_file_beats_sdkmanrc() {
+        let dir = tmp();
+        fs::write(dir.path().join(".java-version"), "21\n").unwrap();
+        fs::write(dir.path().join(".sdkmanrc"), "java=17.0.13-tem\n").unwrap();
+        let detected = detect_runtimes(dir.path());
+        assert_eq!(
+            detected
+                .java
+                .as_ref()
+                .and_then(|d| d.found())
+                .map(|r| r.requirement.as_str()),
+            Some("21")
+        );
     }
 
     /// Bun and Go requirements reach the runtimes map like any other tool.

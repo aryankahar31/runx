@@ -4,6 +4,7 @@
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | Node.js | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
 | Python | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Java (Temurin) | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | Multiple runtimes | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | Runtime cache | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Project launcher | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |

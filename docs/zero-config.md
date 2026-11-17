@@ -48,9 +48,18 @@ A generic `package.json` is **not** a Bun indicator: Node projects contain one w
 
 Detected from `.dvmrc` / `.deno-version`, or an explicit entry in `runx.toml`.
 
+### Java (first match wins)
+
+| Priority | File | Notes |
+|----------|------|-------|
+| 1 | `.java-version` | jenv/SDKMAN convention; Adoptium build suffixes (`21.0.5+11`) and SDKMAN vendor suffixes (`21.0.5-tem`) are stripped |
+| 2 | `.sdkmanrc` → `java=` | Same normalization |
+
+Java 9+ is supported (Eclipse Temurin archives). Java 8's `1.8.0_432` naming scheme is reported as unresolvable rather than guessed.
+
 ### Project-root markers
 
-A detected version file also marks a project root for auto-detection, alongside `runx.toml`: `.nvmrc`, `.node-version`, `.python-version`, `.go-version`, `.bun-version`, `.dvmrc`, `.deno-version`, `package.json`, `pyproject.toml`, `Pipfile`, `go.mod`, `bun.lock`, `bun.lockb` and `bunfig.toml`.
+A detected version file also marks a project root for auto-detection, alongside `runx.toml`: `.nvmrc`, `.node-version`, `.python-version`, `.go-version`, `.bun-version`, `.dvmrc`, `.deno-version`, `.java-version`, `.sdkmanrc`, `package.json`, `pyproject.toml`, `Pipfile`, `go.mod`, `bun.lock`, `bun.lockb` and `bunfig.toml`.
 
 ## Multiple runtimes per project
 

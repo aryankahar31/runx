@@ -440,6 +440,7 @@ fn detected_source<'a>(result: &'a detect::DetectionResult, tool: &str) -> Optio
         "bun" => result.bun.as_ref(),
         "go" => result.go.as_ref(),
         "deno" => result.deno.as_ref(),
+        "java" => result.java.as_ref(),
         _ => None,
     };
     entry
