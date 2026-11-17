@@ -38,7 +38,7 @@ use std::{
 /// generic "pass it after `--`" hint would send a runx flag to the child.
 /// `--locked` is deliberately absent: it belongs to `run`, not the top level,
 /// so it needs the `runx run <key> --locked` form instead.
-const GLOBAL_FLAGS: &[&str] = &["--install", "--offline", "--json", "--quiet"];
+const GLOBAL_FLAGS: &[&str] = &["--install", "--offline", "--json", "--quiet", "--frozen"];
 
 const RESERVED_COMMANDS: &[&str] = &[
     "init",
@@ -85,6 +85,12 @@ struct Cli {
     /// Install project dependencies before running the command.
     #[arg(long, global = true)]
     install: bool,
+
+    /// Require `runx.lock` and refuse network operations (equivalent to
+    /// `--locked --offline`). Fails clearly when the lockfile is missing or
+    /// does not pin the current requirement.
+    #[arg(long, global = true)]
+    frozen: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -195,7 +201,7 @@ enum CacheAction {
 
 fn main() {
     let cli = Cli::parse();
-    flags::init(cli.json, cli.quiet, cli.offline);
+    flags::init_with_frozen(cli.json, cli.quiet, cli.offline, cli.frozen);
 
     if let Err(err) = run(cli) {
         if flags::json() {
@@ -815,6 +821,11 @@ fn run_command(
     install: bool,
     passthrough: &[String],
 ) -> Result<()> {
+    // `--frozen` is `--locked` with networking refused. RUNX_LOCKED lets CI
+    // actions (and shells) enforce the lockfile without changing every
+    // invocation.
+    let locked = locked || flags::frozen() || flags::locked_from_env();
+
     // RUNX_TIMINGS=1 mirrors mise's MISE_TIMINGS=1: opt-in per-phase timings
     // printed to stderr, used by benchmarks/shell-overhead.sh.
     let timings = env::var_os("RUNX_TIMINGS").is_some();

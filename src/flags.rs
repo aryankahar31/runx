@@ -19,12 +19,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static JSON: AtomicBool = AtomicBool::new(false);
 static QUIET: AtomicBool = AtomicBool::new(false);
 static OFFLINE: AtomicBool = AtomicBool::new(false);
+static FROZEN: AtomicBool = AtomicBool::new(false);
 
 /// Record the CLI flags. Called once, before any command runs.
 pub fn init(json: bool, quiet: bool, offline: bool) {
+    init_with_frozen(json, quiet, offline, false)
+}
+
+/// Record the CLI flags including `--frozen` (which also implies offline).
+pub fn init_with_frozen(json: bool, quiet: bool, offline: bool, frozen: bool) {
     JSON.store(json, Ordering::Relaxed);
     QUIET.store(quiet, Ordering::Relaxed);
-    OFFLINE.store(offline, Ordering::Relaxed);
+    OFFLINE.store(offline || frozen, Ordering::Relaxed);
+    FROZEN.store(frozen, Ordering::Relaxed);
 }
 
 pub fn json() -> bool {
@@ -37,6 +44,24 @@ pub fn quiet() -> bool {
 
 pub fn offline() -> bool {
     OFFLINE.load(Ordering::Relaxed)
+}
+
+/// True when `--frozen` was given.
+pub fn frozen() -> bool {
+    FROZEN.load(Ordering::Relaxed)
+}
+
+/// True when `RUNX_LOCKED` is set to a truthy value. Mirrors `--locked` for
+/// every run command, so a CI setup can enforce the lockfile once.
+pub fn locked_from_env() -> bool {
+    std::env::var("RUNX_LOCKED")
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "false" | "no"
+            )
+        })
+        .unwrap_or(false)
 }
 
 /// Print an informational line.

@@ -277,6 +277,7 @@ Runtimes are cached under `~/.runx/runtimes/<tool>/<version>/` and reused across
 runx dev              # run a key from [run] (any non-builtin word works)
 runx build            # same — detected projects expose every package.json script
 runx run test --locked # enforce the lockfile, including cached artifact integrity
+runx --frozen test     # --locked plus --offline (CI default)
 runx init             # create a starter runx.toml
 runx lock             # write runx.lock
 runx install          # install project dependencies (npm ci, pnpm install, pip, etc.)
@@ -342,6 +343,7 @@ Pass arguments through with `--`: `runx dev -- --port 3000`. Without `--`, extra
 | `NO_PROXY` | Comma-separated hosts that bypass the proxy (`*` disables it entirely). Loopback always bypasses. |
 | `RUNX_RESOLUTION` | `latest` (default) or `minimum` — see [strict mode](docs/runtime-resolution.md#strict-mode). |
 | `GITHUB_TOKEN` | Optional. Raises GitHub API rate limits for Bun/Deno/Python lookups (60 → 5000 req/hour). Sent only to `api.github.com`. |
+| `RUNX_LOCKED` | `1` makes every run command behave as if `--locked` was passed. |
 | `RUNX_REQUIRE_SIGNATURE` | `1` makes a missing cosign signature an error instead of a warning. |
 
 There is no telemetry, and runx makes no network requests beyond fetching runtime release metadata, archives, and their checksums.

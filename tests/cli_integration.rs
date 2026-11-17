@@ -5203,6 +5203,46 @@ fn t08_locked_without_a_lockfile_errors_and_creates_nothing() {
     );
 }
 
+/// `RUNX_LOCKED=1` enforces the lockfile without changing the invocation.
+#[test]
+fn runx_locked_env_behaves_like_the_flag() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_runx"))
+        .args(["run", "dev"])
+        .current_dir(dir.path())
+        .env("RUNX_HOME", &home)
+        .env("RUNX_LOCKED", "1")
+        .output()
+        .expect("run runx");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(stderr.contains("no runx.lock is present"), "{stderr}");
+    assert!(stderr.contains("runx lock"), "{stderr}");
+}
+
+/// `--frozen` is `--locked --offline`: with the runtime cached but no
+/// lockfile, it fails on the missing lock (not a network error or a download).
+#[cfg(unix)]
+#[test]
+fn frozen_requires_a_lockfile_even_with_a_cached_runtime() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo MARKER_RAN\"\n",
+    )
+    .expect("write runx.toml");
+    plant_executable(&home, "node", "0.0.0", "echo node-ok");
+
+    let output = runx_with_home(dir.path(), &home, &["--frozen", "dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(stderr.contains("no runx.lock is present"), "{stderr}");
+    assert!(!dir.path().join("runx.lock").exists());
+}
+
 /// T-09 / RX-UX-04: a malformed lockfile gives a deterministic runx-level
 /// error, identically with and without `--locked`, and is never rewritten.
 #[test]

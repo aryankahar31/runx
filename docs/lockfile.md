@@ -45,6 +45,13 @@ runx run test --locked
 
 `--locked` fails rather than resolving anything the lockfile does not already pin, mirroring `cargo build --locked`. It fails when a runtime is missing from the lockfile, or when `runx.toml` asks for a requirement the lockfile does not record.
 
+`--frozen` is `--locked --offline`: it requires the lockfile and refuses every
+runx network operation, so a missing cache entry fails instead of being
+downloaded. Use it in CI when the cache is pre-populated (for example by the
+`setup-runx` action) and the build must not reach the network. Setting
+`RUNX_LOCKED=1` makes plain `runx dev`/`runx test` behave as `--locked`, which
+is what the GitHub Action uses for its `locked` input.
+
 A missing artifact digest for *your platform* is fatal under `--locked`: the version alone cannot authenticate a runtime. Run `runx lock` once from each platform you use in CI and commit its artifact entry. Without `--locked`, a missing platform artifact still permits the pinned version to be installed using upstream checksum verification where available.
 
 ## Precedence

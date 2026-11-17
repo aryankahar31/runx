@@ -8,7 +8,6 @@ rust-version = "1.88"
 license = "MIT"
 description = "Run any project with the exact runtime versions it declares — no global installs, no shell hooks"
 repository = "https://github.com/aryankahar31/runx"
-homepage = "https://github.com/aryankahar31/runx"
 documentation = "https://github.com/aryankahar31/runx/blob/main/README.md"
 readme = "README.md"
 keywords = ["runtime", "version-manager", "node", "python", "launcher"]
