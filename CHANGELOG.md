@@ -23,37 +23,38 @@ compare view or commit.
   fallback. Values are validated before reaching a shell.
 - **uv and Poetry lockfiles** (`uv.lock`, `poetry.lock`) supersede pip detection
   and install via `uv sync --frozen` / `poetry install`.
-- **Install channels:** Cargo metadata and cargo-binstall, Homebrew, Winget,
-  Scoop, AUR, Nix, and an npm wrapper, plus `packaging/render.sh` and
-  `packaging/validate.sh` used by CI and the release workflow.
+- **Packaging:** Cargo and cargo-binstall metadata, plus submission templates
+  for Homebrew, Winget, Scoop, AUR, Nix, and npm. Downstream package
+  submissions are not published yet; Winget still needs its version and
+  default-locale manifests, and Nix still needs release-specific source and
+  Cargo hashes. `packaging/render.sh` fills the version and archive digests;
+  `packaging/validate.sh` checks structure and selected placeholders only.
 - **CI and containers:** a composite `setup-runx` GitHub Action with cache and
-  lock enforcement, plus a multi-stage `Dockerfile` and usage guide.
+  lock enforcement, plus a multi-stage `Dockerfile` recipe and usage guide.
 - **Zero-admin guide:** no sudo, no system installs, `RUNX_HOME` recipes, and
   explicit limits.
-- Community files: `SECURITY.md`, `CODE_OF_CONDUCT.md`, `ROADMAP.md`, issue and
-  PR templates, ten scoped issue drafts, launch-post drafts, and a VHS demo
-  script.
+- Community files: `SECURITY.md`, `CODE_OF_CONDUCT.md`, `ROADMAP.md`, issue
+  templates, ten scoped issue drafts, launch-post drafts, and a VHS demo script.
 
 ### Changed
 
-- Shell-overhead benchmarks refreshed on v0.6.2 with mise installed; the
-  documentation now cites the measured 18.6 ms per-prompt `mise activate` cost
-  and ~0.25 ms of runx pre-child work on the same machine.
+- Shell-overhead measurements refreshed on v0.6.2 with mise installed: the
+  benchmark measured 18.6 ms more interactive-shell startup with the mise
+  activation line than with an empty zsh config, plus ~0.25 ms of runx
+  pre-child work. The benchmark does not measure repeated prompt renders.
 
 ### Not shipped in v0.7.0
 
-- Ruby, PHP, and .NET were evaluated and skipped rather than shipped with weaker
-  verification: `ruby/ruby-builder` publishes no checksums and no Windows build;
-  PHP has no official portable checksummed binaries; .NET uses SHA-512 and
-  four-part versions, which do not fit the lockfile's SHA-256/three-part model.
-  See `ROADMAP.md`.
+- Ruby, PHP, and .NET are not included. Supporting them requires distribution
+  artifacts that meet runx's portable-runtime, version, and integrity
+  requirements. See `ROADMAP.md` for the current scope and rationale.
 
 ### Known limitations in this release
 
 - The `Dockerfile` is not built in CI and was not built locally (no Docker on
   the release machine); treat it as a reviewed recipe, not a published image.
-- Java was verified against Adoptium API responses and unit-tested selection
-  logic; a full ~200 MB Temurin download was not exercised end-to-end here.
+- Java's Adoptium response parsing and asset-selection logic have unit tests;
+  a full Temurin download and install was not exercised end-to-end here.
 
 [Full changelog](https://github.com/aryankahar31/runx/compare/v0.6.2...v0.7.0)
 

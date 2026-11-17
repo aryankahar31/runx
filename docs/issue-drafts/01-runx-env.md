@@ -5,9 +5,12 @@
 ## Problem
 
 When a child process sees the wrong Node, or a shell tool cannot find the
-runtime runx uses, the only current answer is to read the source or run with
-`RUNX_TIMINGS=1`. Inspecting the exact `PATH` and versions runx would inject is
-useful for debugging and for CI.
+runtime runx uses, there is no single command that prints the full environment
+runx would pass to a child. `runx which <tool>` prints the selected executable
+for one runtime, and `runx doctor` reports resolved project paths and readiness.
+`RUNX_TIMINGS=1` reports phase timings, not paths or environment variables.
+Inspecting the complete environment runx would inject is useful for debugging
+and CI.
 
 ## Proposal
 

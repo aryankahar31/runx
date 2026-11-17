@@ -4,7 +4,7 @@ How runx turns a version *requirement* into a concrete runtime version.
 
 ## Semver range resolution
 
-When a version file contains a range rather than an exact version, runx resolves it to the **newest published release that satisfies the constraint** — the same behavior as nvm, Volta and mise.
+When a version file contains a range rather than an exact version, runx resolves it to the **newest published release that satisfies the constraint**.
 
 | Input | Resolves to |
 |-------|-------------|
@@ -20,7 +20,12 @@ When a version file contains a range rather than an exact version, runx resolves
 
 Runx always prints which concrete version a range resolved to, so there are no silent surprises.
 
-**Exact pins never touch the network.** Resolving a range needs the published release list, which is cached for 6 hours; if it cannot be fetched, runx falls back to the lowest satisfying version and says so, so offline machines keep working.
+Resolving an exact pin does not need a release-list lookup. Installing a missing
+runtime can still need an archive, checksum, or runtime-specific asset metadata.
+Resolving a range normally fetches the vendor release list, cached for 6 hours;
+if that lookup fails, runx falls back to the lowest satisfying version and
+says so. Explicit `--offline` refuses a range that needs an uncached release
+list rather than silently making that fallback.
 
 ### Strict mode
 
@@ -30,14 +35,18 @@ For reproducibility across machines and CI, prefer [`runx lock`](lockfile.md) ov
 
 ## Registry freshness: no third-party sync
 
-runx resolves version ranges **directly against each vendor's own release index** — `nodejs.org/dist/index.json` for Node, the `astral-sh/python-build-standalone` GitHub releases for Python, GitHub releases for Bun, and `go.dev/dl` for Go. Results are cached locally for at most 6 hours (`INDEX_TTL_SECS` in `src/registry.rs`); after that, the next range resolution refetches from the vendor. There is no sync service, mirror, or intermediate registry in the path.
+runx resolves version ranges against vendor release sources: `nodejs.org/dist/index.json` for Node, the `astral-sh/python-build-standalone` GitHub releases for Python, GitHub releases for Bun and Deno, `go.dev/dl` for Go, and Adoptium metadata for Java. Registry results use a local 6-hour cache (`INDEX_TTL_SECS` in `src/registry.rs`). There is no sync service or intermediate registry in the path.
 
-That is the structural difference from mise's version registry, which depends on a third-party sync pipeline: per [mise's own discussion #7468](https://github.com/jdx/mise/discussions/7468), its index refreshes roughly every 15 minutes but is rate-limited, so `mise latest <tool>` can report a version that is **days behind** the actual latest upstream release. runx's worst case is its own 6-hour cache window — bounded and self-healing, not unbounded by someone else's rate limit.
+This differs from tools that use a third-party version registry: their freshness
+depends on that registry's sync and rate-limit behavior. runx's own release-list
+cache has a defined 6-hour lifetime.
 
 **Falsifiable and continuously checked:** `benchmarks/registry-freshness.sh` fetches the latest version from each vendor's canonical source with plain `curl`, then has runx resolve a fresh `*` range in an isolated cache, and compares the two. A weekly CI run ([`registry-freshness` workflow](../.github/workflows/registry-freshness.yml)) keeps the claim verified over time:
 ![registry-freshness status](https://github.com/aryankahar31/runx/actions/workflows/registry-freshness.yml/badge.svg)
 
-Latest verified run (`benchmarks/registry-results.json`):
+The freshness workflow currently probes Node, Go, Bun, and Python. It does not
+cover Java or Deno. Last checked-in sample (`benchmarks/registry-results.json`)
+is a recorded snapshot, not a live claim about today's latest releases:
 
 | Runtime | Vendor latest | runx resolved | Status |
 | :-- | :-- | :-- | :--: |

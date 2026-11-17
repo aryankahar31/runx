@@ -4,31 +4,36 @@ runx's goal is narrow: **run any project with the runtimes it declares, without
 admin rights or shell integration.** Features that do not serve that sentence
 are usually declined.
 
-Status is honest: shipped means tested and in a release; planned means wanted,
-not promised; not planned includes requests we have deliberately rejected and
-why.
+Status is honest: released means tested and included in a published release;
+prepared means implemented on the v0.7.0 release branch but not released yet;
+planned means wanted, not promised; not planned includes requests we have
+deliberately rejected and why.
 
-## Shipped
+## Released
 
 - **v0.6.x** — Node, Python, Bun, Go, Deno; zero-config detection; checksum
   verification; atomic installs; lockfiles; `runx doctor`; cache management;
   self-update; Sigstore-signed runx releases.
-- **v0.7.0**
-  - Eclipse Temurin Java 9+ (Adoptium metadata + checksums)
-  - `runx list`, `runx which`, `runx exec`, `runx upgrade`,
-    `runx cache dir`, `runx cache prune --dry-run`
-  - `--frozen` and `RUNX_LOCKED=1` for CI-grade lock enforcement
-  - `packageManager` pins for pnpm/Yarn; uv and Poetry lockfile support
-  - install channels: Cargo metadata, cargo-binstall, Homebrew, Winget, Scoop,
-    AUR, Nix, npm wrapper
-  - `setup-runx` GitHub Action and a container image recipe
-  - [zero-admin guide](docs/zero-admin.md)
+
+## Prepared for v0.7.0
+
+- Eclipse Temurin Java 9+ (Adoptium metadata and SHA-256 checksums; full archive
+  download/install has not been exercised end-to-end)
+- `runx list`, `runx which`, `runx exec`, `runx upgrade`, `runx cache dir`, and
+  `runx cache prune --dry-run`
+- `--frozen` and `RUNX_LOCKED=1` lock enforcement
+- `packageManager` pins for pnpm/Yarn; uv and Poetry lockfile support
+- Cargo/cargo-binstall metadata and packaging templates for Homebrew, Winget,
+  Scoop, AUR, Nix, and npm. Downstream package submissions are not published;
+  Winget and Nix templates need additional release-specific work.
+- `setup-runx` GitHub Action and an unbuilt container recipe
+- [zero-admin guide](docs/zero-admin.md)
 
 ## Planned (ordered by demand, not dates)
 
-- **More runtimes** where a vendor publishes portable, checksummed archives:
-  .NET, Ruby, PHP, Zig. Each needs a trustworthy archive and digest source; a
-  runtime without one will not ship.
+- **More runtimes** where a vendor publishes portable archives that meet runx's
+  version and verification requirements: .NET, Ruby, PHP, Zig. A runtime that
+  cannot meet those requirements will not ship.
 - **`runx env`** — print the resolved environment (`PATH`, versions) for shell
   debugging without activating anything.
 - **Per-runtime mirrors** — a documented config knob for teams behind a proxy,
@@ -45,12 +50,11 @@ why.
 - **Telemetry.** None now, none planned.
 - **A package registry or dependency resolver.** runx installs runtimes and
   delegates dependencies to npm/pnpm/pip/uv/poetry/go/etc.
-- **Ruby, PHP, and .NET in v0.7.0.** Checked and skipped rather than shipped
-  weakly: `ruby/ruby-builder` publishes no checksums for its portable tarballs
-  and has no Windows build; PHP has no official portable checksummed binaries;
-  .NET uses SHA-512 and four-part versions, which do not fit runx's exact
-  three-part version and SHA-256 lockfile model. These can return when the
-  archive/verification gap is solvable, not by relaxing validation.
+- **Ruby, PHP, and .NET in v0.7.0.** They were left out because the
+  distribution and version models evaluated for this release did not meet the
+  project's portability and integrity requirements. Support can be
+  reconsidered when suitable artifacts are available, without relaxing
+  validation.
 
 ## How to influence it
 

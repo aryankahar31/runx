@@ -4,9 +4,10 @@
 
 ## Problem
 
-Teams behind a proxy or in a region where a vendor CDN is slow cannot use runx
-for first-time installs. Telling them to pre-populate `RUNX_HOME` is operationally
-awkward.
+Teams behind a proxy can use the global `HTTP_PROXY`, `HTTPS_PROXY`, or
+`ALL_PROXY` settings, and users can pre-populate `RUNX_HOME`. However, runx has
+no per-runtime mirror setting for choosing an alternate vendor host when a
+specific CDN is blocked or slow.
 
 ## Proposal
 

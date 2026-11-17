@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Shell/startup overhead: runx vs mise vs a plain shell.
 #
-# mise hooks every interactive prompt via `eval "$(mise activate zsh)"`;
-# runx has no shell integration, so it costs nothing per prompt. This script
-# measures both claims:
+# mise activation installs shell hooks; runx has no shell integration. This
+# script measures interactive-shell startup and one runx invocation. It does
+# not measure repeated prompt renders.
 #
 #   1. zsh startup time with a clean config (baseline)
 #   2. zsh startup time with `mise activate` in the config   (if mise installed)
@@ -73,7 +73,7 @@ commands=("ZDOTDIR=$work/zdot-plain zsh -i -c exit")
 labels=("zsh startup, no hooks (baseline)")
 if command -v mise >/dev/null 2>&1; then
     commands+=("ZDOTDIR=$work/zdot-mise zsh -i -c exit")
-    labels+=("zsh startup + mise activate (per-prompt cost)")
+    labels+=("zsh startup + mise activate")
 else
     echo "mise not installed — skipping the mise comparison." >&2
     echo "Install with 'brew install mise', rerun, and it will be measured." >&2

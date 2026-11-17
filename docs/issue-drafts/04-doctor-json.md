@@ -1,21 +1,25 @@
-# Emit machine-readable `runx doctor --json`
+# Extend `runx doctor --json` with project readiness details
 
 **Labels:** enhancement, CI
 
 ## Problem
 
-CI and editor extensions currently parse doctor's human output. It is stable in
-practice but not specified, and the exit code only reflects cache health.
+`runx doctor --json` already emits a cache-health object with `healthy`,
+`cache_dir`, `cache_bytes`, `runtimes`, `notes`, and `broken`. It does not yet
+include the project readiness checks shown by human-readable `runx doctor`,
+such as resolved project runtimes, dependency checks, and lockfile status. CI
+and editor integrations otherwise have to combine JSON from separate commands
+or parse human output.
 
 ## Proposal
 
-`runx doctor --json` returns one object: overall status, active `RUNX_HOME`,
-cache size, each runtime with resolved/missing state, dependency checks, and
-lockfile status. Keep human output unchanged and keep the existing exit-code
+Extend the existing JSON object with project-readiness fields while keeping
+the existing cache-health fields and human output. Document which status values
+are informational, warnings, or failures. Preserve the current exit-code
 contract unless a `--strict` flag is explicitly added.
 
 ## Acceptance
 
-- Documented schema (field names and enum values) in `docs/`.
-- Snapshot-style test for a healthy project and one missing runtime.
-- No secrets or absolute home paths beyond what doctor already prints.
+- Document the complete schema and field/status meanings in `docs/`.
+- Snapshot-style tests for a healthy project and a missing runtime/dependency.
+- Keep path disclosure limited to paths already printed by human doctor output.

@@ -2,7 +2,7 @@
 
 # 🚀 Runx
 
-### Universal Project Launcher with Portable Runtimes
+### Project Launcher with Portable Runtimes
 
 Run projects with reproducible, isolated runtimes — no global installations, no shell integration.
 
@@ -93,14 +93,18 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 > Behind a network that blocks Fastly (`raw.githubusercontent.com`)? Use the jsDelivr mirror:
 > `curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh`
 
-Homebrew, winget, Scoop, AUR and Nix manifests are maintained as release-ready
-templates in [`packaging/`](packaging/) and rendered by the release workflow;
-they become installable once the tap/bucket/manifest PRs listed in
-[`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.md) are merged.
+The Cargo release, npm wrapper, and Homebrew, Winget, Scoop, AUR, and Nix files
+in [`packaging/`](packaging/) still need their separate publication steps. The
+package-manager files are submission templates, not published packages. The
+Winget file is an installer manifest only and needs companion manifests; the
+Nix package still needs release-specific hashes. The release workflow renders
+version and archive digests, but each package submission still needs review
+and publishing. See [`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.md).
 
-Every install path verifies the binary against its published SHA-256 checksum —
-see [Security](#security). `cargo install runx` compiles from crates.io, so that
-channel is only as verified as your Rust toolchain's registry.
+Binary-download installers verify the release archive's SHA-256 checksum —
+see [Security](#security). `cargo install runx` builds the crate from
+crates.io, so that channel relies on Cargo registry integrity and your Rust
+toolchain.
 
 Initialize a project:
 
@@ -148,12 +152,13 @@ Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproj
 
 ### Developer experience
 
-- Zero-config auto-detection (every `package.json` script becomes a run command), or explicit `runx.toml`
+- Zero-config auto-detection (`package.json` scripts become run keys; names
+  matching built-in commands use `runx run <key>`), or explicit `runx.toml`
 - `runx install` / `--install` — install project dependencies (npm, Yarn, pnpm, Bun, pip, uv, Poetry, Go) using the managed runtime
 - No shell integration required, ever — nothing happens until you type `runx`
 - Cross-platform: Linux, macOS, Windows
 - Scripting modes: `--json`, `--quiet`, `--offline`
-- `runx doctor` — cache integrity, stale PATH shims, and project readiness (runtime, package manager, dependencies, lockfile) with a pass/warn/fail reason per check; `doctor --verify` adds an integrity sweep over cached executables
+- `runx doctor` — cache integrity, stale PATH shims, and project readiness (runtime, package manager, dependencies, lockfile) with a pass/warn/fail reason per check; `doctor --verify` checks cached runtime entry-point executables against their recorded digests where available
 - Cache management (`list`/`size`/`clean`/`prune`), `self update`, shell completions
 
 ## Supported Runtimes
@@ -170,7 +175,7 @@ Or skip `runx.toml` entirely — if your project already has a `.nvmrc`, `pyproj
 
 ## Zero-Config Detection
 
-Runx automatically detects runtimes from files your project already uses — `.nvmrc`, `.python-version`, `pyproject.toml`, `Pipfile`, `package.json` `engines`, `go.mod`, `.java-version`, `.sdkmanrc`, and Bun/Deno version files. Multiple runtimes are detected together and share one isolated environment, and every script in `package.json` becomes a run command (`runx dev`, `runx test`, `runx build`, …) without any configuration.
+Runx automatically detects runtimes from files your project already uses — `.nvmrc`, `.python-version`, `pyproject.toml`, `Pipfile`, `package.json` `engines`, `go.mod`, `.java-version`, `.sdkmanrc`, and Bun/Deno version files. Multiple runtimes are detected together and share one isolated environment. Every `package.json` script becomes a run key without configuration; names matching built-in commands are invoked with `runx run <key>`.
 
 Detection never writes to disk and never merges with an existing `runx.toml`; explicit configuration always wins.
 
@@ -219,7 +224,10 @@ What runx combines in one editor-independent workflow:
 | No shell integration required | ✅ |
 | Lockfile with per-platform checksums | ✅ |
 
-Traditional version managers (nvm, Volta, pyenv, asdf, mise) each cover parts of this list differently — several require shell hooks or shims, and none read `package.json` `engines` / `pyproject.toml` directly today. Runx does not claim to reinvent runtime management; its focus is combining provisioning, detection, isolation, verification, and execution into one workflow.
+Traditional version managers (nvm, Volta, pyenv, asdf, mise) cover parts of
+this list differently. Runx's focus is combining provisioning, detection,
+isolation, verification, and execution in one workflow. The detailed
+third-party comparison is best-effort and may change as those tools evolve.
 
 **[View the detailed per-tool comparison →](docs/comparison.md)**
 
@@ -229,17 +237,20 @@ Headline numbers on warm cache (macOS, Apple silicon, zsh — full method in [do
 
 | Measurement | Mean |
 | :-- | --: |
-| Complete `runx <key>` run, warm cache | 5.9 ms |
-| Runx overhead before your command starts | ~0.2 ms, **once per invocation** |
-| Shell-hook alternative (`mise activate`) | +15.2 ms **per prompt render** |
+| Complete `runx <key>` run, warm cache | 11.4 ms |
+| Runx overhead before your command starts | ~0.25 ms, **once per invocation** |
+| Interactive zsh startup with mise activation | +18.6 ms versus the no-hook baseline |
 
-Because runx adds no shell hook, prompts without `runx` pay nothing at all.
+This benchmark measures shell startup with an empty config versus one that
+loads `mise activate`; it does not measure repeated prompt renders. Runx has no
+shell hook, so it adds no runx work during shell startup or prompt rendering.
 
 `--locked` is the exception: it re-extracts each runtime's archive and compares
-it against the cached tree on every run, which costs **seconds, not
-milliseconds** (measured ~2.1 s for one runtime where the same run without
-`--locked` took 133 ms). That is the point of the flag — it trusts no cache
-receipt — so it suits CI and release builds rather than an edit-run loop.
+it against the cached tree on every run. A previous single-machine measurement
+recorded in the v0.6.2 notes was ~2.1 s for one runtime versus 133 ms for the
+same run without `--locked`; this is not part of the current shell benchmark.
+The extra verification cost suits CI and release builds rather than an
+edit-run loop.
 
 **[View full benchmark methodology →](docs/benchmarks.md)**
 
@@ -277,14 +288,14 @@ Runtimes are cached under `~/.runx/runtimes/<tool>/<version>/` and reused across
 
 ```bash
 runx dev              # run a key from [run] (any non-builtin word works)
-runx build            # same — detected projects expose every package.json script
+runx build            # run a non-reserved package.json script
 runx run test --locked # enforce the lockfile, including cached artifact integrity
 runx --frozen test     # --locked plus --offline (CI default)
 runx init             # create a starter runx.toml
 runx lock             # write runx.lock
 runx install          # install project dependencies (npm ci, pnpm install, pip, etc.)
 runx doctor           # diagnose cache, PATH and detection issues
-runx doctor --verify  # also hash each runtime against its install-time digest
+runx doctor --verify  # hash cached runtime entry points against recorded digests where available
 runx list             # cached runtimes (alias: runx cache list)
 runx which node       # executable this project's run would use
 runx exec -- make     # run an arbitrary program with the project's runtime PATH
@@ -353,30 +364,17 @@ Pass arguments through with `--`: `runx dev -- --port 3000`. Without `--`, extra
 | `RUNX_LOCKED` | `1` makes every run command behave as if `--locked` was passed. |
 | `RUNX_REQUIRE_SIGNATURE` | `1` makes a missing cosign signature an error instead of a warning. |
 
-There is no telemetry, and runx makes no network requests beyond fetching runtime release metadata, archives, and their checksums.
+There is no telemetry. Runx itself makes outbound requests for runtime release
+metadata, archives and checksums, and for its own release/update metadata,
+archives, checksums, and optional Sigstore bundles. Child processes such as
+npm, uv, or Poetry manage their own network access.
 
 ## Roadmap
 
-**Current** (v0.5)
-
-- Node.js, Python, Bun, Go, Deno, Java
-- `runx.lock` + `--locked` / `--frozen`, Sigstore/cosign signing
-- Cache management, `doctor`, `self update`, completions
-- Multi-runtime detection and isolated multi-runtime `PATH`
-
-**Next**
-
-- Ruby (needs a checksum-published portable build; ruby-builder has none)
-- PHP, .NET (no portable, checksum-verified archive in runx's version model)
-- Monorepo / workspace support
-- Pre/post run hooks
-
-**Future**
-
-- Plugin system and runtime registry
-- VS Code extension
-- Homebrew, Scoop, Winget, Chocolatey
-- Stable API
+The current release scope and planned work are tracked in
+[`ROADMAP.md`](ROADMAP.md). v0.7.0 adds Java, lock enforcement, daily-use CLI
+commands, dependency lockfile support, a GitHub Action, and packaging
+templates. Downstream package submissions remain manual launch steps.
 
 ## Zero-admin machines
 
@@ -392,7 +390,7 @@ libraries).
 
 ## CI and containers
 
-Use the composite action, which installs a verified release binary, caches
+Use the composite action, which installs a SHA-256-verified release binary, caches
 `~/.runx/runtimes` and can enforce the lockfile:
 
 ```yaml
@@ -405,7 +403,8 @@ Use the composite action, which installs a verified release binary, caches
 
 See [`setup-runx/`](setup-runx/) for inputs and a full example workflow. For
 containers, [`docs/docker.md`](docs/docker.md) covers building the included
-`Dockerfile` and keeping the runtime cache across runs.
+`Dockerfile` recipe and keeping the runtime cache across runs. The image is not
+built in CI or published by this repository.
 
 ## Documentation
 

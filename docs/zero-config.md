@@ -91,7 +91,7 @@ build = "npm run build"
 
 ## Run-command inference
 
-Every script in `package.json` becomes a run command keyed by its script name: `npm run <script>` for npm-style projects, `bun run <script>` for Bun-managed ones (see the Bun table above). That means `runx dev`, but also `runx test`, `runx build`, `runx lint` — whatever your package.json declares — work without any runx.toml. No other commands are guessed: Go, Python and Rust-only projects have no inferable command and get a clear error listing what was detected plus a pointer to `runx init`.
+Every script in `package.json` becomes a run key: `npm run <script>` for npm-style projects, `bun run <script>` for Bun-managed ones (see the Bun table above). Non-reserved names such as `dev`, `test`, `build`, and `lint` can be run as `runx <key>`. If a script name matches a built-in command, use `runx run <key>` to disambiguate it. No other commands are guessed: Go, Python and Rust-only projects have no inferable command and get a clear error listing what was detected plus a pointer to `runx init`.
 
 An explicit `[run]` table in `runx.toml` always replaces inference entirely (see [Configuration Precedence](#configuration-precedence)).
 

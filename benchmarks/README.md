@@ -1,19 +1,19 @@
 # Shell overhead benchmark
 
 runx makes one structural claim: **no shell integration** — no
-`eval "$(mise activate zsh)"`, no shims, no prompt hooks. mise, asdf and nvm
-hook into every interactive prompt, adding latency to *every* command you
-type for the life of the shell session. runx does nothing until you
-explicitly run `runx <key>`.
+`eval "$(mise activate zsh)"`, no shims, no prompt hooks. runx does nothing
+until you explicitly run `runx <key>`. This benchmark measures interactive
+shell startup with and without a mise activation line; it does not measure
+repeated prompt renders.
 
 This benchmark measures both sides of that claim:
 
 | Measurement | What it captures |
 | :-- | :-- |
-| `zsh startup, no hooks (baseline)` | Cost of rendering an interactive zsh prompt with an empty rc. |
-| `zsh startup + mise activate` | The same, with `eval "$(mise activate zsh)"` in the rc — the per-prompt cost mise imposes. Only runs when mise is installed. |
+| `zsh startup, no hooks (baseline)` | Startup time for interactive zsh with an empty rc; the script exits without rendering a prompt. |
+| `zsh startup + mise activate` | The same, with `eval "$(mise activate zsh)"` in the rc. This captures startup overhead, not repeated prompt-hook cost. Only runs when mise is installed. |
 | `runx <key>` | Total wall time of one `runx <key>` invocation with a warm cache — a one-time cost, paid only when you run it. |
-| `RUNX_TIMINGS=1` breakdown | runx's own pre-child work (config discovery, cache lookup, PATH build + spawn), the apples-to-apples number against mise's `MISE_TIMINGS=1`. |
+| `RUNX_TIMINGS=1` breakdown | runx's own pre-child work (config discovery, cache lookup, PATH build + spawn). It is not directly comparable to the shell-startup measurement. |
 
 ## Results (this machine)
 
@@ -29,22 +29,17 @@ runx 0.6.2 built from `target/release`. mise 2026.7.18 (Homebrew).
 | runx pre-child (cache) | 0.03 ms | — | — |
 | runx pre-child (PATH + spawn) | 0.15 ms | — | — |
 
-`mise activate` adds **18.6 ms to every prompt** over the baseline on this
-machine — and that is with a bare rc; the hook only gets more expensive as
-your shell does more. A full `runx <key>` run (11.4 ms, child included) is
-**4.3× faster than rendering one mise-activated prompt**, and runx's own
-pre-child work is **~0.25 ms, paid once per invocation**. Mise's team
-reports ~80–97 ms first-prompt lag in some configurations
-([#6279](https://github.com/jdx/mise/discussions/6279)) — the 18.6 ms here is
-the hook on a clean prompt, the low end of that scale.
+The startup with `mise activate` measured **18.6 ms above baseline** on this
+machine. A full `runx <key>` run includes the child process; runx's measured
+pre-child work is **~0.25 ms, paid once per invocation**. These measurements do
+not time repeated prompt renders.
 
-The structural point: a hook-based tool adds tens of milliseconds **to every
-single prompt, forever**, while runx's entire contribution is ~0.25 ms
-**once, when you run it**.
+The structural point is that runx has no shell hook; its measured overhead is
+paid when a `runx` command starts.
 
 Honest caveat: these are microbenchmarks on one machine with a warm OS cache.
 Numbers vary with machine, shell config, and filesystem. The relationship
-they show — runx has no per-prompt cost at all, and its one-time cost is
+they show — runx has no shell hook, and its measured pre-child work is
 sub-millisecond — is structural, not a performance guarantee.
 
 ## Reproduce

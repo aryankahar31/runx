@@ -4,16 +4,17 @@
 
 ## Problem
 
-Locked execution normalizes paths and compares extracted trees. Windows path
-semantics (drive letters, separators, Unicode) are the most likely place for a
-false mismatch, but the locked tests run on Unix-style temp paths.
+Locked execution normalizes paths and compares extracted trees. The integration
+suite runs on Windows CI, but its locked tests do not deliberately place the
+project/cache beneath a path containing spaces and non-ASCII characters. That
+leaves a useful Windows path case uncovered.
 
 ## Proposal
 
 Add a Windows-only integration test under a directory containing a space and a
 non-ASCII character. Plant a runtime, write a matching lockfile, run
-`runx run --locked` with a probe, and assert success. Add a mutation case that
-must fail.
+`runx run check --locked` with a probe, and assert success. Add a mutation case
+that must fail.
 
 ## Acceptance
 

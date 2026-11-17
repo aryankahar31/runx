@@ -4,9 +4,11 @@
 
 ## Problem
 
-`runx exec` deliberately skips a shell and forwards argv. One integration test
-covers a simple argument list; quoting, empty arguments, and a leading dash are
-exactly where shell-free execution wins, and they are untested.
+`runx exec` deliberately skips a shell and forwards argv. Its existing
+integration test checks that a command from the runtime cache receives a
+regular argument and a literal `$(whoami)` without shell expansion. Empty
+arguments, spaces within one argument, leading-dash arguments, and child exit
+code propagation are not covered by that test.
 
 ## Proposal
 
@@ -14,8 +16,7 @@ Add probe-based tests (the existing `plant_executable` pattern) for:
 
 - an argument containing spaces;
 - an empty argument;
-- `--` before the command;
-- a command name that exists only in the runtime cache;
+- a leading-dash argument after the command;
 - exit-code propagation from the child.
 
 ## Acceptance

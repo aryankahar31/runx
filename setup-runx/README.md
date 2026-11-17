@@ -1,6 +1,6 @@
 # setup-runx
 
-A composite GitHub Action that installs `runx` (verified release binary),
+A composite GitHub Action that installs `runx` (SHA-256-verified release binary),
 restores the runtime cache, and can enforce `runx.lock`.
 
 ```yaml

@@ -4,9 +4,10 @@
 #   packaging/render.sh <version> <dist-dir> <out-dir>
 #
 # <dist-dir> holds the GitHub release assets (runx-*.tar.gz / .zip). The
-# rendered files are ready to paste into the Homebrew tap, scoop/winget
-# submission directories, AUR and npm. Nix hashes are intentionally left for
-# `nix build` to reveal: they cannot be computed from a binary archive.
+# rendered files are starting points for the Homebrew tap, Scoop/Winget
+# AUR and npm submissions. Winget needs companion manifests. Nix hashes are
+# intentionally left for `nix build` to reveal: they cannot be computed from a
+# binary archive.
 set -eu
 
 version="$1"

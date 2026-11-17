@@ -1,6 +1,7 @@
 #!/bin/sh
-# Structural check for the packaging templates. Runs in CI so a broken or
-# half-removed manifest is caught before a release tag, not during it.
+# Basic packaging-template check: required files, version placeholders, and
+# npm wrapper syntax. It does not validate package-manager schemas, release
+# checksums, Nix hashes, or downstream submissions.
 set -eu
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
