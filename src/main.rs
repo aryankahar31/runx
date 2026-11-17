@@ -1147,6 +1147,8 @@ fn detect_install_commands(project_dir: &Path) -> Vec<&'static str> {
                 }
             }
             dep::DepManager::PythonRequirements { .. } => "pip install -r requirements.txt",
+            dep::DepManager::Uv { .. } => "uv sync --frozen",
+            dep::DepManager::Poetry { .. } => "poetry install",
             dep::DepManager::Go { .. } => "go mod download",
             dep::DepManager::Deno { .. } => "deno install",
         };
@@ -1217,7 +1219,9 @@ fn deps_are_missing(project_dir: &Path, run_dir: &Path) -> bool {
                     || project_dir.join("node_modules").is_dir())
             }
             dep::DepManager::PythonPyproject { .. }
-            | dep::DepManager::PythonRequirements { .. } => {
+            | dep::DepManager::PythonRequirements { .. }
+            | dep::DepManager::Uv { .. }
+            | dep::DepManager::Poetry { .. } => {
                 !(run_dir.join(".venv").is_dir()
                     || run_dir.join("venv").is_dir()
                     || project_dir.join(".venv").is_dir()

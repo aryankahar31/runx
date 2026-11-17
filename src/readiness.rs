@@ -237,6 +237,8 @@ fn repair_command(manager: &dep::DepManager) -> &'static str {
         dep::DepManager::Bun { .. } => "bun install",
         dep::DepManager::PythonPyproject { .. } => "pip install -e .",
         dep::DepManager::PythonRequirements { .. } => "pip install -r requirements.txt",
+        dep::DepManager::Uv { .. } => "uv sync --frozen",
+        dep::DepManager::Poetry { .. } => "poetry install",
         dep::DepManager::Go { .. } => "go mod download",
         dep::DepManager::Deno { .. } => "deno install",
     }
@@ -721,6 +723,7 @@ pub fn manifest_path(manager: &dep::DepManager) -> PathBuf {
         | dep::DepManager::Deno { lockfile } => lockfile.clone(),
         dep::DepManager::PythonPyproject { pyproject } => pyproject.clone(),
         dep::DepManager::PythonRequirements { requirements } => requirements.clone(),
+        dep::DepManager::Uv { lockfile } | dep::DepManager::Poetry { lockfile } => lockfile.clone(),
         dep::DepManager::Go { gomod } => gomod.clone(),
     }
 }

@@ -14,6 +14,8 @@ pub enum DepManager {
     Pnpm { lockfile: PathBuf },
     PythonPyproject { pyproject: PathBuf },
     PythonRequirements { requirements: PathBuf },
+    Uv { lockfile: PathBuf },
+    Poetry { lockfile: PathBuf },
     Bun { lockfile: PathBuf },
     Go { gomod: PathBuf },
     Deno { lockfile: PathBuf },
@@ -64,7 +66,23 @@ pub fn detect_all(project_dir: &Path) -> Vec<DepDetection> {
             label: "yarn",
         });
     }
-    if project_dir.join("pyproject.toml").is_file() {
+    // A uv/poetry lockfile supersedes pip's pyproject/requirements handling:
+    // installing through pip as well would create or overwrite a second venv.
+    let uv_lock = project_dir.join("uv.lock");
+    let poetry_lock = project_dir.join("poetry.lock");
+    if uv_lock.is_file() {
+        detections.push(DepDetection {
+            manager: DepManager::Uv { lockfile: uv_lock },
+            label: "uv",
+        });
+    } else if poetry_lock.is_file() {
+        detections.push(DepDetection {
+            manager: DepManager::Poetry {
+                lockfile: poetry_lock,
+            },
+            label: "poetry",
+        });
+    } else if project_dir.join("pyproject.toml").is_file() {
         detections.push(DepDetection {
             manager: DepManager::PythonPyproject {
                 pyproject: project_dir.join("pyproject.toml"),
@@ -72,7 +90,11 @@ pub fn detect_all(project_dir: &Path) -> Vec<DepDetection> {
             label: "pip (pyproject.toml)",
         });
     }
-    if project_dir.join("requirements.txt").is_file() {
+    if !detections
+        .iter()
+        .any(|d| matches!(d.manager, DepManager::Uv { .. } | DepManager::Poetry { .. }))
+        && project_dir.join("requirements.txt").is_file()
+    {
         detections.push(DepDetection {
             manager: DepManager::PythonRequirements {
                 requirements: project_dir.join("requirements.txt"),
@@ -204,8 +226,15 @@ pub fn deps_installed(project_dir: &Path, manager: &DepManager) -> bool {
                 (_, Err(_)) => false,
             }
         }
-        DepManager::PythonPyproject { .. } | DepManager::PythonRequirements { .. } => {
-            // Check for standard venv directories.
+        DepManager::PythonPyproject { .. }
+        | DepManager::PythonRequirements { .. }
+        | DepManager::Uv { .. }
+        | DepManager::Poetry { .. } => {
+            // Check for standard venv directories. uv always creates a project
+            // .venv; Poetry usually does when `virtualenvs.in-project` is on,
+            // which is the common modern setup.
+            // shortcut: Poetry envs outside the project look uninstalled,
+            // upgrade with `poetry env info --path` when this matters.
             project_dir.join(".venv").is_dir() || project_dir.join("venv").is_dir()
         }
         DepManager::Bun { lockfile } => {
@@ -269,7 +298,10 @@ pub fn deps_present(project_dir: &Path, manager: &DepManager) -> bool {
         | DepManager::Yarn { .. }
         | DepManager::Pnpm { .. }
         | DepManager::Bun { .. } => project_dir.join("node_modules").is_dir(),
-        DepManager::PythonPyproject { .. } | DepManager::PythonRequirements { .. } => {
+        DepManager::PythonPyproject { .. }
+        | DepManager::PythonRequirements { .. }
+        | DepManager::Uv { .. }
+        | DepManager::Poetry { .. } => {
             project_dir.join(".venv").is_dir() || project_dir.join("venv").is_dir()
         }
         DepManager::Go { .. } => project_dir.join("go.sum").is_file(),
@@ -294,6 +326,10 @@ pub fn install(
         DepManager::Go { .. } => install_go(project_dir, runtimes),
         DepManager::Pnpm { .. } => install_pnpm(project_dir, runtimes),
         DepManager::Deno { .. } => install_deno(project_dir, runtimes),
+        DepManager::Uv { .. } => install_python_tool(project_dir, runtimes, "uv", "sync --frozen"),
+        DepManager::Poetry { .. } => {
+            install_python_tool(project_dir, runtimes, "poetry", "install")
+        }
     }
 }
 
@@ -545,19 +581,84 @@ fn install_yarn(project_dir: &Path, runtimes: &[CachedRuntime]) -> Result<()> {
 /// machine that never installed pnpm/yarn globally still gets an install
 /// instead of exit code 127.
 fn install_js_tool(project_dir: &Path, path: &std::ffi::OsString, tool: &str) -> Result<()> {
-    let direct = format!("{tool} install");
-    let mut command = direct.clone();
-    let mut status = run_shell_command(&direct, project_dir, path)?;
-    if is_command_not_found(&status) {
-        command = format!("npx --yes {tool} install");
-        status = run_shell_command(&command, project_dir, path)?;
+    // package.json `packageManager` is the version Corepack would honour, so
+    // prefer it over whatever `pnpm`/`yarn` happens to be on PATH.
+    let pinned = package_manager_version(project_dir, tool);
+    let candidates: Vec<String> = match &pinned {
+        Some(version) => vec![
+            format!("corepack {tool} install"),
+            format!("npx --yes {tool}@{version} install"),
+        ],
+        None => vec![
+            format!("{tool} install"),
+            format!("npx --yes {tool} install"),
+        ],
+    };
+
+    let mut command = candidates[0].clone();
+    for candidate in &candidates {
+        command = candidate.clone();
+        let status = run_shell_command(candidate, project_dir, path)?;
+        if status.success() {
+            return Ok(());
+        }
+        // A missing tool is recoverable; any other failure is real and should
+        // surface the manager's own error rather than trying a second command.
+        if !is_command_not_found(&status) {
+            break;
+        }
     }
+    Err(anyhow::anyhow!(
+        "`{command}` failed in {} with exit code {}\n\
+         Hint: ensure {tool} is installed (npm install -g {tool}) or available via corepack.",
+        project_dir.display(),
+        -1
+    ))
+}
+
+/// The version pinned for `tool` by `package.json`'s `packageManager` field.
+///
+/// Returns `None` when the field is absent, names another manager, or contains
+/// anything but a semver-ish token — the value is interpolated into a shell
+/// command, so metacharacters must never pass.
+fn package_manager_version(project_dir: &Path, tool: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(project_dir.join("package.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let spec = manifest.get("packageManager")?.as_str()?;
+    let (name, version) = spec.split_once('@')?;
+    if name != tool {
+        return None;
+    }
+    // Yarn's `+sha512...` suffix is metadata, not part of the install version.
+    let version = version.split('+').next().unwrap_or(version);
+    let safe = !version.is_empty()
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+    safe.then(|| version.to_string())
+}
+
+/// Install a Python project's dependencies with a tool that is not a runx
+/// runtime (uv, poetry). The managed Python is put on PATH when available.
+fn install_python_tool(
+    project_dir: &Path,
+    runtimes: &[CachedRuntime],
+    tool: &str,
+    args: &str,
+) -> Result<()> {
+    let path = match find_runtime(runtimes, "python") {
+        Some(python) => build_path(python)?,
+        None => std::env::var_os("PATH").unwrap_or_default(),
+    };
+    let command = format!("{tool} {args}");
+    let status = run_shell_command(&command, project_dir, &path)?;
     if status.success() {
         Ok(())
     } else {
         Err(anyhow::anyhow!(
             "`{command}` failed in {} with exit code {}\n\
-             Hint: ensure {tool} is installed (npm install -g {tool}) or available via corepack.",
+             Hint: {tool} is not managed by runx. Install it first \
+             (`uv`: https://docs.astral.sh/uv/, `poetry`: https://python-poetry.org/).",
             project_dir.display(),
             status.code().unwrap_or(-1)
         ))
@@ -600,6 +701,59 @@ mod tests {
         let det = detect(dir.path()).expect("should detect python");
         assert_eq!(det.label, "pip (requirements.txt)");
         assert!(matches!(det.manager, DepManager::PythonRequirements { .. }));
+    }
+
+    #[test]
+    fn uv_lock_supersedes_pyproject_and_requirements() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("uv.lock"), "version = 1\n").unwrap();
+        fs::write(dir.path().join("pyproject.toml"), "[project]\n").unwrap();
+        fs::write(dir.path().join("requirements.txt"), "flask\n").unwrap();
+        let all = detect_all(dir.path());
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].label, "uv");
+        assert!(matches!(all[0].manager, DepManager::Uv { .. }));
+    }
+
+    #[test]
+    fn poetry_lock_supersedes_pyproject() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("poetry.lock"), "").unwrap();
+        fs::write(dir.path().join("pyproject.toml"), "[project]\n").unwrap();
+        let det = detect(dir.path()).unwrap();
+        assert_eq!(det.label, "poetry");
+        assert!(matches!(det.manager, DepManager::Poetry { .. }));
+    }
+
+    #[test]
+    fn package_manager_pin_is_read_and_sanitised() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = |spec: &str| {
+            fs::write(
+                dir.path().join("package.json"),
+                format!(r#"{{"packageManager":"{spec}"}}"#),
+            )
+            .unwrap();
+        };
+
+        package("pnpm@9.12.3");
+        assert_eq!(
+            package_manager_version(dir.path(), "pnpm").as_deref(),
+            Some("9.12.3")
+        );
+        assert_eq!(package_manager_version(dir.path(), "yarn"), None);
+
+        package("yarn@4.1.0+sha512.abc");
+        assert_eq!(
+            package_manager_version(dir.path(), "yarn").as_deref(),
+            Some("4.1.0")
+        );
+
+        package("pnpm@9.0.0; rm -rf /");
+        assert_eq!(package_manager_version(dir.path(), "pnpm"), None);
+
+        package("pnpm@");
+        assert_eq!(package_manager_version(dir.path(), "pnpm"), None);
     }
 
     #[test]
