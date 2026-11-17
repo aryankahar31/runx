@@ -1,0 +1,45 @@
+name: Feature request
+description: Propose a runtime, command, or workflow runx should support
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you unable to do today? Name the project and platform.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What command or config would you use? What should the output be?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workaround, other tools, or why they are not enough.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Runtime support
+        - Detection / configuration
+        - Lockfiles / CI
+        - CLI / UX
+        - Packaging / installation
+        - Documentation
+        - Other
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: This is not a request for shell integration or a global runtime install.
+          required: true
+        - label: I searched existing issues and the roadmap.
+          required: true
