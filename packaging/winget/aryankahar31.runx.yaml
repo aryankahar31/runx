@@ -1,14 +1,6 @@
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.28.0.schema.json
 PackageIdentifier: aryankahar31.runx
 PackageVersion: __VERSION__
-InstallerType: zip
-NestedInstallerType: portable
-NestedInstallerFiles:
-  - RelativeFilePath: runx.exe
-    PortableCommandAlias: runx
-Installers:
-  - Architecture: x64
-    InstallerUrl: https://github.com/aryankahar31/runx/releases/download/v__VERSION__/runx-windows-x64.zip
-    InstallerSha256: __SHA256_windows_x64__
-ManifestType: installer
-ManifestVersion: 1.6.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.28.0

@@ -1,7 +1,7 @@
 #!/bin/sh
-# Basic packaging-template check: required files, version placeholders, and
-# npm wrapper syntax. It does not validate package-manager schemas, release
-# checksums, Nix hashes, or downstream submissions.
+# Basic packaging-template check: required files, version placeholders, npm
+# wrapper syntax, and fail-closed renderer behavior. It does not validate
+# package-manager schemas, real release checksums, Nix hashes, or submissions.
 set -eu
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -17,6 +17,8 @@ check() {
 for file in \
   homebrew/runx.rb \
   winget/aryankahar31.runx.yaml \
+  winget/aryankahar31.runx.locale.en-US.yaml \
+  winget/aryankahar31.runx.installer.yaml \
   scoop/runx.json \
   aur/PKGBUILD \
   nix/flake.nix \
@@ -24,13 +26,16 @@ for file in \
   npm/package.json \
   npm/bin/runx.js \
   npm/README.md \
-  render.sh; do
+  render.sh \
+  test-render.sh; do
   check "$file"
 done
 
 # Every versioned manifest must be a template; render.sh substitutes the
 # version at release time so a stale literal cannot ship.
-for file in homebrew/runx.rb winget/aryankahar31.runx.yaml scoop/runx.json \
+for file in homebrew/runx.rb winget/aryankahar31.runx.yaml \
+            winget/aryankahar31.runx.locale.en-US.yaml \
+            winget/aryankahar31.runx.installer.yaml scoop/runx.json \
             aur/PKGBUILD nix/package.nix npm/package.json; do
   [ -f "$root/$file" ] || continue
   if ! grep -q '__VERSION__' "$root/$file"; then
@@ -43,5 +48,7 @@ done
 if command -v node >/dev/null 2>&1; then
   node --check "$root/npm/bin/runx.js"
 fi
+
+sh "$root/test-render.sh"
 
 exit "$failed"

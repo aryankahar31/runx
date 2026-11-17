@@ -12,12 +12,13 @@ rustPlatform.buildRustPackage rec {
     owner = "aryankahar31";
     repo = "runx";
     rev = "v${version}";
-    # Fill with `nix build .#packaging.nix` output. Nix prints the value in
-    # the hash-mismatch error; replacing is a one-time step per release.
+    # Release-template placeholder; fill from the `nix build .#default`
+    # hash-mismatch output for this tagged source version.
     hash = "__SOURCE_HASH__";
   };
 
-  # Same one-time step: the first build prints the expected cargoHash.
+  # Release-template placeholder; fill from the following build's cargoHash
+  # mismatch output after replacing the source hash above.
   cargoHash = "__CARGO_HASH__";
 
   meta = with lib; {
@@ -25,6 +26,11 @@ rustPlatform.buildRustPackage rec {
     homepage = "https://github.com/aryankahar31/runx";
     license = licenses.mit;
     mainProgram = "runx";
-    platforms = platforms.unix ++ platforms.windows;
+    platforms = [
+      "x86_64-linux"
+      "aarch64-linux"
+      "x86_64-darwin"
+      "aarch64-darwin"
+    ];
   };
 }

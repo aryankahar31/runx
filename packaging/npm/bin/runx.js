@@ -11,6 +11,21 @@ const os = require("node:os");
 const path = require("node:path");
 
 const REPO = "https://github.com/aryankahar31/runx";
+const VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
+
+function validateVersion(version, source = "RUNX_VERSION") {
+  const match = typeof version === "string" ? VERSION_PATTERN.exec(version) : null;
+  if (
+    !match ||
+    match[0] !== version ||
+    version.includes("/") ||
+    version.includes("\\") ||
+    version.includes("..")
+  ) {
+    throw new Error(`${source} must be a numeric version in MAJOR.MINOR.PATCH form (for example 0.7.0)`);
+  }
+  return version;
+}
 
 function platformAsset(platform = process.platform, arch = process.arch) {
   if (platform === "linux" && arch === "x64") return "runx-linux-x64.tar.gz";
@@ -84,7 +99,9 @@ async function ensureBinary(version) {
 
 async function main() {
   const pkg = require("../package.json");
-  const version = process.env.RUNX_VERSION || pkg.version;
+  const version = process.env.RUNX_VERSION === undefined
+    ? validateVersion(pkg.version, "package version")
+    : validateVersion(process.env.RUNX_VERSION);
   const binary = await ensureBinary(version);
   const child = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
   if (child.error) throw child.error;
@@ -98,4 +115,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { platformAsset, parseChecksum };
+module.exports = { platformAsset, parseChecksum, validateVersion };
