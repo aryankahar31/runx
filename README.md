@@ -54,6 +54,7 @@ Running `npm run dev`
 - [Architecture](#architecture)
 - [CLI Reference](#cli-reference)
 - [Roadmap](#roadmap)
+- [Zero-admin machines](#zero-admin-machines)
 - [CI and containers](#ci-and-containers)
 - [Documentation](#documentation)
 
@@ -377,6 +378,18 @@ There is no telemetry, and runx makes no network requests beyond fetching runtim
 - Homebrew, Scoop, Winget, Chocolatey
 - Stable API
 
+## Zero-admin machines
+
+runx needs no `sudo`, system package manager, or writable system directory. The
+binary, runtimes, and downloads all live under `~/.runx` (or `RUNX_HOME`), and
+runx never edits your shell files on its own. The installer may ask before
+adding `~/.runx/bin` to `PATH`; `RUNX_INSTALL_NO_MODIFY_PATH=1` skips even that
+prompt.
+
+See [docs/zero-admin.md](docs/zero-admin.md) for cache locations, offline
+recipes, and the honest limits (runx installs language runtimes, not system
+libraries).
+
 ## CI and containers
 
 Use the composite action, which installs a verified release binary, caches
@@ -398,6 +411,7 @@ containers, [`docs/docker.md`](docs/docker.md) covers building the included
 
 - [Website](https://runx-cli.vercel.app/) — overview, quick start, benchmarks
 - [Zero-Config Detection](docs/zero-config.md) — every detected file, priority order, inference rules
+- [Zero-admin machines](docs/zero-admin.md) — no root, no system installs, `RUNX_HOME` on locked-down hosts
 - [Runtime Resolution](docs/runtime-resolution.md) — range semantics, strict mode, registry freshness
 - [Lockfiles](docs/lockfile.md) — format, platform artifacts, CI enforcement
 - [Security](docs/security.md) — verification model, manual release verification
