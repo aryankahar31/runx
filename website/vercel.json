@@ -1,5 +1,6 @@
 {
   "buildCommand": "node scripts/build-data.mjs",
+  "outputDirectory": ".",
   "cleanUrls": true,
   "trailingSlash": false,
   "headers": [
