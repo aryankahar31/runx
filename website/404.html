@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>404 — runx</title>
+<meta name="description" content="This page was not found. runx is a Rust CLI that runs any project with the runtimes it declares." />
+<meta name="robots" content="noindex" />
+<meta name="color-scheme" content="light dark" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/assets/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="stylesheet" href="/style.css" />
+<script>
+  (function () {
+    try {
+      var saved = localStorage.getItem('runx-theme');
+      var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (dark ? 'dark' : 'light');
+      document.documentElement.classList.add('js');
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header scrolled">
+  <div class="wrap header-inner">
+    <a class="brand" href="/" aria-label="runx home">
+      <svg class="brand-mark" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <path d="M2.5 2.5 9.5 9.5M21.5 2.5 14.5 9.5M21.5 21.5 14.5 14.5M2.5 21.5 9.5 14.5" fill="none" stroke="currentColor" stroke-width="2.5"/>
+        <path d="M9.5 9.5h5v5h-5z" fill="currentColor"/>
+      </svg>
+      <span>runx</span>
+    </a>
+    <div class="header-actions">
+      <a class="btn btn-sm btn-ghost repo-btn" href="https://github.com/aryankahar31/runx" target="_blank" rel="noopener">GitHub ↗</a>
+    </div>
+  </div>
+</header>
+
+<main id="main" class="notfound">
+  <div class="wrap notfound-grid">
+    <div>
+      <p class="label">Error · exit 1</p>
+      <p class="notfound-code">4<span>0</span>4</p>
+      <h1>This path wasn’t detected.</h1>
+      <p>The page you asked for isn’t here. runx itself is fine — it just needs a real project file to read.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="/">Back to runx</a>
+        <a class="btn btn-secondary" href="/#install">Install</a>
+        <a class="btn btn-quiet" href="https://github.com/aryankahar31/runx" target="_blank" rel="noopener">GitHub ↗</a>
+      </div>
+    </div>
+    <pre aria-hidden="true"><span class="prompt">$</span> curl -sI https://runx-cli.vercel.app/this-page
+HTTP/2 404
+<span class="dim">→ path not found</span>
+<span class="dim">→ try: /</span></pre>
+  </div>
+</main>
+</body>
+</html>
