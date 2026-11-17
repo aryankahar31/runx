@@ -367,7 +367,7 @@ There is no telemetry, and runx makes no network requests beyond fetching runtim
 
 ## Documentation
 
-- [Website](https://runx-cli.vercel.app/) — overview, quick start, benchmarks
+- [Website](https://runx-cli.vercel.app/) — overview, quick start, benchmarks ([source](website/))
 - [Zero-Config Detection](docs/zero-config.md) — every detected file, priority order, inference rules
 - [Runtime Resolution](docs/runtime-resolution.md) — range semantics, strict mode, registry freshness
 - [Lockfiles](docs/lockfile.md) — format, platform artifacts, CI enforcement

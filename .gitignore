@@ -6,3 +6,5 @@ opencode.json
 package-lock.json
 node_modules/
 agent.mb
+
+website/data.json
