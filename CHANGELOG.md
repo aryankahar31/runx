@@ -6,6 +6,57 @@ tags and each tag's GitHub release notes (`gh release view`). Entries marked
 that release has no notes; every line is verifiable against the linked
 compare view or commit.
 
+## v0.7.0 — 2026-11-17
+
+### Added
+
+- **Eclipse Temurin Java 9+.** Versions resolve from Adoptium's metadata, the
+  archive is checked against the published SHA-256, and `.java-version` /
+  `.sdkmanrc` (`java=`) are detected. Java 8 is intentionally unsupported.
+- **Daily-use commands:** `runx list` (alias for `cache list`), `runx which`,
+  `runx exec` (argv, no shell), `runx upgrade` (alias for `self update`),
+  `runx cache dir`, and `runx cache prune --dry-run`.
+- **`--frozen`** as `--locked --offline`, and **`RUNX_LOCKED=1`** as the
+  environment equivalent of `--locked` for CI.
+- **JavaScript package-manager pins:** `packageManager` in `package.json` is
+  honoured for pnpm and Yarn through Corepack, with an `npx tool@version`
+  fallback. Values are validated before reaching a shell.
+- **uv and Poetry lockfiles** (`uv.lock`, `poetry.lock`) supersede pip detection
+  and install via `uv sync --frozen` / `poetry install`.
+- **Install channels:** Cargo metadata and cargo-binstall, Homebrew, Winget,
+  Scoop, AUR, Nix, and an npm wrapper, plus `packaging/render.sh` and
+  `packaging/validate.sh` used by CI and the release workflow.
+- **CI and containers:** a composite `setup-runx` GitHub Action with cache and
+  lock enforcement, plus a multi-stage `Dockerfile` and usage guide.
+- **Zero-admin guide:** no sudo, no system installs, `RUNX_HOME` recipes, and
+  explicit limits.
+- Community files: `SECURITY.md`, `CODE_OF_CONDUCT.md`, `ROADMAP.md`, issue and
+  PR templates, ten scoped issue drafts, launch-post drafts, and a VHS demo
+  script.
+
+### Changed
+
+- Shell-overhead benchmarks refreshed on v0.6.2 with mise installed; the
+  documentation now cites the measured 18.6 ms per-prompt `mise activate` cost
+  and ~0.25 ms of runx pre-child work on the same machine.
+
+### Not shipped in v0.7.0
+
+- Ruby, PHP, and .NET were evaluated and skipped rather than shipped with weaker
+  verification: `ruby/ruby-builder` publishes no checksums and no Windows build;
+  PHP has no official portable checksummed binaries; .NET uses SHA-512 and
+  four-part versions, which do not fit the lockfile's SHA-256/three-part model.
+  See `ROADMAP.md`.
+
+### Known limitations in this release
+
+- The `Dockerfile` is not built in CI and was not built locally (no Docker on
+  the release machine); treat it as a reviewed recipe, not a published image.
+- Java was verified against Adoptium API responses and unit-tested selection
+  logic; a full ~200 MB Temurin download was not exercised end-to-end here.
+
+[Full changelog](https://github.com/aryankahar31/runx/compare/v0.6.2...v0.7.0)
+
 ## v0.6.2 — 2026-11-02
 
 - [fix: seven UX gaps found by using the released v0.6.1 binary (#55)](https://github.com/aryankahar31/runx/pull/55)
