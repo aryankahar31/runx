@@ -54,6 +54,7 @@ Running `npm run dev`
 - [Architecture](#architecture)
 - [CLI Reference](#cli-reference)
 - [Roadmap](#roadmap)
+- [CI and containers](#ci-and-containers)
 - [Documentation](#documentation)
 
 ---
@@ -370,6 +371,23 @@ There is no telemetry, and runx makes no network requests beyond fetching runtim
 - Homebrew, Scoop, Winget, Chocolatey
 - Stable API
 
+## CI and containers
+
+Use the composite action, which installs a verified release binary, caches
+`~/.runx/runtimes` and can enforce the lockfile:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: aryankahar31/runx/setup-runx@main
+  with:
+    locked: true
+- run: runx test
+```
+
+See [`setup-runx/`](setup-runx/) for inputs and a full example workflow. For
+containers, [`docs/docker.md`](docs/docker.md) covers building the included
+`Dockerfile` and keeping the runtime cache across runs.
+
 ## Documentation
 
 - [Website](https://runx-cli.vercel.app/) — overview, quick start, benchmarks
@@ -380,6 +398,7 @@ There is no telemetry, and runx makes no network requests beyond fetching runtim
 - [Architecture](docs/architecture.md) — isolation guarantees, atomic installs
 - [Benchmarks](docs/benchmarks.md) — shell-overhead methodology, freshness checks
 - [Comparison](docs/comparison.md) — per-tool matrix vs nvm/Volta/pyenv/asdf/mise
+- [Containers](docs/docker.md) — build and use the image
 - [Changelog](CHANGELOG.md) — every release from v0.1.0 onward
 
 ---
