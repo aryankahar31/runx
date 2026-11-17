@@ -17,29 +17,29 @@ This benchmark measures both sides of that claim:
 
 ## Results (this machine)
 
-Machine: macOS 26.5.2, Apple silicon (arm64), zsh 5.9, hyperfine 1.20.0.
-runx 0.3.1 built from `target/release`. mise 2026.7.18 (Homebrew).
+Machine: macOS 27.2.1, Apple silicon (arm64), zsh 5.9, hyperfine 1.20.0.
+runx 0.6.2 built from `target/release`. mise 2026.7.18 (Homebrew).
 
 | Benchmark | Mean | Min | Max |
 | :-- | --: | --: | --: |
-| zsh startup, no hooks (baseline) | 23.2 ms | 22.2 ms | 23.7 ms |
-| zsh startup + mise activate | 38.4 ms | 37.3 ms | 40.1 ms |
-| runx `<key>` (one-time, warm cache) | 5.9 ms | 5.4 ms | 6.4 ms |
+| zsh startup, no hooks (baseline) | 30.3 ms | 29.3 ms | 32.0 ms |
+| zsh startup + mise activate | 48.9 ms | 47.9 ms | 50.0 ms |
+| runx `<key>` (one-time, warm cache) | 11.4 ms | 10.5 ms | 12.3 ms |
 | runx pre-child (config) | 0.07 ms | — | — |
-| runx pre-child (cache) | 0.02 ms | — | — |
-| runx pre-child (PATH + spawn) | 0.14 ms | — | — |
+| runx pre-child (cache) | 0.03 ms | — | — |
+| runx pre-child (PATH + spawn) | 0.15 ms | — | — |
 
-`mise activate` adds **15.2 ms to every prompt** over the baseline on this
+`mise activate` adds **18.6 ms to every prompt** over the baseline on this
 machine — and that is with a bare rc; the hook only gets more expensive as
-your shell does more. A full `runx <key>` run (5.9 ms, child included) is
-**6.6× faster than rendering one mise-activated prompt**, and runx's own
-pre-child work is **~0.2 ms, paid once per invocation**. Mise's team
+your shell does more. A full `runx <key>` run (11.4 ms, child included) is
+**4.3× faster than rendering one mise-activated prompt**, and runx's own
+pre-child work is **~0.25 ms, paid once per invocation**. Mise's team
 reports ~80–97 ms first-prompt lag in some configurations
-([#6279](https://github.com/jdx/mise/discussions/6279)) — the 15 ms here is
+([#6279](https://github.com/jdx/mise/discussions/6279)) — the 18.6 ms here is
 the hook on a clean prompt, the low end of that scale.
 
 The structural point: a hook-based tool adds tens of milliseconds **to every
-single prompt, forever**, while runx's entire contribution is ~0.2 ms
+single prompt, forever**, while runx's entire contribution is ~0.25 ms
 **once, when you run it**.
 
 Honest caveat: these are microbenchmarks on one machine with a warm OS cache.
