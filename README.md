@@ -112,6 +112,8 @@ still need review and publication. See [`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.
 For published releases, the curl and PowerShell installers verify the release
 archive's SHA-256 checksum — see [Security](#security).
 
+> **Upgrading from v0.6.x:** run `runx self update` (the `upgrade` alias exists from v0.7.0).
+
 Initialize a project:
 
 ```bash
