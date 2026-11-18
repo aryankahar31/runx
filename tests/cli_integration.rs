@@ -1144,9 +1144,13 @@ fn which_finds_the_cached_runtime_a_project_uses() {
     let output = runx_with_home(dir.path(), &home, &["which", "node"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
     let stdout = stdout_of(&output);
+    let expected_executable = root
+        .join(if cfg!(windows) { "." } else { "bin" })
+        .join(if cfg!(windows) { "node.exe" } else { "node" });
     assert!(
-        stdout.contains(&root.join("bin").display().to_string()),
-        "expected the cached bin dir in {stdout}"
+        stdout.contains(&expected_executable.display().to_string()),
+        "expected the cached executable {} in {stdout}",
+        expected_executable.display()
     );
 }
 
