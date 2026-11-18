@@ -1025,6 +1025,33 @@ fn runx_with_home(dir: &Path, home: &Path, args: &[&str]) -> std::process::Outpu
         .expect("failed to run the runx binary")
 }
 
+fn copy_runx_binary(dir: &Path) -> std::path::PathBuf {
+    fs::create_dir_all(dir).expect("create PATH directory");
+    let name = if cfg!(windows) { "runx.exe" } else { "runx" };
+    let executable = dir.join(name);
+    fs::copy(env!("CARGO_BIN_EXE_runx"), &executable).expect("copy runx binary");
+    executable
+}
+
+fn runx_with_path(
+    dir: &Path,
+    home: &Path,
+    args: &[&str],
+    executable: &Path,
+    path_dirs: &[std::path::PathBuf],
+) -> std::process::Output {
+    Command::new(executable)
+        .args(args)
+        .current_dir(dir)
+        .env("RUNX_HOME", home)
+        .env(
+            "PATH",
+            std::env::join_paths(path_dirs).expect("join test PATH"),
+        )
+        .output()
+        .expect("failed to run the copied runx binary")
+}
+
 #[test]
 fn cache_list_reports_an_empty_cache_clearly() {
     let dir = tmp();
@@ -1386,6 +1413,72 @@ fn doctor_healthy_cache_exits_zero() {
     let stdout = stdout_of(&output);
     assert!(stdout.contains("node 20.11.0"), "{stdout}");
     assert!(stdout.contains("everything looks healthy"), "{stdout}");
+}
+
+#[test]
+fn doctor_warns_when_multiple_runx_binaries_are_on_path() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let current_dir = dir.path().join("current-bin");
+    let other_dir = dir.path().join("other-bin");
+    let current = copy_runx_binary(&current_dir);
+    let other = copy_runx_binary(&other_dir);
+
+    let output = runx_with_path(
+        dir.path(),
+        &home,
+        &["doctor"],
+        &current,
+        &[current_dir, other_dir],
+    );
+    let stdout = stdout_of(&output);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(
+        stdout.contains("Warning: Multiple `runx` binaries found on PATH:"),
+        "missing duplicate warning:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("{} (currently running)", current.display())),
+        "current executable was not identified:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(&other.display().to_string()),
+        "second executable was not listed:\n{stdout}"
+    );
+    assert!(
+        stdout
+            .contains("This can cause version mismatches. Consider removing unused installations."),
+        "missing cleanup advice:\n{stdout}"
+    );
+    assert!(stdout.contains("everything looks healthy"), "{stdout}");
+}
+
+#[test]
+fn doctor_does_not_warn_when_only_one_runx_binary_is_on_path() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let bin_dir = dir.path().join("bin");
+    let executable = copy_runx_binary(&bin_dir);
+
+    let output = runx_with_path(dir.path(), &home, &["doctor"], &executable, &[bin_dir]);
+    let stdout = stdout_of(&output);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(
+        !stdout.contains("Multiple `runx` binaries found on PATH"),
+        "a single binary should not trigger the warning:\n{stdout}"
+    );
 }
 
 /// Doctor must show the exact PATH it would prepend for the current project's
