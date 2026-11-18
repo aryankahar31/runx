@@ -9,7 +9,8 @@ runx takes the other branch: **run one command, with one project's runtimes, and
 leave the shell alone.**
 
 The crates.io package is named `runx-launcher`, while its command remains
-`runx`; install with `cargo install runx-launcher`.
+`runx`; install with `cargo install runx-launcher`, `npm install -g
+runx-launcher`, or `brew install aryankahar31/tap/runx-launcher`.
 
 ## The mechanism
 
@@ -52,7 +53,7 @@ says so explicitly.
 
 ## What is still missing
 
-Java is Temurin 9+ only. Ruby, PHP, and .NET are not in v0.7.0 because their
+Java is Temurin 9+ only. Ruby, PHP, and .NET are not in v0.7.1 because their
 portable archives and checksum sources do not meet the same bar; shipping them
 with weaker verification would undermine the point. The Dockerfile is a recipe,
 not a published image.
