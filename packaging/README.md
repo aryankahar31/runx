@@ -15,7 +15,7 @@ own submission. These are manual steps, tracked in
 | Homebrew | Planned / pending submission | `homebrew/runx-launcher.rb`; `homebrew-runx` tap |
 | Winget | Planned / pending submission | Three `aryankahar31.runx-launcher` manifests; `microsoft/winget-pkgs` PR |
 | Scoop | Available now | `scoop/runx-launcher.json`; published in `aryankahar31/scoop-bucket` |
-| AUR | Planned / pending submission | `aur/PKGBUILD`; AUR `runx-launcher-bin` |
+| AUR | Planned / pending submission | `aur/PKGBUILD`; AUR `runx-launcher-bin` (blocked: Arch registration temporarily closed) |
 | Nix | Planned / pending submission | `nix/flake.nix`, `nix/package.nix`; package `runx-launcher` |
 | npm | Planned / pending submission | Package `runx-launcher`; exposes command `runx` |
 
