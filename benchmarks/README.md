@@ -18,18 +18,22 @@ This benchmark measures both sides of that claim:
 ## Results (this machine)
 
 Machine: macOS 27.2.1, Apple silicon (arm64), zsh 5.9, hyperfine 1.20.0.
-runx 0.6.2 built from `target/release`. mise 2026.7.18 (Homebrew).
+runx 0.7.1 built from `target/release`. mise 2026.7.18 (Homebrew).
 
 | Benchmark | Mean | Min | Max |
 | :-- | --: | --: | --: |
-| zsh startup, no hooks (baseline) | 30.3 ms | 29.3 ms | 32.0 ms |
-| zsh startup + mise activate | 48.9 ms | 47.9 ms | 50.0 ms |
-| runx `<key>` (one-time, warm cache) | 11.4 ms | 10.5 ms | 12.3 ms |
-| runx pre-child (config) | 0.07 ms | — | — |
+| zsh startup, no hooks (baseline) | 29.0 ms | 28.0 ms | 30.3 ms |
+| zsh startup + mise activate | 48.7 ms | 46.0 ms | 56.8 ms |
+| runx `<key>` (one-time, warm cache) | 11.0 ms | 9.2 ms | 12.3 ms |
+| runx pre-child (config) | 0.08 ms | — | — |
 | runx pre-child (cache) | 0.03 ms | — | — |
-| runx pre-child (PATH + spawn) | 0.15 ms | — | — |
+| runx pre-child (PATH + spawn) | 0.14 ms | — | — |
 
-The startup with `mise activate` measured **18.6 ms above baseline** on this
+Separately, against a real cached Node 20.11.0 in a throwaway `RUNX_HOME`:
+`runx run <key>` took 17.7 ms warm, and `runx run <key> --locked` took 1.95 s
+(it re-extracts and compares the installed tree).
+
+The startup with `mise activate` measured **19.7 ms above baseline** on this
 machine. A full `runx <key>` run includes the child process; runx's measured
 pre-child work is **~0.25 ms, paid once per invocation**. These measurements do
 not time repeated prompt renders.
