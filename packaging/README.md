@@ -11,7 +11,7 @@ own submission. These are manual steps, tracked in
 
 | Channel | v0.7.1 status | Template / publish target |
 | --- | --- | --- |
-| Cargo / cargo-binstall | Planned / pending crates.io publication | Package `runx-launcher`; binary and library `runx` |
+| Cargo / cargo-binstall | Available now | Published package `runx-launcher`; binary and library `runx` |
 | Homebrew | Planned / pending submission | `homebrew/runx-launcher.rb`; `homebrew-runx` tap |
 | Winget | Planned / pending submission | Three `aryankahar31.runx-launcher` manifests; `microsoft/winget-pkgs` PR |
 | Scoop | Planned / pending submission | `scoop/runx-launcher.json`; a Scoop bucket repo |

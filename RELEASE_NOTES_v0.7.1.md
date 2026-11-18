@@ -6,7 +6,7 @@ remain `runx`. GitHub release asset names remain `runx-*`.
 
 ## Install
 
-After the crates.io publication succeeds:
+The crates.io package is published and available:
 
 ```sh
 cargo install runx-launcher
@@ -15,8 +15,8 @@ cargo binstall runx-launcher
 ```
 
 Both commands install the `runx` binary. The install scripts and GitHub release
-binaries continue to install the same command. npm, Homebrew, Winget, Scoop,
-AUR, and Nix packages remain planned / pending their separate submissions.
+binaries install the same command. npm, Homebrew, Winget, Scoop, AUR, and Nix
+packages remain planned / pending their separate submissions.
 
 ## Verification
 

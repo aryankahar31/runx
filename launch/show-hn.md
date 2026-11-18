@@ -14,8 +14,7 @@ into `~/.runx`, verifies the archives, and runs your command with only that
 runtime on the child's `PATH`.
 
 The crates.io package is `runx-launcher`; the command and Rust library crate
-remain `runx`. After its crates.io publication, install with
-`cargo install runx-launcher`.
+remain `runx`. Install with `cargo install runx-launcher`.
 
 What it deliberately does not do:
 
