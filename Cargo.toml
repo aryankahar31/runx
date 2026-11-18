@@ -1,6 +1,6 @@
 [package]
-name = "runx"
-version = "0.7.0"
+name = "runx-launcher"
+version = "0.7.1"
 edition = "2021"
 # zip 9.x requires 1.88; declared so older toolchains get a clear cargo error
 # instead of a cryptic dependency compile failure. Documented in README/CONTRIBUTING.
@@ -21,11 +21,19 @@ include = [
     "CHANGELOG.md",
 ]
 
+[lib]
+name = "runx"
+
+[[bin]]
+name = "runx"
+path = "src/main.rs"
+
 # cargo-binstall: fetch the prebuilt archive from the matching GitHub release.
 # One override per target because release asset names are not cargo target triples.
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/runx-{ target }.tar.gz"
-bin-dir = "{ bin }{ binary-ext }"
+# The archives contain the explicitly named `runx` binary at their root.
+bin-dir = "runx{ binary-ext }"
 
 [package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
 pkg-url = "{ repo }/releases/download/v{ version }/runx-linux-x64.tar.gz"

@@ -6,6 +6,18 @@ tags and each tag's GitHub release notes (`gh release view`). Entries marked
 that release has no notes; every line is verifiable against the linked
 compare view or commit.
 
+## v0.7.1 — 2026-11-18
+
+### Changed
+
+- The crates.io package is named `runx-launcher` because the crate names
+  `runx` and `runx-cli` are already owned by unrelated projects. The installed
+  executable and Rust library crate are still named `runx`; install with
+  `cargo install runx-launcher` or `cargo binstall runx-launcher`.
+- The npm package and pending Homebrew, Scoop, AUR, Winget, and Nix templates
+  use `runx-launcher` package identifiers where each ecosystem allows it. The
+  installed command and GitHub release asset names remain `runx` and `runx-*`.
+
 ## v0.7.0 — 2026-11-17
 
 ### Added
@@ -24,10 +36,10 @@ compare view or commit.
 - **uv and Poetry lockfiles** (`uv.lock`, `poetry.lock`) supersede pip detection
   and install via `uv sync --frozen` / `poetry install`.
 - **Packaging:** Cargo and cargo-binstall metadata, plus submission templates
-  for Homebrew, Winget, Scoop, AUR, Nix, and npm. Install scripts and GitHub
-  binaries are available now for published releases; v0.7.0 is pending its
-  release. Cargo/cargo-binstall and all package-manager channels are planned /
-  pending v0.7.0 publication or submission. Winget has version, default-locale,
+  for Homebrew, Winget, Scoop, AUR, Nix, and npm. The v0.7.0 install scripts
+  and GitHub release binaries are published. The Cargo package is published
+  separately as `runx-launcher` in v0.7.1; downstream package-manager channels
+  remain planned / pending submission. Winget has version, default-locale,
   and installer manifests, but schema validation remains manual. Nix still
   needs release-specific source and Cargo hashes. `packaging/render.sh` fills
   the version and archive digests; `packaging/validate.sh` checks structure,
