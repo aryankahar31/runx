@@ -122,7 +122,7 @@
         </div>
 
         <ul class="hero-facts">
-          <li><strong>5</strong> runtimes</li>
+          <li><strong>6</strong> runtimes</li>
           <li><strong>~0.2&nbsp;ms</strong> launcher overhead<sup><a href="#bench" aria-label="Benchmark methodology">*</a></sup></li>
           <li><strong>0</strong> shell hooks</li>
           <li><strong>MIT</strong>, no telemetry</li>
@@ -255,6 +255,8 @@ test = "npm test"</code></pre>
               <button class="copy-btn" data-copy="curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh | sh">Copy</button>
             </div>
             <p class="fine">Installs to <code>~/.runx/bin</code> and offers — once — to add that directory to your shell <code>PATH</code>. No hooks, no shims, no runtime switching.</p>
+            <p class="fine">Or with Homebrew: <code>brew install aryankahar31/tap/runx-launcher</code>.</p>
+            <p class="fine">Or with npm (any OS, Node 18+): <code>npm install -g runx-launcher</code>.</p>
             <details class="fine-details">
               <summary>Fastly blocked? Use the jsDelivr mirror</summary>
               <div class="cmd-line">
@@ -498,7 +500,7 @@ Running `npm run dev`</pre>
             <tr><td>No shell hook required</td><td class="col-runx yes">Yes</td><td>Optional</td><td>No</td><td>No</td><td>Shims</td><td>No</td></tr>
             <tr><td>Multiple runtimes in one project</td><td class="col-runx yes">Yes</td><td>Yes</td><td>Yes</td><td>No</td><td>No</td><td>No</td></tr>
             <tr><td>Per-platform lockfile digests</td><td class="col-runx yes">Yes</td><td>Experimental</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
-            <tr><td>Runtime families</td><td class="col-runx">5</td><td>Many</td><td>Many (plugins)</td><td>Node only</td><td>Node only</td><td>Python only</td></tr>
+            <tr><td>Runtime families</td><td class="col-runx">6</td><td>Many</td><td>Many (plugins)</td><td>Node only</td><td>Node only</td><td>Python only</td></tr>
             <tr><td>Ambient version switching as you <code>cd</code></td><td class="col-runx no">No — you invoke runx</td><td>Yes (with hook)</td><td>Yes (with hook)</td><td>Yes (with hook)</td><td>Yes (shims)</td><td>Yes (with hook)</td></tr>
             <tr><td>Ecosystem maturity</td><td class="col-runx no">Young, single maintainer</td><td>Mature</td><td>Mature</td><td>Widely used</td><td>Mature</td><td>Mature</td></tr>
           </tbody>
@@ -510,10 +512,10 @@ Running `npm run dev`</pre>
           <h3>Where runx is weaker</h3>
           <ul>
             <li>No ambient switching — you type <code>runx</code>; mise/asdf can switch as you <code>cd</code>.</li>
-            <li>No plugin ecosystem or registry; five runtimes, not hundreds.</li>
+            <li>No plugin ecosystem or registry; six runtimes, not hundreds.</li>
             <li>Ruby, PHP, and .NET are planned, not shipped.</li>
             <li>No monorepo/workspace support or pre/post hooks yet.</li>
-            <li>No Homebrew, Winget or Chocolatey packages yet. (Scoop is available.)</li>
+            <li>No Winget or Chocolatey packages yet. (Scoop and Homebrew are available.)</li>
             <li>Not a package manager: it does not install global CLIs or system libraries.</li>
             <li><code>--locked</code> costs seconds per run by design.</li>
           </ul>
@@ -681,7 +683,7 @@ No background prompt hooks are installed.</code></pre>
         <div class="roadmap-col">
           <p class="mini-label">Next</p>
           <ul>
-            <li>Java and .NET runtimes</li>
+            <li>.NET runtimes</li>
             <li>Monorepo / workspace support</li>
             <li>Pre/post run hooks</li>
           </ul>
@@ -691,7 +693,7 @@ No background prompt hooks are installed.</code></pre>
           <ul>
             <li>Plugin system and runtime registry</li>
             <li>VS Code extension</li>
-            <li>Homebrew, Winget, Chocolatey</li>
+            <li>Winget, Chocolatey</li>
             <li>Stable API</li>
           </ul>
         </div>
