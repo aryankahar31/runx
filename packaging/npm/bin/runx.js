@@ -22,7 +22,7 @@ function validateVersion(version, source = "RUNX_VERSION") {
     version.includes("\\") ||
     version.includes("..")
   ) {
-    throw new Error(`${source} must be a numeric version in MAJOR.MINOR.PATCH form (for example 0.7.0)`);
+    throw new Error(`${source} must be a numeric version in MAJOR.MINOR.PATCH form (for example 0.7.1)`);
   }
   return version;
 }

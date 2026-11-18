@@ -1,5 +1,5 @@
 # Maintainer: aryankahar31 <maintainer@runx.local>
-pkgname=runx-bin
+pkgname=runx-launcher-bin
 pkgver=__VERSION__
 pkgrel=1
 pkgdesc="Run any project with the exact runtime versions it declares"

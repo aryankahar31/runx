@@ -1,4 +1,4 @@
-class Runx < Formula
+class RunxLauncher < Formula
   desc "Run any project with the exact runtime versions it declares"
   homepage "https://github.com/aryankahar31/runx"
   version "__VERSION__"

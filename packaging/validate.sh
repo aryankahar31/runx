@@ -15,11 +15,11 @@ check() {
 }
 
 for file in \
-  homebrew/runx.rb \
-  winget/aryankahar31.runx.yaml \
-  winget/aryankahar31.runx.locale.en-US.yaml \
-  winget/aryankahar31.runx.installer.yaml \
-  scoop/runx.json \
+  homebrew/runx-launcher.rb \
+  winget/aryankahar31.runx-launcher.yaml \
+  winget/aryankahar31.runx-launcher.locale.en-US.yaml \
+  winget/aryankahar31.runx-launcher.installer.yaml \
+  scoop/runx-launcher.json \
   aur/PKGBUILD \
   nix/flake.nix \
   nix/package.nix \
@@ -34,9 +34,9 @@ done
 
 # Every versioned manifest must be a template; render.sh substitutes the
 # version at release time so a stale literal cannot ship.
-for file in homebrew/runx.rb winget/aryankahar31.runx.yaml \
-            winget/aryankahar31.runx.locale.en-US.yaml \
-            winget/aryankahar31.runx.installer.yaml scoop/runx.json \
+for file in homebrew/runx-launcher.rb winget/aryankahar31.runx-launcher.yaml \
+            winget/aryankahar31.runx-launcher.locale.en-US.yaml \
+            winget/aryankahar31.runx-launcher.installer.yaml scoop/runx-launcher.json \
             aur/PKGBUILD nix/package.nix npm/package.json; do
   [ -f "$root/$file" ] || continue
   if ! grep -q '__VERSION__' "$root/$file"; then

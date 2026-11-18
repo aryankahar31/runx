@@ -1,5 +1,5 @@
 {
-  description = "runx — run projects with their declared runtime versions";
+  description = "runx-launcher — run projects with their declared runtime versions";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -17,14 +17,14 @@
     {
       packages = forAll (pkgs: {
         default = pkgs.callPackage ./package.nix { };
-        runx = self.packages.${pkgs.system}.default;
+        runx-launcher = self.packages.${pkgs.system}.default;
       });
 
       # Use from a NixOS configuration / home-manager:
       #   inputs.runx.url = "github:aryankahar31/runx";
-      #   environment.systemPackages = [ inputs.runx.packages.${system}.default ];
+      #   environment.systemPackages = [ inputs.runx.packages.${system}.runx-launcher ];
       overlays.default = final: prev: {
-        runx = final.callPackage ./package.nix { };
+        runx-launcher = final.callPackage ./package.nix { };
       };
     };
 }

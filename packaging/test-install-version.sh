@@ -40,7 +40,7 @@ capture_base_url() {
 
   line=$(sed -n 's/^Downloading //p' "$stdout" | sed -n '1p')
   case "$line" in
-    https://github.com/aryankahar31/runx/releases/download/v0.7.0/runx-*) ;;
+    https://github.com/aryankahar31/runx/releases/download/v0.7.1/runx-*) ;;
     *)
       echo "test-install-version: unexpected download URL for $version: $line" >&2
       exit 1
@@ -49,8 +49,8 @@ capture_base_url() {
   printf '%s\n' "${line%/runx-*}"
 }
 
-prefixed_base=$(capture_base_url prefixed v0.7.0)
-bare_base=$(capture_base_url bare 0.7.0)
+prefixed_base=$(capture_base_url prefixed v0.7.1)
+bare_base=$(capture_base_url bare 0.7.1)
 
 if [ "$prefixed_base" != "$bare_base" ]; then
   echo "test-install-version: version forms produced different URLs:" >&2
@@ -59,4 +59,4 @@ if [ "$prefixed_base" != "$bare_base" ]; then
   exit 1
 fi
 
-echo "test-install-version: RUNX_VERSION=v0.7.0 and 0.7.0 both resolve to $prefixed_base"
+echo "test-install-version: RUNX_VERSION=v0.7.1 and 0.7.1 both resolve to $prefixed_base"

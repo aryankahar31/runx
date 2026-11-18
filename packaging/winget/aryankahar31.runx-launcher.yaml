@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.28.0.schema.json
-PackageIdentifier: aryankahar31.runx
+PackageIdentifier: aryankahar31.runx-launcher
 PackageVersion: __VERSION__
 DefaultLocale: en-US
 ManifestType: version
