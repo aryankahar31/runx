@@ -5,7 +5,7 @@ admin rights or shell integration.** Features that do not serve that sentence
 are usually declined.
 
 Status is honest: released means tested and included in a published release;
-prepared means implemented on the v0.7.0 release branch but not released yet;
+prepared means implemented on the current release branch but not released yet;
 planned means wanted, not promised; not planned includes requests we have
 deliberately rejected and why.
 
@@ -14,20 +14,16 @@ deliberately rejected and why.
 - **v0.6.x** — Node, Python, Bun, Go, Deno; zero-config detection; checksum
   verification; atomic installs; lockfiles; `runx doctor`; cache management;
   self-update; Sigstore-signed runx releases.
+- **v0.7.0** — Eclipse Temurin Java 9+, lock enforcement, daily-use commands,
+  dependency lockfile support, packaging templates, and the `setup-runx` action.
 
-## Prepared for v0.7.0
+## Prepared for v0.7.1
 
-- Eclipse Temurin Java 9+ (Adoptium metadata and SHA-256 checksums; full archive
-  download/install has not been exercised end-to-end)
-- `runx list`, `runx which`, `runx exec`, `runx upgrade`, `runx cache dir`, and
-  `runx cache prune --dry-run`
-- `--frozen` and `RUNX_LOCKED=1` lock enforcement
-- `packageManager` pins for pnpm/Yarn; uv and Poetry lockfile support
-- Cargo/cargo-binstall metadata and packaging templates for Homebrew, Winget,
-  Scoop, AUR, Nix, and npm. Downstream package submissions are not published;
-  Winget and Nix templates need additional release-specific work.
-- `setup-runx` GitHub Action and an unbuilt container recipe
-- [zero-admin guide](docs/zero-admin.md)
+- Crates.io package rename to `runx-launcher`; the installed binary and Rust
+  library crate remain `runx`. Crates.io publication is pending.
+- Cargo-binstall metadata and package templates named `runx-launcher` for npm,
+  Homebrew, Winget, Scoop, AUR, and Nix. Downstream package submissions remain
+  pending; Winget and Nix templates need additional release-specific work.
 
 ## Planned (ordered by demand, not dates)
 

@@ -74,6 +74,9 @@ project's own networking.
 
 ## Verifying it on a clean machine
 
+The crates.io package name is `runx-launcher`; after publication,
+`cargo install runx-launcher` installs the `runx` command.
+
 ```sh
 RUNX_HOME=/tmp/runx-clean RUNX_INSTALL_DIR=/tmp/runx-clean/bin \
   sh install.sh

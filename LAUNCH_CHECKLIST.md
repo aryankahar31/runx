@@ -1,133 +1,100 @@
-# v0.7.0 launch checklist
+# v0.7.1 release checklist
 
-1. Merge the release PR after CI is green on Linux, macOS, and Windows.
+1. Merge the `fix/crates-name` PR only after required CI is green on Linux,
+   macOS, and Windows.
 
    - [Open pull requests](https://github.com/aryankahar31/runx/pulls)
    - [CI workflow](https://github.com/aryankahar31/runx/actions/workflows/ci.yml)
-   - `gh pr checks feat/v0.7.0 --watch`
-   - `gh pr merge feat/v0.7.0 --merge`
+   - `gh pr checks <PR_NUMBER> --watch`
+   - `gh pr merge <PR_NUMBER> --squash --delete-branch`
 
-2. Tag the merged `main` commit and push the tag to start the release workflow.
+2. From the merged main HEAD, wait for its CI push run to finish successfully.
 
-   ```bash
-   git switch main
-   git pull --ff-only origin main
-   git tag -a v0.7.0 -m "runx v0.7.0"
-   git push origin v0.7.0
-   ```
+   - `git switch main`
+   - `git pull --ff-only origin main`
+   - `gh run list --branch main --limit 3`
+   - `gh run watch <CI_RUN_ID> --exit-status`
 
-3. Verify the release assets and replace GitHub's generated notes with the
-   draft in `RELEASE_NOTES_v0.7.0.md`.
+3. Tag that exact main commit only after the CI run succeeds.
 
-   - **Available now for published releases:** curl/PowerShell install scripts
-     and GitHub release binaries. v0.7.0 assets are pending this release.
+   - `git tag v0.7.1`
+   - `git push origin v0.7.1`
+   - `gh run list --workflow release.yml --limit 5`
+   - `gh run watch <RELEASE_RUN_ID> --exit-status`
 
-   - [Release workflow runs](https://github.com/aryankahar31/runx/actions/workflows/release.yml)
-   - [GitHub releases](https://github.com/aryankahar31/runx/releases)
-   - Expected archives: `runx-linux-x64.tar.gz`, `runx-linux-arm64.tar.gz`,
-     `runx-macos-x64.tar.gz`, `runx-macos-arm64.tar.gz`, and
-     `runx-windows-x64.zip`, each with a `.sha256` and `.sigstore.json` file;
-     also expect `SHA256SUMS` and `SHA256SUMS.sigstore.json`.
-   - `gh release view v0.7.0 --repo aryankahar31/runx`
-   - `gh release download v0.7.0 --repo aryankahar31/runx --dir /tmp/runx-v0.7.0-assets`
-   - `cd /tmp/runx-v0.7.0-assets && shasum -a 256 -c SHA256SUMS`
-   - Verify the manifest and each archive signature:
+   If only the CI-gate job fails because the main CI run was still finishing,
+   confirm that CI run is green, then run
+   `gh run rerun <RELEASE_RUN_ID> --failed`. Do not move or delete the tag.
 
-     ```bash
-     cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
-       --certificate-identity-regexp '^https://github\.com/aryankahar31/runx/\.github/workflows/release\.yml@refs/tags/v0\.7\.0$' \
-       --certificate-oidc-issuer https://token.actions.githubusercontent.com
-     for asset in runx-*.tar.gz runx-*.zip; do
-       cosign verify-blob "$asset" --bundle "$asset.sigstore.json" \
-         --certificate-identity-regexp '^https://github\.com/aryankahar31/runx/\.github/workflows/release\.yml@refs/tags/v0\.7\.0$' \
-         --certificate-oidc-issuer https://token.actions.githubusercontent.com
-     done
-     ```
-   - `gh release edit v0.7.0 --repo aryankahar31/runx --notes-file RELEASE_NOTES_v0.7.0.md`
+4. Verify the release assets and set the release body from
+   `RELEASE_NOTES_v0.7.1.md`.
 
-4. **Planned / pending v0.7.0 publication:** publish the crate to crates.io.
+   - [GitHub release](https://github.com/aryankahar31/runx/releases/tag/v0.7.1)
+   - Expected: all five `runx-*` platform archives, each `.sha256` and
+     `.sigstore.json`, plus `SHA256SUMS` and `SHA256SUMS.sigstore.json`.
+   - `gh release view v0.7.1 --json assets,isDraft,isPrerelease`
+   - `gh release download v0.7.1 --pattern SHA256SUMS --pattern runx-macos-arm64.tar.gz --dir /tmp/runx-v0.7.1-assets`
+   - `cd /tmp/runx-v0.7.1-assets && shasum -a 256 -c SHA256SUMS --ignore-missing`
+   - Verify the archive and manifest bundles with `cosign verify-blob`, using
+     the `release.yml` tag identity and token.actions.githubusercontent.com issuer.
+   - `gh release edit v0.7.1 --notes-file RELEASE_NOTES_v0.7.1.md`
 
-   ```bash
-   cargo publish --dry-run
-   cargo publish
-   ```
+5. After the release exists, publish the Cargo package. Check credentials
+   without printing their contents.
 
-   - The cargo-binstall metadata becomes usable with the v0.7.0 crate and
-     release assets.
-   - [runx on crates.io](https://crates.io/crates/runx)
+   - `test -s ~/.cargo/credentials.toml`
+   - `cargo publish`
+   - `cargo install runx-launcher --force --root /tmp/runx-from-crates`
+   - `/tmp/runx-from-crates/bin/runx --version`
 
-5. **Planned / pending submission:** publish the npm wrapper after the wrapper
-   tests pass.
+   The package name is `runx-launcher`; the installed command and Rust library
+   crate are `runx`. Do not label Cargo as available before publication succeeds.
 
-   - Download the `packaging-rendered` artifact from the successful release
-     workflow run: [release workflow runs](https://github.com/aryankahar31/runx/actions/workflows/release.yml)
-   - `gh run download --name packaging-rendered --dir /tmp/runx-packaging`
-   - `cd /tmp/runx-packaging/npm`
-   - `npm pack --dry-run`
-   - `npm publish --access public`
-   - [runx on npm](https://www.npmjs.com/package/runx)
+6. Verify the release installer in an isolated cache and install directory.
 
-6. **Planned / pending submission:** create the Homebrew tap and publish the
-   rendered formula.
+   - `RUNX_HOME=/tmp/runx-home-test RUNX_INSTALL_DIR=/tmp/runx-home-test/bin RUNX_VERSION=0.7.1 sh install.sh`
+   - `/tmp/runx-home-test/bin/runx --version`
+   - `RUNX_HOME=/tmp/runx-home-test /tmp/runx-home-test/bin/runx doctor`
 
-   - Create [`homebrew-runx`](https://github.com/new?name=homebrew-runx) or run
-     `gh repo create aryankahar31/homebrew-runx --public --description "Homebrew tap for runx"`.
-   - `gh repo clone aryankahar31/homebrew-runx`
-   - `cd homebrew-runx && mkdir -p Formula`
-   - `cp /tmp/runx-packaging/homebrew/runx.rb Formula/runx.rb`
-   - `brew audit --new --formula Formula/runx.rb`
-   - `git add Formula/runx.rb && git commit -m "Add runx 0.7.0" && git push -u origin main`
-   - `brew tap aryankahar31/runx && brew install aryankahar31/runx/runx && runx --version`
+7. Prepare, but do not publish, the npm wrapper.
 
-7. **Planned / pending submission:** submit the Winget, Scoop, AUR, and Nix
-   packages.
+   - `cd packaging/npm && npm test`
+   - `cd packaging/npm && npm publish --dry-run`
 
-   - **Winget — Planned / pending submission:** [Authoring guide](https://github.com/microsoft/winget-pkgs/blob/master/doc/Authoring.md),
-     [manifest PRs](https://github.com/microsoft/winget-pkgs/pulls). On Windows run
-     `winget install wingetcreate`, then
-     `wingetcreate new https://github.com/aryankahar31/runx/releases/download/v0.7.0/runx-windows-x64.zip`
-     to create or refresh the three-file manifest set, review it against the
-     rendered templates, and manually validate each schema with
-     `winget validate --manifest .\manifests\a\aryankahar31\runx\0.7.0\aryankahar31.runx.yaml`,
-     `winget validate --manifest .\manifests\a\aryankahar31\runx\0.7.0\aryankahar31.runx.locale.en-US.yaml`,
-     and
-     `winget validate --manifest .\manifests\a\aryankahar31\runx\0.7.0\aryankahar31.runx.installer.yaml`.
-   - **Scoop — Planned / pending submission:** Create [`scoop-runx`](https://github.com/new?name=scoop-runx) or run
-     `gh repo create aryankahar31/scoop-runx --public --description "Scoop bucket for runx"`.
-     Then run `gh repo clone aryankahar31/scoop-runx`,
-     `cd scoop-runx && mkdir -p bucket`,
-     `cp /tmp/runx-packaging/scoop/runx.json bucket/runx.json`, and
-     `git add bucket/runx.json && git commit -m "Add runx 0.7.0" && git push -u origin main`.
-     Verify with `scoop bucket add runx https://github.com/aryankahar31/scoop-runx && scoop install runx`.
-   - **AUR — Planned / pending submission:** [AUR account and package index](https://aur.archlinux.org/).
-     `git clone ssh://aur@aur.archlinux.org/runx-bin.git`
-     `cd runx-bin && cp /tmp/runx-packaging/aur/PKGBUILD PKGBUILD`
-     `makepkg --printsrcinfo > .SRCINFO`
-     `makepkg --cleanbuild`
-     `git add PKGBUILD .SRCINFO && git commit -m "Update to 0.7.0" && git push`
-   - **Nix — Planned / pending submission:** [nixpkgs pull requests](https://github.com/NixOS/nixpkgs/pulls).
-     In the rendered package directory run
-     `cd /tmp/runx-packaging/nix && nix build .#default`; copy the source hash
-     from Nix's mismatch error into `__SOURCE_HASH__`, run `nix build .#default`
-     again, then copy the cargo hash from its mismatch error into
-     `__CARGO_HASH__` and run the build once more. Submit the corrected flake
-     and package expression to the chosen Nix target.
+   Its package name is `runx-launcher`; it exposes the `runx` command.
 
-8. Enable GitHub Discussions.
+8. Submit the remaining package-manager templates manually, in order.
+
+   - **Homebrew:** create the `aryankahar31/homebrew-runx` tap, copy
+     `packaging-rendered/homebrew/runx-launcher.rb` to
+     `Formula/runx-launcher.rb`, then run
+     `brew audit --new --formula Formula/runx-launcher.rb`.
+   - **Winget:** submit the three rendered `aryankahar31.runx-launcher`
+     manifests to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs/pulls).
+     Validate each with `winget validate --manifest <manifest.yaml>` first.
+   - **Scoop:** copy `packaging-rendered/scoop/runx-launcher.json` into the
+     bucket as `bucket/runx-launcher.json`; verify with
+     `scoop install runx-launcher`.
+   - **AUR:** submit `packaging-rendered/aur/PKGBUILD` as `runx-launcher-bin`;
+     regenerate `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO`, then run
+     `makepkg --cleanbuild`.
+   - **Nix:** in `packaging-rendered/nix`, fill the source and Cargo hash
+     placeholders by running `nix build .#default` until it succeeds, then
+     submit the package to the chosen Nix target.
+
+9. Enable GitHub Discussions.
 
    - [Repository settings](https://github.com/aryankahar31/runx/settings) →
      Features → Discussions.
 
-9. Update the website for v0.7.0 and deploy it.
+10. Update and deploy the website for v0.7.1.
 
-   - [Vercel dashboard](https://vercel.com/dashboard)
-   - [Live site](https://runx-cli.vercel.app/)
+    - [Vercel dashboard](https://vercel.com/dashboard)
+    - [Live site](https://runx-cli.vercel.app/)
 
-10. Publish the launch posts after the release and package links are live.
+11. Publish the launch posts after the release and package links are live.
 
-    - [Hacker News submission](https://news.ycombinator.com/submit) — use
-      `launch/show-hn.md`.
-    - [Reddit submission](https://www.reddit.com/submit) — use
-      `launch/reddit.md`.
-    - [LinkedIn post composer](https://www.linkedin.com/feed/) — adapt the
-      launch summary and include the release link.
+    - [Hacker News](https://news.ycombinator.com/submit) — `launch/show-hn.md`
+    - [Reddit](https://www.reddit.com/submit) — `launch/reddit.md`
+    - [LinkedIn](https://www.linkedin.com/feed/) — adapt the launch summary and
+      include the release and crates.io links.

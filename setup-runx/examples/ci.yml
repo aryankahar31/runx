@@ -12,7 +12,7 @@ jobs:
 
       - uses: aryankahar31/runx/setup-runx@main
         with:
-          version: latest
+          version: 0.7.1
           locked: true
           cache: true
 
