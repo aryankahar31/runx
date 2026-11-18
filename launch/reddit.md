@@ -16,8 +16,8 @@ It reads the version files the project already has (`.nvmrc`,
 `~/.runx`, checks the download against the vendor's checksum, and runs the
 command with only that runtime on the child's `PATH`.
 
-The crates.io package is named `runx-launcher`; it installs the `runx` command.
-After publication, use `cargo install runx-launcher`.
+The crates.io package is named `runx-launcher`; install the `runx` command with
+`cargo install runx-launcher`.
 
 No shell activation. No shims. No sudo. No global versions. The parent shell is
 unchanged; a probe test asserts that.

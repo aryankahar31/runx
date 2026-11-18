@@ -5,7 +5,7 @@ admin rights or shell integration.** Features that do not serve that sentence
 are usually declined.
 
 Status is honest: released means tested and included in a published release;
-prepared means implemented on the current release branch but not released yet;
+prepared means implemented but not yet submitted to its downstream channel;
 planned means wanted, not promised; not planned includes requests we have
 deliberately rejected and why.
 
@@ -16,14 +16,15 @@ deliberately rejected and why.
   self-update; Sigstore-signed runx releases.
 - **v0.7.0** — Eclipse Temurin Java 9+, lock enforcement, daily-use commands,
   dependency lockfile support, packaging templates, and the `setup-runx` action.
+- **v0.7.1** — renamed the crates.io package to `runx-launcher`; published the
+  crate and five signed platform archives while keeping the command and Rust
+  library crate named `runx`.
 
-## Prepared for v0.7.1
+## Prepared for downstream submission
 
-- Crates.io package rename to `runx-launcher`; the installed binary and Rust
-  library crate remain `runx`. Crates.io publication is pending.
-- Cargo-binstall metadata and package templates named `runx-launcher` for npm,
-  Homebrew, Winget, Scoop, AUR, and Nix. Downstream package submissions remain
-  pending; Winget and Nix templates need additional release-specific work.
+- npm, Homebrew, Winget, Scoop, AUR, and Nix templates use `runx-launcher`;
+  their downstream submissions remain pending. Winget schema validation and
+  Nix source/Cargo hashes still need manual work.
 
 ## Planned (ordered by demand, not dates)
 

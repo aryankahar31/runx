@@ -88,11 +88,11 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 
 | Channel | v0.7.1 status | Command / destination |
 | --- | --- | --- |
-| Install script (macOS / Linux) | Available now for published releases; v0.7.1 pending | `curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh \| sh` |
-| Install script (Windows) | Available now for published releases; v0.7.1 pending | `iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 \| iex` |
-| GitHub release binaries | Available now for published releases; v0.7.1 pending | [Releases](https://github.com/aryankahar31/runx/releases) |
-| Cargo | Planned / pending v0.7.1 crates.io publication | `cargo install runx-launcher` (installs `runx`) |
-| cargo-binstall | Planned / pending v0.7.1 crate and release assets | `cargo binstall runx-launcher` (installs `runx`) |
+| Install script (macOS / Linux) | Available now | `curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh \| sh` |
+| Install script (Windows) | Available now | `iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 \| iex` |
+| GitHub release binaries | Available now | [Releases](https://github.com/aryankahar31/runx/releases) |
+| Cargo | Available now | `cargo install runx-launcher` (installs `runx`) |
+| cargo-binstall | Available now | `cargo binstall runx-launcher` (installs `runx`) |
 | npm | Planned / pending submission | `npx --package runx-launcher -- runx dev` |
 | Homebrew | Planned / pending submission | `brew install aryankahar31/runx/runx-launcher` |
 | Winget | Planned / pending submission | `winget install aryankahar31.runx-launcher` |
@@ -103,16 +103,14 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 > Behind a network that blocks Fastly (`raw.githubusercontent.com`)? Use the jsDelivr mirror:
 > `curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh`
 
-The scripts and binaries are available for published releases; v0.7.1 is
-pending its release. Cargo and cargo-binstall are planned / pending crates.io
-publication, and npm, Homebrew, Winget, Scoop, AUR, and Nix are planned / pending
-submission. Use their commands after those steps are complete. The release
+The v0.7.1 install scripts and release binaries are available, and the
+`runx-launcher` crate is published on crates.io. npm, Homebrew, Winget, Scoop,
+AUR, and Nix remain planned / pending their separate submissions. The release
 workflow renders package versions and archive digests; downstream packages
 still need review and publication. See [`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.md).
 
 For published releases, the curl and PowerShell installers verify the release
-archive's SHA-256 checksum — see [Security](#security). Their v0.7.1 release is
-pending.
+archive's SHA-256 checksum — see [Security](#security).
 
 Initialize a project:
 
@@ -399,8 +397,8 @@ libraries).
 
 ## CI and containers
 
-The composite `setup-runx` action is planned / pending merge and consumer
-workflow verification. Once merged, it installs a SHA-256-verified release
+The composite `setup-runx` action is available from this repository. Consumer
+workflow verification remains pending. It installs a SHA-256-verified release
 binary, caches `~/.runx/runtimes`, and can enforce the lockfile:
 
 ```yaml

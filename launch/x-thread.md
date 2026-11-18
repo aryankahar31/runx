@@ -20,8 +20,8 @@ and after.
 resolving something new.
 
 5/ The crates.io package is `runx-launcher`; the installed command and Rust
-library crate remain `runx`. After publication, install with
-`cargo install runx-launcher`. v0.7.1 carries forward Temurin Java 9+,
+library crate remain `runx`. Install with `cargo install runx-launcher`.
+v0.7.1 carries forward Temurin Java 9+,
 daily-use commands, uv and
 Poetry lockfiles, package-manager pins, and the setup-runx Action.
 

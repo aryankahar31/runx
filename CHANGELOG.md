@@ -14,7 +14,7 @@ compare view or commit.
   `runx` and `runx-cli` are already owned by unrelated projects. The installed
   executable and Rust library crate are still named `runx`; install with
   `cargo install runx-launcher` or `cargo binstall runx-launcher`.
-- The npm package and pending Homebrew, Scoop, AUR, Winget, and Nix templates
+- The npm wrapper and pending Homebrew, Scoop, AUR, Winget, and Nix templates
   use `runx-launcher` package identifiers where each ecosystem allows it. The
   installed command and GitHub release asset names remain `runx` and `runx-*`.
 
