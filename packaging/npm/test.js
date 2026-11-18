@@ -6,6 +6,12 @@ const path = require("node:path");
 const test = require("node:test");
 const { platformAsset, parseChecksum, validateVersion } = require("./bin/runx.js");
 
+test("publishes as runx-launcher while exposing the runx command", () => {
+  const pkg = require("./package.json");
+  assert.equal(pkg.name, "runx-launcher");
+  assert.equal(pkg.bin.runx, "bin/runx.js");
+});
+
 test("maps every published platform to its release asset", () => {
   assert.equal(platformAsset("linux", "x64"), "runx-linux-x64.tar.gz");
   assert.equal(platformAsset("linux", "arm64"), "runx-linux-arm64.tar.gz");
@@ -24,7 +30,7 @@ test("parses a SHA256SUMS entry for the exact asset", () => {
 });
 
 test("accepts only numeric major.minor.patch versions", () => {
-  assert.equal(validateVersion("0.7.0"), "0.7.0");
+  assert.equal(validateVersion("0.7.1"), "0.7.1");
   for (const payload of [
     "../x",
     "/tmp/x",

@@ -84,11 +84,11 @@ render() {
     "$src" > "$dest"
 }
 
-render "$root/homebrew/runx.rb" "$out/homebrew/runx.rb"
-render "$root/winget/aryankahar31.runx.yaml" "$out/winget/aryankahar31.runx.yaml"
-render "$root/winget/aryankahar31.runx.locale.en-US.yaml" "$out/winget/aryankahar31.runx.locale.en-US.yaml"
-render "$root/winget/aryankahar31.runx.installer.yaml" "$out/winget/aryankahar31.runx.installer.yaml"
-render "$root/scoop/runx.json" "$out/scoop/runx.json"
+render "$root/homebrew/runx-launcher.rb" "$out/homebrew/runx-launcher.rb"
+render "$root/winget/aryankahar31.runx-launcher.yaml" "$out/winget/aryankahar31.runx-launcher.yaml"
+render "$root/winget/aryankahar31.runx-launcher.locale.en-US.yaml" "$out/winget/aryankahar31.runx-launcher.locale.en-US.yaml"
+render "$root/winget/aryankahar31.runx-launcher.installer.yaml" "$out/winget/aryankahar31.runx-launcher.installer.yaml"
+render "$root/scoop/runx-launcher.json" "$out/scoop/runx-launcher.json"
 render "$root/aur/PKGBUILD" "$out/aur/PKGBUILD"
 render "$root/nix/package.nix" "$out/nix/package.nix"
 mkdir -p "$out/nix"

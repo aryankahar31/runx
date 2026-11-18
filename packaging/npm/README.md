@@ -1,16 +1,17 @@
-# runx (npm wrapper)
+# runx-launcher (npm wrapper)
 
 ```bash
-npx runx dev
+npx --package runx-launcher -- runx dev
 ```
 
-This package downloads the prebuilt `runx` binary for your platform from the
+The npm package is named `runx-launcher`; its command remains `runx`. It
+downloads the prebuilt `runx` binary for your platform from the
 matching GitHub release, verifies it against the release's `SHA256SUMS`, caches
 it under `~/.runx/npm/<version>/`, and runs it. Unsupported platforms
 (`freebsd`, Windows ARM64) get a clear error instead of a binary that does not
 start.
 
-Set `RUNX_VERSION=0.7.0` to pin a different release. It must use numeric
+Set `RUNX_VERSION=0.7.1` to pin a different release. It must use numeric
 `MAJOR.MINOR.PATCH` form. Set `RUNX_HOME` to move the cache.
 
 **Planned / pending submission:** this wrapper is not published yet. The

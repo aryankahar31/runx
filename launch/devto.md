@@ -8,6 +8,9 @@ and it means every interactive command pays the manager's cost forever.
 runx takes the other branch: **run one command, with one project's runtimes, and
 leave the shell alone.**
 
+The crates.io package is named `runx-launcher`, while its command remains
+`runx`; after publication, install with `cargo install runx-launcher`.
+
 ## The mechanism
 
 1. Resolve the project's requirements from `runx.toml`, a lockfile, or the

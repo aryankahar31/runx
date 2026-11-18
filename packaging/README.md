@@ -9,21 +9,21 @@ needs source and Cargo hashes, and each downstream repository must accept its
 own submission. These are manual steps, tracked in
 [`../LAUNCH_CHECKLIST.md`](../LAUNCH_CHECKLIST.md).
 
-| Channel | v0.7.0 status | Template / publish target |
+| Channel | v0.7.1 status | Template / publish target |
 | --- | --- | --- |
-| Cargo / cargo-binstall | Planned / pending v0.7.0 publication | `Cargo.toml` metadata; crates.io and release assets |
-| Homebrew | Planned / pending submission | `homebrew/runx.rb`; `homebrew-runx` tap |
-| Winget | Planned / pending submission | Three manifests; `microsoft/winget-pkgs` PR |
-| Scoop | Planned / pending submission | `scoop/runx.json`; a Scoop bucket repo |
-| AUR | Planned / pending submission | `aur/PKGBUILD`; AUR `runx-bin` |
-| Nix | Planned / pending submission | `nix/flake.nix`, `nix/package.nix`; flake / nixpkgs PR |
-| npm | Planned / pending submission | `npm/`; `npm publish` |
+| Cargo / cargo-binstall | Planned / pending crates.io publication | Package `runx-launcher`; binary and library `runx` |
+| Homebrew | Planned / pending submission | `homebrew/runx-launcher.rb`; `homebrew-runx` tap |
+| Winget | Planned / pending submission | Three `aryankahar31.runx-launcher` manifests; `microsoft/winget-pkgs` PR |
+| Scoop | Planned / pending submission | `scoop/runx-launcher.json`; a Scoop bucket repo |
+| AUR | Planned / pending submission | `aur/PKGBUILD`; AUR `runx-launcher-bin` |
+| Nix | Planned / pending submission | `nix/flake.nix`, `nix/package.nix`; package `runx-launcher` |
+| npm | Planned / pending submission | Package `runx-launcher`; exposes command `runx` |
 
 ## Local checks
 
 ```bash
 packaging/validate.sh                       # structure, placeholders, npm syntax, renderer regression test
-packaging/render.sh 0.7.0 dist /tmp/runx-pkg # substitute version + digests
+packaging/render.sh 0.7.1 dist /tmp/runx-pkg # substitute version + digests
 ```
 
 The validator tests renderer failure handling but does not validate Winget

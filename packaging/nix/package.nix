@@ -5,7 +5,7 @@
 }:
 
 rustPlatform.buildRustPackage rec {
-  pname = "runx";
+  pname = "runx-launcher";
   version = "__VERSION__";
 
   src = fetchFromGitHub {

@@ -13,6 +13,10 @@ runx is a single binary that reads the version files a project already has
 into `~/.runx`, verifies the archives, and runs your command with only that
 runtime on the child's `PATH`.
 
+The crates.io package is `runx-launcher`; the command and Rust library crate
+remain `runx`. After its crates.io publication, install with
+`cargo install runx-launcher`.
+
 What it deliberately does not do:
 
 - no shell activation, prompt hook, or shims;

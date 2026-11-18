@@ -1,5 +1,5 @@
 {
-  "name": "runx",
+  "name": "runx-launcher",
   "version": "__VERSION__",
   "description": "Run any project with the exact runtime versions it declares",
   "bin": {

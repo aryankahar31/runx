@@ -702,8 +702,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "runx"
-version = "0.7.0"
+name = "runx-launcher"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "clap",

@@ -8,7 +8,7 @@ restores the runtime cache, and can enforce `runx.lock`.
 
 - uses: aryankahar31/runx/setup-runx@main
   with:
-    version: 0.7.0   # or "latest" (default)
+    version: 0.7.1   # or "latest" (default)
     locked: true     # sets RUNX_LOCKED=1
     cache: true      # caches ~/.runx/runtimes
 
@@ -29,6 +29,6 @@ Example workflow: [`examples/ci.yml`](examples/ci.yml).
 
 | Input | Default | Effect |
 | --- | --- | --- |
-| `version` | `latest` | Exact runx release (`0.7.0` or `v0.7.0`) or `latest`. |
+| `version` | `latest` | Exact runx release (`0.7.1` or `v0.7.1`) or `latest`. |
 | `locked` | `false` | Exports `RUNX_LOCKED=1`. |
 | `cache` | `true` | Caches `~/.runx/runtimes` with `actions/cache`. |

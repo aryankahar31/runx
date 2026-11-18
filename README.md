@@ -16,6 +16,10 @@ Run projects with reproducible, isolated runtimes — no global installations, n
 
 </div>
 
+An unrelated crates.io project named `runx` exists; this tool's package is
+`runx-launcher`, while its installed binary and Rust library crate are both
+named `runx`.
+
 ```text
 $ runx dev
 No runx.toml found — detected from project files:
@@ -82,33 +86,32 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 
 ## Quick Start
 
-| Channel | v0.7.0 status | Command / destination |
+| Channel | v0.7.1 status | Command / destination |
 | --- | --- | --- |
-| Install script (macOS / Linux) | Available now for published releases; v0.7.0 pending | `curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh \| sh` |
-| Install script (Windows) | Available now for published releases; v0.7.0 pending | `iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 \| iex` |
-| GitHub release binaries | Available now for published releases; v0.7.0 pending | [Releases](https://github.com/aryankahar31/runx/releases) |
-| Cargo | Planned / pending v0.7.0 crates.io publication | `cargo install runx` |
-| cargo-binstall | Planned / pending v0.7.0 crate and release assets | `cargo binstall runx` |
-| npm | Planned / pending submission | `npx runx dev` |
-| Homebrew | Planned / pending submission | `homebrew-runx` tap |
-| Winget | Planned / pending submission | `microsoft/winget-pkgs` manifest PR |
-| Scoop | Planned / pending submission | Scoop bucket |
-| AUR | Planned / pending submission | `runx-bin` |
-| Nix | Planned / pending submission | flake / nixpkgs package |
+| Install script (macOS / Linux) | Available now for published releases; v0.7.1 pending | `curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh \| sh` |
+| Install script (Windows) | Available now for published releases; v0.7.1 pending | `iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 \| iex` |
+| GitHub release binaries | Available now for published releases; v0.7.1 pending | [Releases](https://github.com/aryankahar31/runx/releases) |
+| Cargo | Planned / pending v0.7.1 crates.io publication | `cargo install runx-launcher` (installs `runx`) |
+| cargo-binstall | Planned / pending v0.7.1 crate and release assets | `cargo binstall runx-launcher` (installs `runx`) |
+| npm | Planned / pending submission | `npx --package runx-launcher -- runx dev` |
+| Homebrew | Planned / pending submission | `brew install aryankahar31/runx/runx-launcher` |
+| Winget | Planned / pending submission | `winget install aryankahar31.runx-launcher` |
+| Scoop | Planned / pending submission | `scoop install runx-launcher` |
+| AUR | Planned / pending submission | `runx-launcher-bin` |
+| Nix | Planned / pending submission | `runx-launcher` flake package |
 
 > Behind a network that blocks Fastly (`raw.githubusercontent.com`)? Use the jsDelivr mirror:
 > `curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh`
 
-The scripts and binaries are available for releases that have already been
-published; v0.7.0 is still pending its release. Cargo/cargo-binstall and the
-package-manager files in [`packaging/`](packaging/) are planned / pending v0.7.0
-publication or submission. Their commands above are for use after those steps
-are complete. The release workflow renders package versions and archive
-digests; downstream packages still need review and publication. See
-[`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.md).
+The scripts and binaries are available for published releases; v0.7.1 is
+pending its release. Cargo and cargo-binstall are planned / pending crates.io
+publication, and npm, Homebrew, Winget, Scoop, AUR, and Nix are planned / pending
+submission. Use their commands after those steps are complete. The release
+workflow renders package versions and archive digests; downstream packages
+still need review and publication. See [`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.md).
 
 For published releases, the curl and PowerShell installers verify the release
-archive's SHA-256 checksum — see [Security](#security). Their v0.7.0 release is
+archive's SHA-256 checksum — see [Security](#security). Their v0.7.1 release is
 pending.
 
 Initialize a project:
@@ -377,9 +380,10 @@ npm, uv, or Poetry manage their own network access.
 ## Roadmap
 
 The current release scope and planned work are tracked in
-[`ROADMAP.md`](ROADMAP.md). v0.7.0 adds Java, lock enforcement, daily-use CLI
+[`ROADMAP.md`](ROADMAP.md). v0.7.0 added Java, lock enforcement, daily-use CLI
 commands, dependency lockfile support, a GitHub Action, and packaging
-templates. Downstream package submissions remain manual launch steps.
+templates. v0.7.1 names the Cargo and npm packages `runx-launcher`; downstream
+package submissions remain manual launch steps.
 
 ## Zero-admin machines
 
