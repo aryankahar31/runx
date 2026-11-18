@@ -28,7 +28,8 @@ Poetry lockfiles, package-manager pins, and the setup-runx Action.
 6/ Limits, stated up front: Java 9+ only. Ruby/PHP/.NET were checked and skipped
 because their portable archive checksums do not meet the bar. No Docker image is
 published yet. Offline Python/Go may need cached metadata. Homebrew, Winget,
-Scoop, AUR, Nix, and npm submissions remain pending.
+AUR, Nix, and npm submissions remain pending; Scoop is available via
+`scoop bucket add aryankahar31 https://github.com/aryankahar31/scoop-bucket`.
 
 7/ Rust, MIT, Linux/macOS/Windows x64. Feedback welcome, especially from
 locked-down work machines and people who want to break the no-shell-hook claim.
