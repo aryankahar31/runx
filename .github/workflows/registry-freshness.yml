@@ -15,7 +15,7 @@ jobs:
         run: bash benchmarks/registry-freshness.sh target/release/runx
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: registry-freshness-results
           path: benchmarks/registry-results.json
