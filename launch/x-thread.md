@@ -27,9 +27,10 @@ Poetry lockfiles, package-manager pins, and the setup-runx Action.
 
 6/ Limits, stated up front: Java 9+ only. Ruby/PHP/.NET were checked and skipped
 because their portable archive checksums do not meet the bar. No Docker image is
-published yet. Offline Python/Go may need cached metadata. Homebrew, Winget,
-AUR, Nix, and npm submissions remain pending; Scoop is available via
-`scoop bucket add aryankahar31 https://github.com/aryankahar31/scoop-bucket`.
+published yet. Offline Python/Go may need cached metadata. Winget, AUR, and Nix
+submissions remain pending; Scoop, Homebrew
+(`brew install aryankahar31/tap/runx-launcher`), and npm
+(`npm install -g runx-launcher`) are available.
 
 7/ Rust, MIT, Linux/macOS/Windows x64. Feedback welcome, especially from
 locked-down work machines and people who want to break the no-shell-hook claim.

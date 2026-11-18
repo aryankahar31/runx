@@ -123,7 +123,7 @@
 
         <ul class="hero-facts">
           <li><strong>6</strong> runtimes</li>
-          <li><strong>~0.2&nbsp;ms</strong> launcher overhead<sup><a href="#bench" aria-label="Benchmark methodology">*</a></sup></li>
+          <li><strong>~0.25&nbsp;ms</strong> launcher overhead<sup><a href="#bench" aria-label="Benchmark methodology">*</a></sup></li>
           <li><strong>0</strong> shell hooks</li>
           <li><strong>MIT</strong>, no telemetry</li>
         </ul>
@@ -444,15 +444,15 @@ Running `npm run dev`</pre>
 
       <div class="bench-grid reveal">
         <div class="bench-stat bench-accent">
-          <p class="bench-num">5.9<span>ms</span></p>
+          <p class="bench-num">11.0<span>ms</span></p>
           <p class="bench-label">complete <code>runx &lt;key&gt;</code>, warm cache</p>
         </div>
         <div class="bench-stat">
-          <p class="bench-num">~0.2<span>ms</span></p>
+          <p class="bench-num">~0.25<span>ms</span></p>
           <p class="bench-label">runx pre-child work, once per run</p>
         </div>
         <div class="bench-stat">
-          <p class="bench-num">+15.2<span>ms</span></p>
+          <p class="bench-num">+19.7<span>ms</span></p>
           <p class="bench-label">mise activate, on every prompt</p>
         </div>
         <div class="bench-stat">
@@ -463,14 +463,14 @@ Running `npm run dev`</pre>
 
       <div class="bench-table-wrap reveal">
         <table class="data-table">
-          <caption>Measured on macOS 26.5.2, Apple silicon (arm64), zsh 5.9, hyperfine 1.20.0, <code>--warmup 3 --runs 20</code>. runx 0.3.1 at measurement time; the benchmark has not been re-run for the current release. Re-measure for your machine.</caption>
+          <caption>Measured on macOS 27.2.1, Apple silicon (arm64), zsh 5.9, hyperfine 1.20.0, <code>--warmup 3 --runs 20</code>. runx 0.7.1 at measurement time. Re-measure for your machine.</caption>
           <thead><tr><th scope="col">Measurement</th><th scope="col">Mean</th><th scope="col">What it captures</th></tr></thead>
           <tbody>
-            <tr><td>zsh startup, no hooks</td><td>23.2 ms</td><td>Baseline prompt with an empty rc</td></tr>
-            <tr><td>zsh startup + <code>mise activate</code></td><td>38.4 ms</td><td>+15.2 ms injected into every prompt</td></tr>
-            <tr class="row-accent"><td><code>runx &lt;key&gt;</code>, warm cache</td><td>5.9 ms</td><td>Total: config, cache lookup, PATH, child start</td></tr>
-            <tr class="row-accent"><td>runx pre-child work</td><td>~0.2 ms</td><td>config 0.07 · cache 0.02 · PATH + spawn 0.14</td></tr>
-            <tr><td><code>--locked</code>, one runtime</td><td>~2.1 s</td><td>Re-extracts and verifies cached contents; same run unlocked took 133 ms</td></tr>
+            <tr><td>zsh startup, no hooks</td><td>29.0 ms</td><td>Baseline prompt with an empty rc</td></tr>
+            <tr><td>zsh startup + <code>mise activate</code></td><td>48.7 ms</td><td>+19.7 ms injected into every prompt</td></tr>
+            <tr class="row-accent"><td><code>runx &lt;key&gt;</code>, warm cache</td><td>11.0 ms</td><td>Total: config, cache lookup, PATH, child start</td></tr>
+            <tr class="row-accent"><td>runx pre-child work</td><td>~0.25 ms</td><td>config 0.08 · cache 0.03 · PATH + spawn 0.14</td></tr>
+            <tr><td><code>--locked</code>, one runtime</td><td>1.95 s</td><td>Re-extracts and verifies cached contents; same run unlocked took 17.7 ms</td></tr>
           </tbody>
         </table>
       </div>
