@@ -1,0 +1,23 @@
+name: CI with runx
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aryankahar31/runx/setup-runx@main
+        with:
+          version: latest
+          locked: true
+          cache: true
+
+      - name: Install dependencies
+        run: runx --install test
+
+      - name: Run the project tests
+        run: runx test

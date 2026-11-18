@@ -3,6 +3,10 @@ set -eu
 
 REPO="${RUNX_REPO:-aryankahar31/runx}"
 VERSION="${RUNX_VERSION:-latest}"
+case "$VERSION" in
+  latest|v*) ;;
+  *) VERSION="v$VERSION" ;;
+esac
 INSTALL_DIR="${RUNX_INSTALL_DIR:-$HOME/.runx/bin}"
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"

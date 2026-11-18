@@ -48,9 +48,18 @@ A generic `package.json` is **not** a Bun indicator: Node projects contain one w
 
 Detected from `.dvmrc` / `.deno-version`, or an explicit entry in `runx.toml`.
 
+### Java (first match wins)
+
+| Priority | File | Notes |
+|----------|------|-------|
+| 1 | `.java-version` | jenv/SDKMAN convention; Adoptium build suffixes (`21.0.5+11`) and SDKMAN vendor suffixes (`21.0.5-tem`) are stripped |
+| 2 | `.sdkmanrc` → `java=` | Same normalization |
+
+Java 9+ is supported (Eclipse Temurin archives). Java 8's `1.8.0_432` naming scheme is reported as unresolvable rather than guessed.
+
 ### Project-root markers
 
-A detected version file also marks a project root for auto-detection, alongside `runx.toml`: `.nvmrc`, `.node-version`, `.python-version`, `.go-version`, `.bun-version`, `.dvmrc`, `.deno-version`, `package.json`, `pyproject.toml`, `Pipfile`, `go.mod`, `bun.lock`, `bun.lockb` and `bunfig.toml`.
+A detected version file also marks a project root for auto-detection, alongside `runx.toml`: `.nvmrc`, `.node-version`, `.python-version`, `.go-version`, `.bun-version`, `.dvmrc`, `.deno-version`, `.java-version`, `.sdkmanrc`, `package.json`, `pyproject.toml`, `Pipfile`, `go.mod`, `bun.lock`, `bun.lockb` and `bunfig.toml`.
 
 ## Multiple runtimes per project
 
@@ -82,7 +91,7 @@ build = "npm run build"
 
 ## Run-command inference
 
-Every script in `package.json` becomes a run command keyed by its script name: `npm run <script>` for npm-style projects, `bun run <script>` for Bun-managed ones (see the Bun table above). That means `runx dev`, but also `runx test`, `runx build`, `runx lint` — whatever your package.json declares — work without any runx.toml. No other commands are guessed: Go, Python and Rust-only projects have no inferable command and get a clear error listing what was detected plus a pointer to `runx init`.
+Every script in `package.json` becomes a run key: `npm run <script>` for npm-style projects, `bun run <script>` for Bun-managed ones (see the Bun table above). Non-reserved names such as `dev`, `test`, `build`, and `lint` can be run as `runx <key>`. If a script name matches a built-in command, use `runx run <key>` to disambiguate it. No other commands are guessed: Go, Python and Rust-only projects have no inferable command and get a clear error listing what was detected plus a pointer to `runx init`.
 
 An explicit `[run]` table in `runx.toml` always replaces inference entirely (see [Configuration Precedence](#configuration-precedence)).
 

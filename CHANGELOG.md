@@ -6,6 +6,64 @@ tags and each tag's GitHub release notes (`gh release view`). Entries marked
 that release has no notes; every line is verifiable against the linked
 compare view or commit.
 
+## v0.7.0 — 2026-11-17
+
+### Added
+
+- **Eclipse Temurin Java 9+.** Versions resolve from Adoptium's metadata, the
+  archive is checked against the published SHA-256, and `.java-version` /
+  `.sdkmanrc` (`java=`) are detected. Java 8 is intentionally unsupported.
+- **Daily-use commands:** `runx list` (alias for `cache list`), `runx which`,
+  `runx exec` (argv, no shell), `runx upgrade` (alias for `self update`),
+  `runx cache dir`, and `runx cache prune --dry-run`.
+- **`--frozen`** as `--locked --offline`, and **`RUNX_LOCKED=1`** as the
+  environment equivalent of `--locked` for CI.
+- **JavaScript package-manager pins:** `packageManager` in `package.json` is
+  honoured for pnpm and Yarn through Corepack, with an `npx tool@version`
+  fallback. Values are validated before reaching a shell.
+- **uv and Poetry lockfiles** (`uv.lock`, `poetry.lock`) supersede pip detection
+  and install via `uv sync --frozen` / `poetry install`.
+- **Packaging:** Cargo and cargo-binstall metadata, plus submission templates
+  for Homebrew, Winget, Scoop, AUR, Nix, and npm. Install scripts and GitHub
+  binaries are available now for published releases; v0.7.0 is pending its
+  release. Cargo/cargo-binstall and all package-manager channels are planned /
+  pending v0.7.0 publication or submission. Winget has version, default-locale,
+  and installer manifests, but schema validation remains manual. Nix still
+  needs release-specific source and Cargo hashes. `packaging/render.sh` fills
+  the version and archive digests; `packaging/validate.sh` checks structure,
+  placeholders, and fail-closed checksum behavior. The renderer validates all
+  five SHA-256 values before writing manifests, and the npm wrapper rejects
+  `RUNX_VERSION` values outside numeric `MAJOR.MINOR.PATCH` form.
+- **CI and containers:** a composite `setup-runx` GitHub Action with cache and
+  lock enforcement, planned / pending merge and consumer-workflow verification,
+  plus a multi-stage `Dockerfile` recipe and usage guide.
+- **Zero-admin guide:** no sudo, no system installs, `RUNX_HOME` recipes, and
+  explicit limits.
+- Community files: `SECURITY.md`, `CODE_OF_CONDUCT.md`, `ROADMAP.md`, issue
+  templates, ten scoped issue drafts, launch-post drafts, and a VHS demo script.
+
+### Changed
+
+- Shell-overhead measurements refreshed on v0.6.2 with mise installed: the
+  benchmark measured 18.6 ms more interactive-shell startup with the mise
+  activation line than with an empty zsh config, plus ~0.25 ms of runx
+  pre-child work. The benchmark does not measure repeated prompt renders.
+
+### Not shipped in v0.7.0
+
+- Ruby, PHP, and .NET are not included. Supporting them requires distribution
+  artifacts that meet runx's portable-runtime, version, and integrity
+  requirements. See `ROADMAP.md` for the current scope and rationale.
+
+### Known limitations in this release
+
+- The `Dockerfile` is not built in CI and was not built locally (no Docker on
+  the release machine); treat it as a reviewed recipe, not a published image.
+- Java's Adoptium response parsing and asset-selection logic have unit tests;
+  a full Temurin download and install was not exercised end-to-end here.
+
+[Full changelog](https://github.com/aryankahar31/runx/compare/v0.6.2...v0.7.0)
+
 ## v0.6.2 — 2026-11-02
 
 - [fix: seven UX gaps found by using the released v0.6.1 binary (#55)](https://github.com/aryankahar31/runx/pull/55)

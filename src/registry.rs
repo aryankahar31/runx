@@ -112,6 +112,13 @@ struct DenoRelease {
     tag_name: String,
 }
 
+/// Adoptium's `/v3/info/release_names` response.
+#[derive(Debug, Default, Deserialize)]
+struct AdoptiumReleaseNames {
+    #[serde(default)]
+    releases: Vec<String>,
+}
+
 /// How a version *range* is turned into a concrete release.
 ///
 /// Exact pins are unaffected by this setting.
@@ -607,6 +614,42 @@ fn version_from_deno_tag(tag: &str) -> Option<Version> {
 /// Only plain `goMAJOR.MINOR.PATCH` stable releases count: pre-releases
 /// (`go1.27rc1`) and the two-part aliases Go lists alongside full releases
 /// (`go1.25`) are not installable downloads runx resolves to.
+/// Fetch stable Eclipse Temurin JDK versions for range resolution.
+///
+/// The release list is small (one JSON array), but Java 8 and some update
+/// builds use names that do not fit runx's `MAJOR.MINOR.PATCH` model; those
+/// are skipped, matching [`crate::runtime::java_platform`]'s Java 9+ scope.
+pub fn fetch_java_versions() -> Result<Vec<Version>> {
+    let (os, arch) = crate::runtime::java_release_platform()?;
+    let url = format!(
+        "https://api.adoptium.net/v3/info/release_names\
+         ?architecture={arch}&image_type=jdk&jvm_impl=hotspot&os={os}\
+         &project=jdk&release_type=ga&vendor=eclipse&version=%5B9%2C%29"
+    );
+    let body = fetch_with_retry(&url)?;
+    Ok(parse_java_release_names(&body))
+}
+
+/// Parse Adoptium release names (`jdk-21.0.5+11`) into three-part versions.
+fn parse_java_release_names(body: &str) -> Vec<Version> {
+    let names: AdoptiumReleaseNames = serde_json::from_str(body).unwrap_or_default();
+    sorted_unique(
+        names
+            .releases
+            .iter()
+            .filter_map(|name| java_version_from_release_name(name)),
+    )
+}
+
+fn java_version_from_release_name(name: &str) -> Option<Version> {
+    let rest = name.strip_prefix("jdk-")?;
+    let (version, _build) = rest.split_once('+')?;
+    if version.split('.').count() != 3 {
+        return None;
+    }
+    Version::parse(version)
+}
+
 pub fn fetch_go_versions() -> Result<Vec<Version>> {
     let body = crate::http::get(GO_INDEX_URL)
         .call()
@@ -966,6 +1009,31 @@ mod tests {
     // ── Deno index parsing ───────────────────────────────────────────────────
 
     /// Deno tags releases `v2.9.6` (a plain `v` prefix, unlike bun's `bun-v`).
+    #[test]
+    fn parses_only_three_part_temurin_release_names() {
+        let body = r#"{"releases":[
+            "jdk-21.0.5+11",
+            "jdk-21.0.12.1+1",
+            "jdk8u432-b06",
+            "jdk-17.0.13+11"
+        ]}"#;
+        let versions = parse_java_release_names(body);
+        assert_eq!(
+            versions,
+            vec![
+                Version::parse("17.0.13").unwrap(),
+                Version::parse("21.0.5").unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn java_release_name_parser_rejects_garbage_without_panicking() {
+        for name in ["", "jdk-", "jdk-21", "jdk-21.0.5", "jdkx-21.0.5+1"] {
+            assert!(java_version_from_release_name(name).is_none(), "{name}");
+        }
+    }
+
     #[test]
     fn parses_deno_release_tags() {
         assert_eq!(

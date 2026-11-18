@@ -1,0 +1,65 @@
+name: Bug report
+description: Something runx does wrong, or a command that should work but does not
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please include the exact command and enough project files that someone
+        else can reproduce it. Do not paste secrets or private repository URLs.
+  - type: input
+    id: version
+    attributes:
+      label: runx version
+      description: Output of `runx --version`
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Platform
+      options:
+        - Linux x64
+        - Linux arm64
+        - macOS Intel
+        - macOS Apple silicon
+        - Windows x64
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and full output
+      description: Run with `RUST_BACKTRACE=1` when there is a panic.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: Commands plus the relevant `runx.toml`, lockfile, or version file.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: cache
+    attributes:
+      label: RUNX_HOME (if non-default)
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true

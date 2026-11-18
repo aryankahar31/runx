@@ -2,25 +2,33 @@
 
 ## Shell overhead
 
-mise, asdf and nvm hook into your shell. `mise activate` runs a hook on **every prompt render** — every command you type pays its cost, forever, for the life of the session. asdf's shims pay on every command lookup instead. runx does none of that: there is no activation line, no shim directory, no directory hook. **Nothing happens until you type `runx <key>`, and the overhead is paid once per invocation — not per prompt.**
+mise, asdf and nvm integrate with the shell in different ways. runx does not:
+there is no activation line, shim directory, or directory hook. **Nothing
+happens until you type `runx <key>`, and runx's overhead is paid once per
+invocation.**
 
-Measured on macOS 26.5 (Apple silicon, zsh 5.9, hyperfine 1.20, mise 2026.7.18, `--warmup 3 --runs 20`; full method in [`benchmarks/README.md`](../benchmarks/README.md)):
+Measured on macOS 27.2.1 (Apple silicon, zsh 5.9, hyperfine 1.20, runx 0.6.2, mise 2026.7.18, `--warmup 3 --runs 20`; full method in [`benchmarks/README.md`](../benchmarks/README.md)):
 
 | Measurement | Mean |
 | :-- | --: |
-| zsh startup, no hooks (baseline) | 23.2 ms |
-| zsh startup + `mise activate` (per prompt) | 38.4 ms — **+15.2 ms per prompt** |
-| `runx <key>` total, warm cache | 5.9 ms |
+| zsh startup, no hooks (baseline) | 30.3 ms |
+| zsh startup + `mise activate` | 48.9 ms — **+18.6 ms versus baseline** |
+| `runx <key>` total, warm cache | 11.4 ms |
 | — runx pre-child work (`RUNX_TIMINGS=1`): config | 0.07 ms |
-| — cache lookup | 0.02 ms |
-| — PATH build + spawn | 0.14 ms |
+| — cache lookup | 0.03 ms |
+| — PATH build + spawn | 0.15 ms |
 
-runx's entire contribution before your command starts is **~0.2 ms, once**. `mise activate` adds **15.2 ms to every prompt** on the same machine (mise's own discussion #6279 reports ~80–97 ms first-prompt lag in some configurations — heavier shells only make it worse). A complete `runx <key>` run — process spawn, config read, PATH construction, child start — is **6.6× faster than rendering one mise-activated prompt**, and runx pays nothing on the prompts before and after.
+runx's measured contribution before your command starts is **~0.25 ms, once**.
+The 18.6 ms figure is the difference in this harness's zsh startup timings; it
+does not measure repeated prompt renders. A complete `runx <key>` run includes
+the child process, so it should not be read as a prompt-to-command comparison.
 
-There is a second, related difference: shim-based tools (asdf, and mise's shim mode) have had real bugs in the Windows/WSL boundary, where shim files were misinterpreted as executable scripts under `/mnt/c/...` path semantics. That is a known class of shim-related fragility that runx's architecture avoids **by construction** — runx creates no shims of any kind.
-
-These are directional numbers on one machine, not a universal guarantee; the structural claim — *no shell hook, so no per-prompt cost* — does not depend on any particular measurement.
+These are directional startup and invocation numbers on one machine, not a
+universal guarantee. The structural claim — *runx installs no shell hook* —
+does not depend on the measurements.
 
 ## Registry freshness verification
 
-The claim that runx resolves against vendor indexes with at most a 6-hour cache window is continuously checked by [`benchmarks/registry-freshness.sh`](../benchmarks/registry-freshness.sh) and a weekly CI workflow ([`registry-freshness.yml`](../.github/workflows/registry-freshness.yml)). Latest results and caveats live in [runtime-resolution.md](runtime-resolution.md#registry-freshness-no-third-party-sync).
+The weekly freshness workflow checks Node, Go, Bun, and Python against their
+vendor indexes. Java and Deno are not included in that probe. Results and
+caveats live in [runtime-resolution.md](runtime-resolution.md#registry-freshness-no-third-party-sync).

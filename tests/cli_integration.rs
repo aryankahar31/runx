@@ -1079,6 +1079,133 @@ fn cache_list_flags_incomplete_runtimes() {
 }
 
 #[test]
+fn list_is_an_alias_for_cache_list() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_runtime(&home, "node", "20.11.0", true);
+
+    let output = runx_with_home(dir.path(), &home, &["list"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains("node") && stdout.contains("20.11.0"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn cache_dir_prints_the_runtimes_directory() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+
+    let output = runx_with_home(dir.path(), &home, &["cache", "dir"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout_of(&output).trim(),
+        home.join("runtimes").display().to_string()
+    );
+
+    let json = runx_with_home(dir.path(), &home, &["--json", "cache", "dir"]);
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(&json)).expect("json output");
+    assert_eq!(value["path"], home.join("runtimes").display().to_string());
+}
+
+#[test]
+fn cache_prune_dry_run_never_deletes() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    let root = plant_runtime(&home, "node", "20.11.0", true);
+
+    let output = runx_with_home(
+        dir.path(),
+        &home,
+        &["cache", "prune", "--older-than", "1", "--dry-run"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        stdout_of(&output).contains("Would remove"),
+        "{}",
+        stdout_of(&output)
+    );
+    assert!(root.is_dir(), "--dry-run must not delete the runtime");
+}
+
+#[test]
+fn which_finds_the_cached_runtime_a_project_uses() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"20.11.0\"\n\n[run]\ndev = \"echo hi\"\n",
+    )
+    .expect("write runx.toml");
+    let root = plant_runtime(&home, "node", "20.11.0", true);
+
+    let output = runx_with_home(dir.path(), &home, &["which", "node"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    let stdout = stdout_of(&output);
+    let expected_executable = root
+        .join(if cfg!(windows) { "." } else { "bin" })
+        .join(if cfg!(windows) { "node.exe" } else { "node" });
+    assert!(
+        stdout.contains(&expected_executable.display().to_string()),
+        "expected the cached executable {} in {stdout}",
+        expected_executable.display()
+    );
+}
+
+#[test]
+fn which_explains_a_missing_runtime() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"20.11.0\"\n\n[run]\ndev = \"echo hi\"\n",
+    )
+    .expect("write runx.toml");
+
+    let output = runx_with_home(dir.path(), &home, &["which", "node"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(stderr.contains("is not installed"), "{stderr}");
+    assert!(stderr.contains("runx"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn exec_passes_arguments_as_argv_without_a_shell() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::write(config_path(dir.path()), "[runtimes]\nnode = \"0.0.0\"\n").expect("write runx.toml");
+    plant_executable(&home, "node", "0.0.0", "printf 'ARG:%s\\n' \"$@\"");
+
+    let output = runx_with_home(
+        dir.path(),
+        &home,
+        &["exec", "--", "node", "hello", "$(whoami)"],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    let stdout = stdout_of(&output);
+    assert!(stdout.contains("ARG:hello"), "{stdout}");
+    assert!(
+        stdout.contains("ARG:$(whoami)"),
+        "arguments must not be shell-expanded: {stdout}"
+    );
+}
+
+#[test]
+fn upgrade_is_an_alias_for_self_update() {
+    let dir = tmp();
+    let output = runx(dir.path(), &["--offline", "upgrade"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr_of(&output).contains("--offline"),
+        "{}",
+        stderr_of(&output)
+    );
+}
+
+#[test]
 fn cache_size_totals_the_cache() {
     let dir = tmp();
     let home = dir.path().join("home");
@@ -5201,6 +5328,46 @@ fn t08_locked_without_a_lockfile_errors_and_creates_nothing() {
         !dir.path().join("runx.lock").exists(),
         "locked mode must never create the lockfile"
     );
+}
+
+/// `RUNX_LOCKED=1` enforces the lockfile without changing the invocation.
+#[test]
+fn runx_locked_env_behaves_like_the_flag() {
+    let dir = tmp();
+    let home = ux_project(dir.path(), "echo MARKER_RAN");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_runx"))
+        .args(["run", "dev"])
+        .current_dir(dir.path())
+        .env("RUNX_HOME", &home)
+        .env("RUNX_LOCKED", "1")
+        .output()
+        .expect("run runx");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(stderr.contains("no runx.lock is present"), "{stderr}");
+    assert!(stderr.contains("runx lock"), "{stderr}");
+}
+
+/// `--frozen` is `--locked --offline`: with the runtime cached but no
+/// lockfile, it fails on the missing lock (not a network error or a download).
+#[cfg(unix)]
+#[test]
+fn frozen_requires_a_lockfile_even_with_a_cached_runtime() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    fs::write(
+        config_path(dir.path()),
+        "[runtimes]\nnode = \"0.0.0\"\n\n[run]\ndev = \"echo MARKER_RAN\"\n",
+    )
+    .expect("write runx.toml");
+    plant_executable(&home, "node", "0.0.0", "echo node-ok");
+
+    let output = runx_with_home(dir.path(), &home, &["--frozen", "dev"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(stderr.contains("no runx.lock is present"), "{stderr}");
+    assert!(!dir.path().join("runx.lock").exists());
 }
 
 /// T-09 / RX-UX-04: a malformed lockfile gives a deterministic runx-level

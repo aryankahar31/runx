@@ -1,0 +1,21 @@
+# Maintainer: aryankahar31 <maintainer@runx.local>
+pkgname=runx-bin
+pkgver=__VERSION__
+pkgrel=1
+pkgdesc="Run any project with the exact runtime versions it declares"
+arch=('x86_64' 'aarch64')
+url="https://github.com/aryankahar31/runx"
+license=('MIT')
+provides=('runx')
+conflicts=('runx')
+options=('!strip')
+
+source_x86_64=("runx-linux-x64.tar.gz::https://github.com/aryankahar31/runx/releases/download/v${pkgver}/runx-linux-x64.tar.gz")
+sha256sums_x86_64=('__SHA256_linux_x64__')
+
+source_aarch64=("runx-linux-arm64.tar.gz::https://github.com/aryankahar31/runx/releases/download/v${pkgver}/runx-linux-arm64.tar.gz")
+sha256sums_aarch64=('__SHA256_linux_arm64__')
+
+package() {
+  install -Dm755 "${srcdir}/runx" "${pkgdir}/usr/bin/runx"
+}

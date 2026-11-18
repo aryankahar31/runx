@@ -1,0 +1,66 @@
+name: setup-runx
+description: Install runx, cache resolved runtimes, and optionally enforce runx.lock
+author: aryankahar31
+branding:
+  icon: play
+  color: purple
+
+inputs:
+  version:
+    description: 'runx release to install: "latest" or a version such as 0.7.0'
+    required: false
+    default: latest
+  locked:
+    description: 'Set RUNX_LOCKED=1 so every run command behaves as --locked'
+    required: false
+    default: 'false'
+  cache:
+    description: 'Cache ~/.runx/runtimes between jobs'
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Cache runx runtimes
+      if: inputs.cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.runx/runtimes
+        key: runx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/runx.lock') }}
+        restore-keys: |
+          runx-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Install runx (Linux/macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        RUNX_VERSION_INPUT: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        version="$RUNX_VERSION_INPUT"
+        if [ "$version" != "latest" ] && [ "${version#v}" = "$version" ]; then
+          version="v$version"
+        fi
+        curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh \
+          | RUNX_VERSION="$version" sh
+        echo "$HOME/.runx/bin" >> "$GITHUB_PATH"
+
+    - name: Install runx (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        RUNX_VERSION_INPUT: ${{ inputs.version }}
+      run: |
+        $version = $env:RUNX_VERSION_INPUT
+        if ($version -ne 'latest' -and -not $version.StartsWith('v')) {
+          $version = "v$version"
+        }
+        $env:RUNX_VERSION = $version
+        iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 | iex
+        Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $HOME '.runx\bin')
+
+    - name: Enforce the lockfile
+      if: inputs.locked == 'true'
+      shell: bash
+      run: echo "RUNX_LOCKED=1" >> "$GITHUB_ENV"

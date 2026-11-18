@@ -156,6 +156,8 @@ pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
             ".bun-version",
             ".dvmrc",
             ".deno-version",
+            ".java-version",
+            ".sdkmanrc",
             "package.json",
             "pyproject.toml",
             "Pipfile",

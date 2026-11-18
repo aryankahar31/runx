@@ -94,6 +94,19 @@ jobs:
               Pop-Location
           }
 
+  packaging:
+    name: Packaging templates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate packaging templates
+        run: packaging/validate.sh
+
+      - name: Test the npm wrapper
+        run: cd packaging/npm && npm test
+
   # Line/region coverage on Linux only: the unit+integration suite is
   # platform-independent for coverage purposes, and Windows/macOS already run
   # the full test job above. The threshold is set from the measured baseline

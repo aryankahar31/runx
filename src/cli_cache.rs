@@ -186,6 +186,19 @@ fn report_dry_run(entries: &[cache::CacheEntry], command: &str) {
     println!("\nRe-run with `{command} --yes` to delete.");
 }
 
+pub fn cache_dir() -> Result<()> {
+    let runtimes = cache::runtimes_dir(&cache::runx_home()?);
+    if flags::json() {
+        println!(
+            "{}",
+            serde_json::json!({ "path": runtimes.display().to_string() })
+        );
+    } else {
+        println!("{}", runtimes.display());
+    }
+    Ok(())
+}
+
 pub fn cache_clean(confirmed: bool) -> Result<()> {
     let home = cache::runx_home()?;
     let entries = cache::list_cached(&home)?;

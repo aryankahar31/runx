@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ScoopInstaller/Scoop/master/schema.json",
+  "version": "__VERSION__",
+  "description": "Run any project with the exact runtime versions it declares",
+  "homepage": "https://github.com/aryankahar31/runx",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/aryankahar31/runx/releases/download/v__VERSION__/runx-windows-x64.zip",
+      "hash": "__SHA256_windows_x64__"
+    }
+  },
+  "bin": "runx.exe",
+  "checkver": {
+    "github": "https://github.com/aryankahar31/runx"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/aryankahar31/runx/releases/download/v$version/runx-windows-x64.zip"
+      }
+    }
+  }
+}

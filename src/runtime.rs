@@ -124,6 +124,12 @@ const RUNTIMES: &[RuntimeDef] = &[
         spec: resolve_deno,
         index: Some(crate::registry::fetch_deno_versions),
     },
+    RuntimeDef {
+        id: "java",
+        platform: java_platform_token,
+        spec: resolve_java,
+        index: Some(crate::registry::fetch_java_versions),
+    },
 ];
 
 /// Look up a runtime definition by (normalized) id.
@@ -133,7 +139,7 @@ pub fn find(tool: &str) -> Option<&'static RuntimeDef> {
 }
 
 /// The supported runtime ids, for error messages and derived tool lists.
-pub const RUNTIME_IDS: &[&str] = &["node", "python", "bun", "go", "deno"];
+pub const RUNTIME_IDS: &[&str] = &["node", "python", "bun", "go", "deno", "java"];
 
 /// The supported runtime ids, sorted for display.
 pub fn supported_list() -> String {
@@ -162,6 +168,11 @@ fn go_platform_token() -> Result<String> {
 
 fn deno_platform_string() -> Result<String> {
     Ok(deno_platform()?.to_string())
+}
+
+fn java_platform_token() -> Result<String> {
+    let (os, arch, _) = java_platform()?;
+    Ok(format!("{os}-{arch}"))
 }
 
 /// Node's platform token and archive format for the current host.
@@ -685,6 +696,229 @@ fn executable_name(name: &str) -> String {
     }
 }
 
+/// Adoptium/Eclipse Temurin's OS/architecture names and the archive format
+/// for the current host.
+///
+/// Java 8 uses a different release-name scheme (`jdk8u432-b06`), so runx
+/// supports Java 9 and newer. `shortcut: Java 8 is unsupported, map the
+/// jdk8u*-b* naming scheme when Java 8 demand justifies it.`
+pub(crate) fn java_platform() -> Result<(&'static str, &'static str, ArchiveKind)> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("linux", "x86_64") => Ok(("linux", "x64", ArchiveKind::TarGz)),
+        ("linux", "aarch64") => Ok(("linux", "aarch64", ArchiveKind::TarGz)),
+        ("macos", "x86_64") => Ok(("mac", "x64", ArchiveKind::TarGz)),
+        ("macos", "aarch64") => Ok(("mac", "aarch64", ArchiveKind::TarGz)),
+        ("windows", "x86_64") => Ok(("windows", "x64", ArchiveKind::Zip)),
+        ("windows", "aarch64") => Ok(("windows", "aarch64", ArchiveKind::Zip)),
+        (os, arch) => {
+            Err(UserError::new(format!("Java runtime is not supported on {os}/{arch}.")).into())
+        }
+    }
+}
+
+pub(crate) fn java_release_platform() -> Result<(&'static str, &'static str)> {
+    let (os, arch, _) = java_platform()?;
+    Ok((os, arch))
+}
+
+/// Number of seconds a cached Temurin asset lookup remains valid (24 hours).
+const JAVA_CACHE_TTL_SECS: u64 = 86_400;
+
+#[derive(Debug, Deserialize)]
+struct AdoptiumRelease {
+    #[serde(default)]
+    release_name: String,
+    #[serde(default)]
+    binaries: Vec<AdoptiumBinary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdoptiumBinary {
+    #[serde(default)]
+    architecture: String,
+    #[serde(default)]
+    image_type: String,
+    #[serde(default)]
+    jvm_impl: String,
+    #[serde(default)]
+    os: String,
+    #[serde(default)]
+    package: AdoptiumPackage,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AdoptiumPackage {
+    #[serde(default)]
+    link: String,
+    #[serde(default)]
+    checksum: String,
+}
+
+#[derive(Debug, Clone)]
+struct JavaAsset {
+    url: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedJavaAsset {
+    url: String,
+    sha256: String,
+    cached_at_secs: u64,
+}
+
+type JavaReleaseCache = BTreeMap<String, BTreeMap<String, CachedJavaAsset>>;
+
+fn resolve_java(version: &str) -> Result<RuntimeSpec> {
+    let (_, _, archive_kind) = java_platform()?;
+    let platform = java_platform_token()?;
+    let asset = find_java_asset(version, &platform)?;
+    Ok(RuntimeSpec {
+        tool: "java".to_string(),
+        version: version.to_string(),
+        url: asset.url,
+        checksum_url: String::new(),
+        expected_sha256: Some(asset.sha256),
+        archive_kind,
+        executable: executable_name("java"),
+        bin_dirs: vec![PathBuf::from("bin")],
+    })
+}
+
+/// Resolve the Temurin JDK archive and SHA-256 for one exact version.
+///
+/// Adoptium's `/v3/assets/version/{range}` returns a release list for a Maven
+/// version range, so the query asks for `[version, next_patch)` and then keeps
+/// only releases named exactly `jdk-<version>+<build>`. Results are cached for
+/// [`JAVA_CACHE_TTL_SECS`] so an installed pin needs no network on later runs.
+fn find_java_asset(version: &str, platform: &str) -> Result<JavaAsset> {
+    let cache_path = cache::runx_home()?.join("java-release-cache.json");
+    if let Some(asset) = read_java_cache(&cache_path, version, platform) {
+        return Ok(asset);
+    }
+
+    crate::flags::ensure_network("fetch the Eclipse Temurin release metadata")?;
+    let (os, arch) = java_release_platform()?;
+    let parsed = crate::version::Version::parse(version)
+        .ok_or_else(|| UserError::new(format!("Invalid Java version `{version}`.")))?;
+    let current = parsed.to_three_parts();
+    let parts: Vec<&str> = current.split('.').collect();
+    let patch = parts[2].parse::<u64>().unwrap_or(0).saturating_add(1);
+    let upper = format!("{}.{}.{}", parts[0], parts[1], patch);
+    let url = format!(
+        "https://api.adoptium.net/v3/assets/version/%5B{version}%2C{upper}%29\
+         ?architecture={arch}&image_type=jdk&jvm_impl=hotspot&os={os}&project=jdk&vendor=eclipse"
+    );
+
+    let body = crate::http::get(&url)
+        .call()
+        .with_context(|| format!("Failed to fetch Temurin release metadata from {url}"))?
+        .into_string()
+        .context("Failed to read Temurin release metadata")?;
+
+    let asset = select_java_asset(&body, version, os, arch)?;
+    write_java_cache(&cache_path, version, platform, &asset);
+    Ok(asset)
+}
+
+/// Pick the newest build for exactly `version` from Adoptium's asset JSON.
+///
+/// Kept pure so the release-name and binary selection rules are testable
+/// without the network.
+fn select_java_asset(body: &str, version: &str, os: &str, arch: &str) -> Result<JavaAsset> {
+    let releases: Vec<AdoptiumRelease> = serde_json::from_str(body)
+        .context("Failed to decode the Eclipse Temurin release metadata")?;
+
+    let prefix = format!("jdk-{version}+");
+    let mut best: Option<(u64, JavaAsset)> = None;
+    for release in releases {
+        let Some(build) = release
+            .release_name
+            .strip_prefix(&prefix)
+            .and_then(|build| build.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        for binary in release.binaries {
+            if binary.image_type != "jdk"
+                || binary.jvm_impl != "hotspot"
+                || binary.os != os
+                || binary.architecture != arch
+            {
+                continue;
+            }
+            if !crate::downloader::is_sha256_hex(&binary.package.checksum)
+                || binary.package.link.is_empty()
+            {
+                continue;
+            }
+            if best
+                .as_ref()
+                .is_none_or(|(best_build, _)| build > *best_build)
+            {
+                best = Some((
+                    build,
+                    JavaAsset {
+                        url: binary.package.link,
+                        sha256: binary.package.checksum.to_ascii_lowercase(),
+                    },
+                ));
+            }
+        }
+    }
+
+    best.map(|(_, asset)| asset).ok_or_else(|| {
+        UserError::new(format!(
+            "No Eclipse Temurin JDK {version} archive found for {os}/{arch}.\n\
+             Hint: check the release list at https://adoptium.net/temurin/releases/. \
+             runx supports Java 9+ (the jdk-<major>.<minor>.<patch>+<build> scheme)."
+        ))
+        .into()
+    })
+}
+
+fn read_java_cache(path: &Path, version: &str, platform: &str) -> Option<JavaAsset> {
+    let raw = fs::read_to_string(path).ok()?;
+    let cache: JavaReleaseCache = serde_json::from_str(&raw).ok()?;
+    let entry = cache.get(version)?.get(platform)?;
+    if now_secs().saturating_sub(entry.cached_at_secs) < JAVA_CACHE_TTL_SECS {
+        Some(JavaAsset {
+            url: entry.url.clone(),
+            sha256: entry.sha256.clone(),
+        })
+    } else {
+        None
+    }
+}
+
+fn write_java_cache(path: &Path, version: &str, platform: &str, asset: &JavaAsset) {
+    if let Err(err) = try_write_java_cache(path, version, platform, asset) {
+        eprintln!("Warning: failed to update Java release cache: {err}");
+    }
+}
+
+fn try_write_java_cache(
+    path: &Path,
+    version: &str,
+    platform: &str,
+    asset: &JavaAsset,
+) -> Result<()> {
+    let mut cache: JavaReleaseCache = match fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        Err(_) => JavaReleaseCache::new(),
+    };
+    cache.entry(version.to_string()).or_default().insert(
+        platform.to_string(),
+        CachedJavaAsset {
+            url: asset.url.clone(),
+            sha256: asset.sha256.clone(),
+            cached_at_secs: now_secs(),
+        },
+    );
+    fs::write(path, serde_json::to_string_pretty(&cache)?)?;
+    Ok(())
+}
+
 /// Deno's platform token for the current host — the same target triples
 /// python-build-standalone uses, which Deno also publishes.
 fn deno_platform() -> Result<&'static str> {
@@ -793,14 +1027,9 @@ mod tests {
                 "{} produced an unusable platform key {platform:?}",
                 def.id
             );
-            // The spec fn must at least accept a well-formed version for its
-            // own id (python/go may then consult their release caches; that
-            // path is covered by their dedicated tests).
-            let result = (def.spec)("1.0.0");
-            if let Ok(spec) = &result {
-                assert_eq!(spec.tool, def.id);
-                assert!(!spec.url.is_empty());
-            }
+            // Spec functions for network-backed runtimes (python, go, java)
+            // are covered by their own parser tests; calling them here would
+            // make this test depend on a vendor API.
         }
     }
 
@@ -858,6 +1087,67 @@ mod tests {
             "the live checksum document must be dropped, or it would race the pinned digest"
         );
         assert_eq!(spec.expected_sha256.as_deref(), Some(LOCK_DIGEST));
+    }
+
+    // ── Java spec resolution ─────────────────────────────────────────────────
+
+    #[test]
+    fn java_platform_maps_the_host_to_adoptium_names() {
+        let (os, arch, kind) = java_platform().expect("java platform on host");
+        assert!(matches!(os, "linux" | "mac" | "windows"));
+        assert!(matches!(arch, "x64" | "aarch64"));
+        match os {
+            "linux" | "mac" => assert_eq!(kind, ArchiveKind::TarGz),
+            "windows" => assert_eq!(kind, ArchiveKind::Zip),
+            _ => unreachable!(),
+        }
+        let token = java_platform_token().expect("token");
+        assert!(token.contains('-') && !token.contains('/') && !token.contains(".."));
+    }
+
+    const JAVA_FIXTURE: &str = r#"[
+      {"release_name":"jdk-21.0.5+11","binaries":[
+        {"architecture":"x64","image_type":"jdk","jvm_impl":"hotspot","os":"linux",
+         "package":{"link":"https://example.invalid/jdk11.tar.gz","checksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+        {"architecture":"x64","image_type":"jre","jvm_impl":"hotspot","os":"linux",
+         "package":{"link":"https://example.invalid/jre.tar.gz","checksum":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
+      ]},
+      {"release_name":"jdk-21.0.5+12","binaries":[
+        {"architecture":"x64","image_type":"jdk","jvm_impl":"hotspot","os":"linux",
+         "package":{"link":"https://example.invalid/jdk12.tar.gz","checksum":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}}
+      ]}
+    ]"#;
+
+    #[test]
+    fn java_asset_selection_picks_the_newest_jdk_build() {
+        let asset = select_java_asset(JAVA_FIXTURE, "21.0.5", "linux", "x64")
+            .expect("a matching JDK exists");
+        assert_eq!(asset.url, "https://example.invalid/jdk12.tar.gz");
+        assert_eq!(asset.sha256, "c".repeat(64));
+    }
+
+    #[test]
+    fn java_asset_selection_requires_an_exact_three_part_release() {
+        let fixture = r#"[
+          {"release_name":"jdk-21.0.5.0.1+1","binaries":[]},
+          {"release_name":"jdk8u432-b06","binaries":[]}
+        ]"#;
+        let err = select_java_asset(fixture, "21.0.5", "linux", "x64").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("No Eclipse Temurin JDK 21.0.5"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn java_asset_selection_rejects_a_missing_checksum() {
+        let fixture = r#"[
+          {"release_name":"jdk-21.0.5+11","binaries":[
+            {"architecture":"x64","image_type":"jdk","jvm_impl":"hotspot","os":"linux",
+             "package":{"link":"https://example.invalid/jdk.tar.gz","checksum":""}}
+          ]}
+        ]"#;
+        assert!(select_java_asset(fixture, "21.0.5", "linux", "x64").is_err());
     }
 
     // ── Bun spec resolution ───────────────────────────────────────────────────
