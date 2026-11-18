@@ -14,14 +14,14 @@
 <meta property="og:site_name" content="runx" />
 <meta property="og:url" content="https://runx-cli.vercel.app/" />
 <meta property="og:title" content="runx — clone any repo, run `runx dev`" />
-<meta property="og:description" content="Portable Node, Python, Go, Bun and Deno runtimes, resolved from the files your project already has. No admin rights. No global installs. No shell hooks." />
+<meta property="og:description" content="Portable Node, Python, Go, Bun, Deno and Java runtimes, resolved from the files your project already has. No admin rights. No global installs. No shell hooks." />
 <meta property="og:image" content="https://runx-cli.vercel.app/og.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta property="og:image:alt" content="runx — clone any repo, run runx dev. Portable runtimes, zero shell hooks." />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="runx — clone any repo, run `runx dev`" />
-<meta name="twitter:description" content="Portable runtimes resolved from .nvmrc, package.json engines, pyproject.toml and go.mod. No admin rights, no shell hooks." />
+<meta name="twitter:description" content="Portable runtimes resolved from .nvmrc, package.json engines, pyproject.toml, go.mod and .java-version. No admin rights, no shell hooks." />
 <meta name="twitter:image" content="https://runx-cli.vercel.app/og.png" />
 
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -50,7 +50,7 @@
   "name": "runx",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux, Windows",
-  "description": "Universal project launcher with portable runtimes. Detects Node, Python, Go, Bun and Deno versions from your project files and runs commands with an isolated child PATH.",
+  "description": "Universal project launcher with portable runtimes. Detects Node, Python, Go, Bun, Deno and Java versions from your project files and runs commands with an isolated child PATH.",
   "codeRepository": "https://github.com/aryankahar31/runx",
   "downloadUrl": "https://github.com/aryankahar31/runx/releases/latest",
   "license": "https://github.com/aryankahar31/runx/blob/main/LICENSE",
@@ -109,7 +109,7 @@
       <div class="hero-copy reveal">
         <p class="kicker"><span class="dot-live" aria-hidden="true"></span> Rust CLI · MIT · <a class="release-link" href="https://github.com/aryankahar31/runx/releases/latest" target="_blank" rel="noopener"><span data-release-version>latest release</span></a></p>
         <h1 id="hero-title">Clone any repo.<br />Run <code>runx dev</code><span class="h1-dot">.</span></h1>
-        <p class="lede">runx reads the runtime versions your project already declares — <code>.nvmrc</code>, <code>package.json engines</code>, <code>pyproject.toml</code>, <code>go.mod</code> — and runs your command with exactly those portable runtimes.</p>
+        <p class="lede">runx reads the runtime versions your project already declares — <code>.nvmrc</code>, <code>package.json engines</code>, <code>pyproject.toml</code>, <code>go.mod</code>, <code>.java-version</code> — and runs your command with exactly those portable runtimes.</p>
         <p class="wedge">No admin rights. No global installs. No shell hooks.</p>
 
         <div class="hero-ctas">
@@ -142,6 +142,7 @@
             <button type="button" class="rt-btn" data-rt="go" aria-pressed="false">go</button>
             <button type="button" class="rt-btn" data-rt="bun" aria-pressed="false">bun</button>
             <button type="button" class="rt-btn" data-rt="deno" aria-pressed="false">deno</button>
+            <button type="button" class="rt-btn" data-rt="java" aria-pressed="false">java</button>
           </div>
           <div class="term-body" id="term-body" aria-live="off">
             <pre class="term-output" id="term-output"><span class="ln"><span class="prompt">$</span> runx dev</span>
@@ -339,6 +340,8 @@ test = "npm test"</code></pre>
           <button type="button" class="file-btn" data-detect="gomod" aria-pressed="false"><code>go.mod</code><span>go directive</span></button>
           <button type="button" class="file-btn" data-detect="bunversion" aria-pressed="false"><code>.bun-version</code><span>1.3.14</span></button>
           <button type="button" class="file-btn" data-detect="dvmrc" aria-pressed="false"><code>.dvmrc</code><span>2.5.0</span></button>
+          <button type="button" class="file-btn" data-detect="javaversion" aria-pressed="false"><code>.java-version</code><span>21.0.5</span></button>
+          <button type="button" class="file-btn" data-detect="sdkmanrc" aria-pressed="false"><code>.sdkmanrc</code><span>java=17.0.13-tem</span></button>
           <button type="button" class="file-btn" data-detect="scripts" aria-pressed="false"><code>package.json</code><span>scripts</span></button>
         </div>
 
@@ -376,6 +379,10 @@ Running `npm run dev`</pre>
           <div>
             <h4>Deno</h4>
             <ol><li><code>.dvmrc</code></li><li><code>.deno-version</code></li></ol>
+          </div>
+          <div>
+            <h4>Java</h4>
+            <ol><li><code>.java-version</code></li><li><code>.sdkmanrc</code> → <code>java=</code></li></ol>
           </div>
           <div>
             <h4>Run commands</h4>
@@ -515,7 +522,7 @@ Running `npm run dev`</pre>
             <li>No plugin ecosystem or registry; six runtimes, not hundreds.</li>
             <li>Ruby, PHP, and .NET are planned, not shipped.</li>
             <li>No monorepo/workspace support or pre/post hooks yet.</li>
-            <li>No Winget or Chocolatey packages yet. (Scoop and Homebrew are available.)</li>
+            <li>No Winget or Chocolatey packages yet. (Homebrew, Scoop, and npm are available.)</li>
             <li>Not a package manager: it does not install global CLIs or system libraries.</li>
             <li><code>--locked</code> costs seconds per run by design.</li>
           </ul>
@@ -671,7 +678,7 @@ No background prompt hooks are installed.</code></pre>
         <div class="roadmap-col">
           <p class="mini-label">Shipped</p>
           <ul>
-            <li>Node.js, Python, Bun, Go, Deno</li>
+            <li>Node.js, Python, Bun, Go, Deno, Java (Temurin)</li>
             <li>Zero-config detection from existing files</li>
             <li><code>runx.lock</code> + <code>--locked</code></li>
             <li>Sigstore/cosign signing for runx releases</li>
