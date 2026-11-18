@@ -94,7 +94,7 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 | Cargo | Available now | `cargo install runx-launcher` (installs `runx`) |
 | cargo-binstall | Available now | `cargo binstall runx-launcher` (installs `runx`) |
 | npm | Planned / pending submission | `npx --package runx-launcher -- runx dev` |
-| Homebrew | Planned / pending submission | `brew install aryankahar31/runx/runx-launcher` |
+| Homebrew | Available now | `brew install aryankahar31/tap/runx-launcher` (installs `runx`) |
 | Winget | Planned / pending submission | `winget install aryankahar31.runx-launcher` |
 | Scoop | Planned / pending submission | `scoop install runx-launcher` |
 | AUR | Planned / pending submission | `runx-launcher-bin` |
@@ -104,13 +104,23 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 > `curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh`
 
 The v0.7.1 install scripts and release binaries are available, and the
-`runx-launcher` crate is published on crates.io. npm, Homebrew, Winget, Scoop,
-AUR, and Nix remain planned / pending their separate submissions. The release
+`runx-launcher` crate is published on crates.io. Homebrew is available from
+the `aryankahar31/tap` tap. npm, Winget, Scoop, AUR, and Nix remain planned /
+pending their separate submissions. The release
 workflow renders package versions and archive digests; downstream packages
 still need review and publication. See [`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.md).
 
+Install via Homebrew: `brew install aryankahar31/tap/runx-launcher` (installs the
+`runx` binary).
+
 For published releases, the curl and PowerShell installers verify the release
 archive's SHA-256 checksum — see [Security](#security).
+
+### Cleaning up multiple installations
+
+If you have installed runx via multiple methods (cargo, curl, brew), `runx doctor`
+will warn you. You can safely remove old binaries (e.g., `rm ~/.runx/bin/runx`
+if you now use Homebrew) as long as the `runx` command still works.
 
 > **Upgrading from v0.6.x:** run `runx self update` (the `upgrade` alias exists from v0.7.0).
 

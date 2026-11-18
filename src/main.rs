@@ -1272,6 +1272,37 @@ fn doctor_command(verify: bool) -> Result<()> {
     let stale = cache::stale_staging(&home)?;
     let mut broken: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
+    let runx_paths = runx_binaries_on_path();
+    let current_exe = env::current_exe()
+        .ok()
+        .map(|path| fs::canonicalize(&path).unwrap_or(path));
+    let duplicate_runx_warning = if runx_paths.len() > 1 {
+        let paths = runx_paths
+            .iter()
+            .map(|path| {
+                let current = current_exe
+                    .as_ref()
+                    .is_some_and(|current| same_executable_path(path, current));
+                format!(
+                    "  - {}{}",
+                    path.display(),
+                    if current { " (currently running)" } else { "" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        Some(format!(
+            "Warning: Multiple `runx` binaries found on PATH:\n{paths}\n\
+             This can cause version mismatches. Consider removing unused installations."
+        ))
+    } else {
+        None
+    };
+    if flags::json() {
+        if let Some(warning) = &duplicate_runx_warning {
+            notes.push(warning.clone());
+        }
+    }
     // Structured results for `--json`; ignored in human mode.
     let mut entries_json: Vec<serde_json::Value> = Vec::new();
     let mut entry = |tool: &str, version: &str, status: &str| {
@@ -1284,6 +1315,9 @@ fn doctor_command(verify: bool) -> Result<()> {
 
     if !flags::json() {
         println!("runx doctor — checking {}", runtimes.display());
+        if let Some(warning) = &duplicate_runx_warning {
+            println!("{warning}");
+        }
     }
 
     if !runtimes.exists() {
@@ -1638,6 +1672,64 @@ fn managed_tools() -> Vec<&'static str> {
     ids.push("python3");
     ids.sort_unstable();
     ids
+}
+
+/// Find distinct executable `runx` files in PATH order.
+fn runx_binaries_on_path() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    let executable = "runx.exe";
+    #[cfg(not(windows))]
+    let executable = "runx";
+
+    let mut found: Vec<PathBuf> = Vec::new();
+    for dir in env::split_paths(&env::var_os("PATH").unwrap_or_default()) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(executable);
+        if !is_executable_file(&candidate) {
+            continue;
+        }
+        let resolved = fs::canonicalize(&candidate).unwrap_or(candidate);
+        if !found
+            .iter()
+            .any(|existing| same_executable_path(existing, &resolved))
+        {
+            found.push(resolved);
+        }
+    }
+    found
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn same_executable_path(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
 }
 
 /// Find PATH entries resolving to one of the managed tools *inside* the runx
