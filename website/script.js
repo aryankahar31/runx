@@ -232,6 +232,19 @@
         ["dim", "  Task dev deno run --allow-net main.ts"],
         ["ok", "✓ Listening on http://0.0.0.0:8000"]
       ]
+    },
+    java: {
+      file: ".java-version",
+      lines: [
+        ["dim", "→ reading project files"],
+        ["ok", "✓ detected java 21.0.5 (.java-version)"],
+        ["dim", "Resolved java `21.0.5` to Temurin 21.0.5+11"],
+        ["dim", "↓ downloading Temurin JDK 21.0.5+11 (linux-x64)"],
+        ["ok", "✓ sha-256 verified"],
+        ["dim", "→ child PATH isolated · shell unchanged"],
+        ["", "> ./gradlew run"],
+        ["ok", "✓ listening on http://localhost:8080"]
+      ]
     }
   };
   var out = $("#term-output");
@@ -373,6 +386,14 @@
     dvmrc: {
       output: '<span class="dim">No runx.toml found — detected from project files:</span>\n  <span class="ok">deno 2.5.0</span> (from .dvmrc)\n<span class="dim">Using cached deno 2.5.0</span>\nRunning `deno task dev`',
       note: "Deno is detected from <code>.dvmrc</code> / <code>.deno-version</code>, or an explicit entry in <code>runx.toml</code>."
+    },
+    javaversion: {
+      output: '<span class="dim">No runx.toml found — detected from project files:</span>\n  <span class="ok">java 21.0.5</span> (from .java-version)\n<span class="dim">Resolved java `21.0.5` to Temurin 21.0.5+11</span>\nRunning `./gradlew run`',
+      note: "Adoptium build suffixes like <code>21.0.5+11</code> are stripped. Highest-priority Java source."
+    },
+    sdkmanrc: {
+      output: '<span class="dim">No runx.toml found — detected from project files:</span>\n  <span class="ok">java 17.0.13</span> (from .sdkmanrc (java))\n<span class="dim">Resolved java `17.0.13` to Temurin 17.0.13+11</span>\nRunning `mvn spring-boot:run`',
+      note: "Read from the <code>java=</code> entry; SDKMAN vendor suffixes like <code>-tem</code> are stripped."
     },
     scripts: {
       output: '<span class="dim">No runx.toml found — detected from project files:</span>\n  <span class="ok">node 20.11.0</span> (from .nvmrc)\n\n<span class="dim">Available commands from package.json:</span>\n  dev    npm run dev\n  build  npm run build\n  test   npm test\n\nRunning `npm run dev`',
