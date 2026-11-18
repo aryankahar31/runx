@@ -7,7 +7,8 @@ https://github.com/aryankahar31/runx/releases/tag/v0.7.1.
 
 The remaining items below are manual. The npm wrapper was dry-run only; its
 publication and the other downstream package submissions are still pending.
-No social post has been made.
+No social post has been made. The website copy is updated and live at
+https://runx-cli.vercel.app/ (website workflow run `44303757173` succeeded).
 
 ## 1. Render the release manifests
 
@@ -126,19 +127,7 @@ nix run .#default -- --version
 Open [repository settings](https://github.com/aryankahar31/runx/settings), then
 select **Features → Discussions**.
 
-## 9. Verify the website deployment
-
-The website deploys from `main` through the website workflow. After the
-published-status PR merges, wait for the deployment and check the live page:
-
-```sh
-gh run list --workflow website.yml --branch main --limit 3
-gh run watch <WEBSITE_RUN_ID> --exit-status
-```
-
-Live site: https://runx-cli.vercel.app/
-
-## 10. Publish the launch posts
+## 9. Publish the launch posts
 
 Post after the relevant package links work:
 
