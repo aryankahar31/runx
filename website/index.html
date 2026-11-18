@@ -270,6 +270,7 @@ test = "npm test"</code></pre>
               <button class="copy-btn" data-copy="iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 | iex">Copy</button>
             </div>
             <p class="fine">Installs to <code>%USERPROFILE%\.runx\bin</code>. Windows x64 is published; ARM64 Windows runs the x64 binary via emulation. <code>Get-FileHash</code> verifies the archive.</p>
+            <p class="fine">Scoop is available: <code>scoop bucket add aryankahar31 https://github.com/aryankahar31/scoop-bucket</code>, then <code>scoop install runx-launcher</code> (<a href="https://github.com/aryankahar31/scoop-bucket" target="_blank" rel="noopener">bucket repository</a>).</p>
           </div>
 
           <div role="tabpanel" id="panel-source" aria-labelledby="tab-source" hidden>
@@ -512,7 +513,7 @@ Running `npm run dev`</pre>
             <li>No plugin ecosystem or registry; five runtimes, not hundreds.</li>
             <li>Ruby, PHP, and .NET are planned, not shipped.</li>
             <li>No monorepo/workspace support or pre/post hooks yet.</li>
-            <li>No Homebrew, Scoop, Winget or Chocolatey packages yet.</li>
+            <li>No Homebrew, Winget or Chocolatey packages yet. (Scoop is available.)</li>
             <li>Not a package manager: it does not install global CLIs or system libraries.</li>
             <li><code>--locked</code> costs seconds per run by design.</li>
           </ul>
@@ -690,7 +691,7 @@ No background prompt hooks are installed.</code></pre>
           <ul>
             <li>Plugin system and runtime registry</li>
             <li>VS Code extension</li>
-            <li>Homebrew, Scoop, Winget, Chocolatey</li>
+            <li>Homebrew, Winget, Chocolatey</li>
             <li>Stable API</li>
           </ul>
         </div>
