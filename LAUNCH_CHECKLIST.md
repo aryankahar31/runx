@@ -5,9 +5,10 @@ The GitHub release and crates.io publication are complete. The package is
 `runx`. The release is at
 https://github.com/aryankahar31/runx/releases/tag/v0.7.1.
 
-The remaining items below are manual. The npm wrapper was dry-run only; its
-publication and the other downstream package submissions are still pending.
-No social post has been made. The website copy is updated and live at
+The remaining items below are manual. npm, Homebrew, and Scoop are published for
+0.7.1; Winget awaits review, AUR is blocked on Arch's registration freeze, and
+Nix is still unfinished. No social post has been made. The website copy is
+updated and live at
 https://runx-cli.vercel.app/ (website workflow run `44303757173` succeeded).
 
 ## 1. Render the release manifests
@@ -28,7 +29,7 @@ packaging/render.sh 0.7.1 /tmp/runx-v0.7.1-dist /tmp/runx-v0.7.1-rendered
 These files are templates for review and submission. Nix source and Cargo
 hashes remain placeholders until its build step below succeeds.
 
-## 2. Publish the npm wrapper
+## 2. Publish the npm wrapper (done)
 
 ```sh
 cd packaging/npm
@@ -38,24 +39,24 @@ npm publish --access public
 npm view runx-launcher@0.7.1 version
 ```
 
-The dry run passed, but the package has not been published.
+Published as `runx-launcher@0.7.1`; the commands above are the record of how.
 
-## 3. Submit the Homebrew formula
+## 3. Submit the Homebrew formula (done)
 
-Create the `homebrew-runx` repository at
+Create the `homebrew-tap` repository at
 [github.com/new](https://github.com/new), then run:
 
 ```sh
-git clone https://github.com/aryankahar31/homebrew-runx.git
-cd homebrew-runx
+git clone https://github.com/aryankahar31/homebrew-tap.git
+cd homebrew-tap
 mkdir -p Formula
 cp /tmp/runx-v0.7.1-rendered/homebrew/runx-launcher.rb Formula/runx-launcher.rb
 brew audit --new --formula Formula/runx-launcher.rb
 git add Formula/runx-launcher.rb
 git commit -m "Add runx-launcher 0.7.1"
 git push origin main
-brew tap aryankahar31/runx
-brew install aryankahar31/runx/runx-launcher
+brew tap aryankahar31/tap
+brew install aryankahar31/tap/runx-launcher
 runx --version
 ```
 
@@ -72,22 +73,23 @@ winget validate --manifest aryankahar31.runx-launcher.installer.yaml
 ```
 
 The `winget validate` schema check is still manual; do not submit until all
-three commands pass.
+three commands pass. Submitted as
+[microsoft/winget-pkgs#483384](https://github.com/microsoft/winget-pkgs/pull/483384).
 
-## 5. Submit the Scoop manifest
+## 5. Submit the Scoop manifest (done)
 
-Create the public `scoop-runx` repository at
+Create the public `scoop-bucket` repository at
 [github.com/new](https://github.com/new), then run:
 
 ```sh
-git clone https://github.com/aryankahar31/scoop-runx.git
-cd scoop-runx
-mkdir -p bucket
-cp /tmp/runx-v0.7.1-rendered/scoop/runx-launcher.json bucket/runx-launcher.json
-git add bucket/runx-launcher.json
+git clone https://github.com/aryankahar31/scoop-bucket.git
+cd scoop-bucket
+# The manifest lives in the repository root, not a bucket/ subdirectory.
+cp /tmp/runx-v0.7.1-rendered/scoop/runx-launcher.json .
+git add runx-launcher.json
 git commit -m "Add runx-launcher 0.7.1"
 git push origin main
-scoop bucket add runx https://github.com/aryankahar31/scoop-runx
+scoop bucket add aryankahar31 https://github.com/aryankahar31/scoop-bucket
 scoop install runx-launcher
 runx --version
 ```
@@ -110,6 +112,10 @@ git push -u origin master
 ```
 
 ## 7. Finish and submit the Nix package
+
+Nix stays marked "pending" in the docs. Both `__SOURCE_HASH__` and
+`__CARGO_HASH__` in `package.nix` are still placeholders, so the package does
+not build until they are resolved; do not publish it before that.
 
 Replace `__SOURCE_HASH__` and `__CARGO_HASH__` in `package.nix` with the values
 from the successive hash-mismatch outputs. Repeat `nix build` until it passes,

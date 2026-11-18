@@ -1,46 +1,32 @@
-# Show HN: Runx – run any project with its own runtimes, no sudo or shell hooks
+# Show HN: Runx – Run any project with exact runtime versions
 
 Hi HN,
 
-I built runx because every machine I touched had a different ritual for running
-someone else's project: install nvm, source it, install pyenv, hope the system
-Python is not the one that breaks, and never quite trust that the versions I got
-are the ones the project asked for.
+Every project I picked up assumed a different ritual: install nvm, source it,
+install pyenv, hope the system Python is not the one that breaks, and never
+quite trust that the versions I got are the ones the project asked for.
 
 runx is a single binary that reads the version files a project already has
-(`.nvmrc`, `.python-version`, `package.json` engines, `pyproject.toml`, `go.mod`,
-`deno.lock`, `.java-version`) or a small `runx.toml`, downloads those runtimes
-into `~/.runx`, verifies the archives, and runs your command with only that
-runtime on the child's `PATH`.
+(`.nvmrc`, `package.json` engines, `pyproject.toml`, `go.mod`, `.java-version`)
+or a small `runx.toml`, downloads those runtimes into `~/.runx`, verifies the
+archives, and runs your command with only that runtime on the child's `PATH`.
 
-The crates.io package is `runx-launcher`; the command and Rust library crate
-remain `runx`. Install with `cargo install runx-launcher`.
+Six runtimes: Node, Python, Bun, Go, Deno, Java (Temurin 9+). No shell
+activation, no shims, no sudo, no telemetry. `runx lock` pins versions and
+per-platform digests for CI, and `--locked` makes drift fail.
 
-What it deliberately does not do:
+Limits: Java is Temurin 9+ only; Ruby, PHP, and .NET were skipped because their
+portable archives do not meet the same checksum bar; the Dockerfile is a recipe,
+not a published image.
 
-- no shell activation, prompt hook, or shims;
-- no global runtime versions;
-- no sudo or system package manager;
-- no telemetry.
+Rust, MIT, Linux/macOS/Windows. Install with the curl or PowerShell script,
+`cargo install runx-launcher`, `npm install -g runx-launcher`, or
+`brew install aryankahar31/tap/runx-launcher`.
 
-`runx dev` is the whole interface on a detected project. `runx lock` pins exact
-versions and archive digests for CI, and `runx doctor` explains what is missing
-before you hit a confusing stack trace.
+https://github.com/aryankahar31/runx
 
-The honest limits: Java is Temurin 9+ only; older Deno releases have no vendor
-checksum and say so; offline Python/Go provisioning may need cached metadata;
-and the Dockerfile is a recipe, not a published image yet. Ruby, PHP, and .NET
-were evaluated for v0.7.0 and skipped because their portable archive/checksum
-story does not meet the same bar — the roadmap explains why.
-
-It is Rust, MIT, and works on Linux, macOS, and Windows x64.
-
-Repo: https://github.com/aryankahar31/runx
-Docs: https://github.com/aryankahar31/runx#readme
-
-I would especially value feedback from people who run projects on locked-down
-work machines or shared CI runners, and from anyone who can break the "no shell
-integration" promise.
+Feedback welcome, especially from locked-down work machines and people who can
+break the "no shell integration" promise.
 
 ## First comment (post after submitting)
 
