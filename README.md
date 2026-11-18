@@ -97,7 +97,7 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 | Homebrew | Planned / pending submission | `brew install aryankahar31/runx/runx-launcher` |
 | Winget | Planned / pending submission | `winget install aryankahar31.runx-launcher` |
 | Scoop | Available now | `scoop bucket add aryankahar31 https://github.com/aryankahar31/scoop-bucket; scoop install runx-launcher` |
-| AUR | Planned / pending submission | `runx-launcher-bin` |
+| AUR | Planned / pending submission | `yay -S runx-launcher-bin` (Waiting for Arch AUR registration to reopen) |
 | Nix | Planned / pending submission | `runx-launcher` flake package |
 
 > Behind a network that blocks Fastly (`raw.githubusercontent.com`)? Use the jsDelivr mirror:
@@ -107,7 +107,8 @@ The v0.7.1 install scripts and release binaries are available, and the
 `runx-launcher` crate is published on crates.io and Scoop is available via
 [`aryankahar31/scoop-bucket`](https://github.com/aryankahar31/scoop-bucket). npm,
 Homebrew, Winget, AUR, and Nix remain planned / pending their separate
-submissions. The release
+submissions; the AUR `runx-launcher-bin` package waits for Arch to reopen
+registration. The release
 workflow renders package versions and archive digests; downstream packages
 still need review and publication. See [`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.md).
 
