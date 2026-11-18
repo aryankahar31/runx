@@ -96,7 +96,7 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 | npm | Planned / pending submission | `npx --package runx-launcher -- runx dev` |
 | Homebrew | Planned / pending submission | `brew install aryankahar31/runx/runx-launcher` |
 | Winget | Planned / pending submission | `winget install aryankahar31.runx-launcher` |
-| Scoop | Planned / pending submission | `scoop install runx-launcher` |
+| Scoop | Available now | `scoop bucket add aryankahar31 https://github.com/aryankahar31/scoop-bucket; scoop install runx-launcher` |
 | AUR | Planned / pending submission | `runx-launcher-bin` |
 | Nix | Planned / pending submission | `runx-launcher` flake package |
 
