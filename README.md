@@ -104,8 +104,10 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 > `curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh`
 
 The v0.7.1 install scripts and release binaries are available, and the
-`runx-launcher` crate is published on crates.io. npm, Homebrew, Winget, Scoop,
-AUR, and Nix remain planned / pending their separate submissions. The release
+`runx-launcher` crate is published on crates.io and Scoop is available via
+[`aryankahar31/scoop-bucket`](https://github.com/aryankahar31/scoop-bucket). npm,
+Homebrew, Winget, AUR, and Nix remain planned / pending their separate
+submissions. The release
 workflow renders package versions and archive digests; downstream packages
 still need review and publication. See [`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.md).
 

@@ -14,7 +14,7 @@ own submission. These are manual steps, tracked in
 | Cargo / cargo-binstall | Available now | Published package `runx-launcher`; binary and library `runx` |
 | Homebrew | Planned / pending submission | `homebrew/runx-launcher.rb`; `homebrew-runx` tap |
 | Winget | Planned / pending submission | Three `aryankahar31.runx-launcher` manifests; `microsoft/winget-pkgs` PR |
-| Scoop | Planned / pending submission | `scoop/runx-launcher.json`; a Scoop bucket repo |
+| Scoop | Available now | `scoop/runx-launcher.json`; published in `aryankahar31/scoop-bucket` |
 | AUR | Planned / pending submission | `aur/PKGBUILD`; AUR `runx-launcher-bin` |
 | Nix | Planned / pending submission | `nix/flake.nix`, `nix/package.nix`; package `runx-launcher` |
 | npm | Planned / pending submission | Package `runx-launcher`; exposes command `runx` |
