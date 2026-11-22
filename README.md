@@ -20,6 +20,12 @@ An unrelated crates.io project named `runx` exists; this tool's package is
 `runx-launcher`, while its installed binary and Rust library crate are both
 named `runx`.
 
+<div align="center">
+
+![runx demo: zero-config Node 20.11.0 detection from .nvmrc, SHA-256 verification, isolated execution, and warm-cache run with no global Node installed](demo/runx.gif)
+
+</div>
+
 ```text
 $ runx dev
 No runx.toml found — detected from project files:
@@ -86,7 +92,7 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 
 ## Quick Start
 
-| Channel | v0.7.1 status | Command / destination |
+| Channel | v0.7.2 status | Command / destination |
 | --- | --- | --- |
 | Install script (macOS / Linux) | Available now | `curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh \| sh` |
 | Install script (Windows) | Available now | `iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 \| iex` |
@@ -103,7 +109,7 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 > Behind a network that blocks Fastly (`raw.githubusercontent.com`)? Use the jsDelivr mirror:
 > `curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh`
 
-The v0.7.1 install scripts and release binaries are available, the
+The v0.7.2 install scripts and release binaries are available, the
 `runx-launcher` crate is published on crates.io, the npm wrapper is published as
 `runx-launcher`, and Homebrew is available via
 [`aryankahar31/homebrew-tap`](https://github.com/aryankahar31/homebrew-tap) (`brew install aryankahar31/tap/runx-launcher`). Winget,
