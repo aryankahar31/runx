@@ -115,6 +115,8 @@ still need review and publication. See [`LAUNCH_CHECKLIST.md`](LAUNCH_CHECKLIST.
 For published releases, the curl and PowerShell installers verify the release
 archive's SHA-256 checksum — see [Security](#security).
 
+Upgrading from v0.6.x: run `runx self update` (the `upgrade` alias exists from v0.7.0). If `runx --version` shows an old version after installing a second way, run `which -a runx` and remove the duplicate.
+
 Initialize a project:
 
 ```bash
@@ -246,9 +248,9 @@ Headline numbers on warm cache (macOS, Apple silicon, zsh — full method in [do
 
 | Measurement | Mean |
 | :-- | --: |
-| Complete `runx <key>` run, warm cache | 11.4 ms |
+| Complete `runx <key>` run, warm cache | 11.0 ms |
 | Runx overhead before your command starts | ~0.25 ms, **once per invocation** |
-| Interactive zsh startup with mise activation | +18.6 ms versus the no-hook baseline |
+| Interactive zsh startup with mise activation | +19.7 ms versus the no-hook baseline |
 
 This benchmark measures shell startup with an empty config versus one that
 loads `mise activate`; it does not measure repeated prompt renders. Runx has no

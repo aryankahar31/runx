@@ -7,19 +7,19 @@ there is no activation line, shim directory, or directory hook. **Nothing
 happens until you type `runx <key>`, and runx's overhead is paid once per
 invocation.**
 
-Measured on macOS 27.2.1 (Apple silicon, zsh 5.9, hyperfine 1.20, runx 0.6.2, mise 2026.7.18, `--warmup 3 --runs 20`; full method in [`benchmarks/README.md`](../benchmarks/README.md)):
+Measured on macOS 27.2.1 (Apple silicon, zsh 5.9, hyperfine 1.20.0, runx 0.7.1, mise 2026.7.18, `--warmup 3 --runs 20`; full method in [`benchmarks/README.md`](../benchmarks/README.md)):
 
 | Measurement | Mean |
 | :-- | --: |
-| zsh startup, no hooks (baseline) | 30.3 ms |
-| zsh startup + `mise activate` | 48.9 ms — **+18.6 ms versus baseline** |
-| `runx <key>` total, warm cache | 11.4 ms |
-| — runx pre-child work (`RUNX_TIMINGS=1`): config | 0.07 ms |
+| zsh startup, no hooks (baseline) | 29.0 ms |
+| zsh startup + `mise activate` | 48.7 ms — **+19.7 ms versus baseline** |
+| `runx <key>` total, warm cache | 11.0 ms |
+| — runx pre-child work (`RUNX_TIMINGS=1`): config | 0.08 ms |
 | — cache lookup | 0.03 ms |
-| — PATH build + spawn | 0.15 ms |
+| — PATH build + spawn | 0.14 ms |
 
 runx's measured contribution before your command starts is **~0.25 ms, once**.
-The 18.6 ms figure is the difference in this harness's zsh startup timings; it
+The 19.7 ms figure is the difference in this harness's zsh startup timings; it
 does not measure repeated prompt renders. A complete `runx <key>` run includes
 the child process, so it should not be read as a prompt-to-command comparison.
 
