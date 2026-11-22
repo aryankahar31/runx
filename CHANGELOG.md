@@ -8,6 +8,10 @@ compare view or commit.
 
 ## v0.7.1 — 2026-11-18
 
+### Upgrade notes
+
+> **Upgrading from v0.6.x:** run `runx self update` (the `upgrade` alias exists from v0.7.0).
+
 ### Changed
 
 - The crates.io package is named `runx-launcher` because the crate names

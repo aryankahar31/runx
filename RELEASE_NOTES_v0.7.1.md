@@ -1,5 +1,9 @@
 # runx v0.7.1
 
+## Upgrade notes
+
+> **Upgrading from v0.6.x:** run `runx self update` (the `upgrade` alias exists from v0.7.0).
+
 v0.7.1 makes the crates.io package name unambiguous. The package is
 `runx-launcher`; the installed executable, CLI command, and Rust library crate
 remain `runx`. GitHub release asset names remain `runx-*`.
