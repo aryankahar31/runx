@@ -6,18 +6,20 @@ tags and each tag's GitHub release notes (`gh release view`). Entries marked
 that release has no notes; every line is verifiable against the linked
 compare view or commit.
 
-## Unreleased (v0.7.2)
+## v0.7.2 — 2026-11-22
 
 ### Fixed
 
 - **`runx init` now quotes TOML keys containing special characters (`:`, `.`,
-  spaces, quotes, leading digits, unicode) by serializing `RunxConfig` through
-  `toml`** ([#73](https://github.com/aryankahar31/runx/issues/73)). Previously,
+  `/`, `@`, spaces, quotes, backslashes, unicode) by serializing `RunxConfig`
+  through `toml`, and re-parses the generated `runx.toml` before completing**
+  ([#73](https://github.com/aryankahar31/runx/issues/73)). Previously,
   `package.json` scripts such as `test:rules` or `worker:typecheck` were
   written as bare keys in `[run]`, causing subsequent commands (`runx install`,
-  `runx doctor`, `runx test:rules`) to fail with a TOML parse error. Hand-written
-  `runx.toml` files with unquoted `:` or `.` keys now also include a quoting
-  hint in the parse error.
+  `runx doctor`, `runx test:rules`) to fail with a TOML parse error (or an
+  unquoted `.` to silently create a nested table). Hand-written `runx.toml`
+  files with unquoted `:` or `.` keys now also include a quoting hint in the
+  parse error.
 
 ## v0.7.1 — 2026-11-18
 

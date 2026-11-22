@@ -872,9 +872,10 @@ test = "npm test"
         assert!(resolved.detection_lines.is_empty());
     }
 
-    /// Regression test for #73: script names with colons, dots, spaces, quotes,
-    /// backslashes, leading digits, or unicode must be quoted in the generated
-    /// `runx.toml` and round-trip cleanly through `RunxConfig::parse_toml`.
+    /// Regression test for #73: script names with colons, dots, slashes, `@`,
+    /// spaces, quotes, backslashes, leading digits, or unicode must be quoted in
+    /// the generated `runx.toml` and round-trip cleanly through
+    /// `RunxConfig::parse_toml`.
     #[test]
     fn starter_config_quotes_special_script_keys_and_round_trips() {
         let dir = tmp();
@@ -886,6 +887,8 @@ test = "npm test"
                 "test:watch": "vitest --watch",
                 "worker:typecheck": "tsc -p tsconfig.worker.json",
                 "a.b": "echo dotted",
+                "pkg/build": "echo slash",
+                "@scope/check": "echo at-slash",
                 "has space": "echo spaced",
                 "we\"ird": "echo quoted",
                 "back\\slash": "echo backslash",
@@ -911,6 +914,8 @@ test = "npm test"
             "test:watch",
             "worker:typecheck",
             "a.b",
+            "pkg/build",
+            "@scope/check",
             "has space",
             "we\"ird",
             "back\\slash",
@@ -921,6 +926,21 @@ test = "npm test"
         }
 
         let generated = starter_config_for(dir.path());
+        for quoted in [
+            "\"test:rules\"",
+            "\"a.b\"",
+            "\"pkg/build\"",
+            "\"@scope/check\"",
+            "\"has space\"",
+            "\"we\\\"ird\"",
+            "\"back\\\\slash\"",
+        ] {
+            assert!(
+                generated.contains(quoted),
+                "expected quoted key {quoted} in generated TOML:\n{generated}"
+            );
+        }
+
         let parsed = RunxConfig::parse_toml(&generated)
             .unwrap_or_else(|err| panic!("generated config failed to parse: {err}\n{generated}"));
 
