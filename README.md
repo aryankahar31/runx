@@ -86,28 +86,28 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 
 ## Quick Start
 
-| Channel | v0.7.1 status | Command / destination |
+| Channel | v0.7.2 status | Command / destination |
 | --- | --- | --- |
 | Install script (macOS / Linux) | Available now | `curl -fsSL https://raw.githubusercontent.com/aryankahar31/runx/main/install.sh \| sh` |
 | Install script (Windows) | Available now | `iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 \| iex` |
 | GitHub release binaries | Available now | [Releases](https://github.com/aryankahar31/runx/releases) |
 | Cargo | Available now | `cargo install runx-launcher` (installs `runx`) |
 | cargo-binstall | Available now | `cargo binstall runx-launcher` (installs `runx`) |
-| npm | Planned / pending submission | `npx --package runx-launcher -- runx dev` |
+| npm | Available now | `npx --package runx-launcher -- runx dev` |
 | Homebrew | Available now | `brew install aryankahar31/tap/runx-launcher` (installs `runx`) |
 | Winget | Planned / pending submission | `winget install aryankahar31.runx-launcher` |
-| Scoop | Available now | `scoop bucket add aryankahar31 https://github.com/aryankahar31/scoop-bucket; scoop install runx-launcher` |
+| Scoop | Planned / pending submission | `scoop bucket add aryankahar31 https://github.com/aryankahar31/scoop-bucket; scoop install runx-launcher` |
 | AUR | Planned / pending submission | `yay -S runx-launcher-bin` (Waiting for Arch AUR registration to reopen) |
 | Nix | Planned / pending submission | `runx-launcher` flake package |
 
 > Behind a network that blocks Fastly (`raw.githubusercontent.com`)? Use the jsDelivr mirror:
 > `curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh`
 
-The v0.7.1 install scripts and release binaries are available, the
-`runx-launcher` crate is published on crates.io, Homebrew is available via
-[`aryankahar31/homebrew-tap`](https://github.com/aryankahar31/homebrew-tap) (`brew install aryankahar31/tap/runx-launcher`), and Scoop is available via
-[`aryankahar31/scoop-bucket`](https://github.com/aryankahar31/scoop-bucket). npm,
-Winget, AUR, and Nix remain planned / pending their separate
+The v0.7.2 install scripts and release binaries are available, the
+`runx-launcher` crate is published on crates.io, the npm wrapper is published as
+`runx-launcher`, and Homebrew is available via
+[`aryankahar31/homebrew-tap`](https://github.com/aryankahar31/homebrew-tap) (`brew install aryankahar31/tap/runx-launcher`). Winget,
+Scoop, AUR, and Nix remain planned / pending their separate
 submissions; the AUR `runx-launcher-bin` package waits for Arch to reopen
 registration. The release
 workflow renders package versions and archive digests; downstream packages
