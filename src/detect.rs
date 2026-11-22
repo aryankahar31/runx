@@ -391,9 +391,25 @@ fn infer_commands(dir: &Path) -> BTreeMap<String, String> {
 
     scripts
         .iter()
-        .filter(|(_, value)| value.is_string())
-        .map(|(name, _)| (name.clone(), format!("{runner} run {name}")))
+        .filter(|(name, value)| !name.trim().is_empty() && value.is_string())
+        .map(|(name, _)| (name.clone(), format!("{runner} run {}", shell_arg(name))))
         .collect()
+}
+
+/// Quote a script name when it contains whitespace or shell metacharacters so
+/// the inferred `<runner> run <script>` command remains a single argument.
+fn shell_arg(name: &str) -> String {
+    let is_safe = !name.is_empty()
+        && name.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '.' | '/' | '@' | '+')
+        });
+    if is_safe {
+        name.to_string()
+    } else if cfg!(windows) {
+        format!("\"{}\"", name.replace('"', "\\\""))
+    } else {
+        format!("'{}'", name.replace('\'', "'\\''"))
+    }
 }
 
 /// True when the project's package manager is Bun: a Bun lockfile exists, or
