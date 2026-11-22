@@ -22,7 +22,7 @@
   if (themeBtn) {
     themeBtn.addEventListener("click", function () {
       var next = root.dataset.theme === "dark" ? "light" : "dark";
-      try { localStorage.setItem("runx-theme", next); } catch (e) {}
+      try { localStorage.setItem("runx-theme", next); } catch (e) { }
       applyTheme(next);
     });
   }
@@ -178,7 +178,6 @@
         ["ok", "✓ sha-256 verified"],
         ["dim", "→ child PATH isolated · shell unchanged"],
         ["", "> npm run dev"],
-        ["dim", "  VITE v6.2.3  ready in 142 ms"],
         ["ok", "✓ http://localhost:3000"]
       ]
     },
@@ -216,7 +215,6 @@
         ["ok", "✓ sha-256 verified"],
         ["dim", "→ child PATH isolated · shell unchanged"],
         ["", "> bun run dev"],
-        ["ok", "✓ ready in 212 ms"],
         ["ok", "✓ http://localhost:3000"]
       ]
     },
@@ -580,7 +578,7 @@
     } catch (e) { return null; }
   }
   function writeCache(data) {
-    try { sessionStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch (e) {}
+    try { sessionStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch (e) { }
   }
   var cached = readCache();
   if (cached) {

@@ -123,7 +123,7 @@
 
         <ul class="hero-facts">
           <li><strong>6</strong> runtimes</li>
-          <li><strong>~0.25&nbsp;ms</strong> launcher overhead<sup><a href="#bench" aria-label="Benchmark methodology">*</a></sup></li>
+          <li><strong>~0.25&nbsp;ms</strong> pre-child work (11.0&nbsp;ms warm run)<sup><a href="#bench" aria-label="Benchmark methodology">*</a></sup></li>
           <li><strong>0</strong> shell hooks</li>
           <li><strong>MIT</strong>, no telemetry</li>
         </ul>
@@ -261,7 +261,8 @@ test = "npm test"</code></pre>
             </div>
             <p class="fine">Installs to <code>~/.runx/bin</code> and offers — once — to add that directory to your shell <code>PATH</code>. No hooks, no shims, no runtime switching.</p>
             <p class="fine">Or with Homebrew: <code>brew install aryankahar31/tap/runx-launcher</code>.</p>
-            <p class="fine">Or with npm (any OS, Node 18+): <code>npm install -g runx-launcher</code>.</p>
+            <p class="fine">Or with npm (any OS, Node 18+): <code>npx runx-launcher dev</code> (or <code>npm install -g runx-launcher</code>).</p>
+            <p class="fine">Winget, Scoop, AUR, and Nix packages are pending.</p>
             <details class="fine-details">
               <summary>Fastly blocked? Use the jsDelivr mirror</summary>
               <div class="cmd-line">
@@ -277,7 +278,7 @@ test = "npm test"</code></pre>
               <button class="copy-btn" data-copy="iwr https://raw.githubusercontent.com/aryankahar31/runx/main/install.ps1 | iex">Copy</button>
             </div>
             <p class="fine">Installs to <code>%USERPROFILE%\.runx\bin</code>. Windows x64 is published; ARM64 Windows runs the x64 binary via emulation. <code>Get-FileHash</code> verifies the archive.</p>
-            <p class="fine">Scoop is available: <code>scoop bucket add aryankahar31 https://github.com/aryankahar31/scoop-bucket</code>, then <code>scoop install runx-launcher</code> (<a href="https://github.com/aryankahar31/scoop-bucket" target="_blank" rel="noopener">bucket repository</a>).</p>
+            <p class="fine">Or with npm (Node 18+): <code>npx runx-launcher dev</code>. Winget, Scoop, AUR, and Nix packages are pending.</p>
           </div>
 
           <div role="tabpanel" id="panel-source" aria-labelledby="tab-source" hidden>
@@ -449,8 +450,8 @@ Running `npm run dev`</pre>
     <div class="wrap">
       <div class="section-head reveal">
         <p class="label">05 — Benchmarks</p>
-        <h2 id="bench-title">No per-prompt tax. Measured, with the script.</h2>
-        <p class="section-sub">Shell-hook managers pay on every prompt render. runx pays once, when you invoke it. These are directional numbers from one machine, not a universal guarantee.</p>
+        <h2 id="bench-title">No shell-startup tax. Measured, with the script.</h2>
+        <p class="section-sub">Shell-hook managers add work to interactive shell startup. runx has no shell hook and pays its pre-child overhead once, when you invoke it. These are directional numbers from one machine, not a universal guarantee.</p>
       </div>
 
       <div class="bench-grid reveal">
@@ -464,11 +465,11 @@ Running `npm run dev`</pre>
         </div>
         <div class="bench-stat">
           <p class="bench-num">+19.7<span>ms</span></p>
-          <p class="bench-label">mise activate, on every prompt</p>
+          <p class="bench-label">zsh startup with <code>mise activate</code> vs baseline</p>
         </div>
         <div class="bench-stat">
-          <p class="bench-num">0<span>ms</span></p>
-          <p class="bench-label">cost on prompts where you don't run runx</p>
+          <p class="bench-num">0</p>
+          <p class="bench-label">shell hooks installed by runx</p>
         </div>
       </div>
 
@@ -477,8 +478,8 @@ Running `npm run dev`</pre>
           <caption>Measured on macOS 27.2.1, Apple silicon (arm64), zsh 5.9, hyperfine 1.20.0, <code>--warmup 3 --runs 20</code>. runx 0.7.1 at measurement time. Re-measure for your machine.</caption>
           <thead><tr><th scope="col">Measurement</th><th scope="col">Mean</th><th scope="col">What it captures</th></tr></thead>
           <tbody>
-            <tr><td>zsh startup, no hooks</td><td>29.0 ms</td><td>Baseline prompt with an empty rc</td></tr>
-            <tr><td>zsh startup + <code>mise activate</code></td><td>48.7 ms</td><td>+19.7 ms injected into every prompt</td></tr>
+            <tr><td>zsh startup, no hooks</td><td>29.0 ms</td><td>Interactive zsh startup with an empty rc</td></tr>
+            <tr><td>zsh startup + <code>mise activate</code></td><td>48.7 ms</td><td>+19.7 ms vs no-hook baseline on shell startup (does not measure repeated prompt renders)</td></tr>
             <tr class="row-accent"><td><code>runx &lt;key&gt;</code>, warm cache</td><td>11.0 ms</td><td>Total: config, cache lookup, PATH, child start</td></tr>
             <tr class="row-accent"><td>runx pre-child work</td><td>~0.25 ms</td><td>config 0.08 · cache 0.03 · PATH + spawn 0.14</td></tr>
             <tr><td><code>--locked</code>, one runtime</td><td>1.95 s</td><td>Re-extracts and verifies cached contents; same run unlocked took 17.7 ms</td></tr>
@@ -526,7 +527,7 @@ Running `npm run dev`</pre>
             <li>No plugin ecosystem or registry; six runtimes, not hundreds.</li>
             <li>Ruby, PHP, and .NET are planned, not shipped.</li>
             <li>No monorepo/workspace support or pre/post hooks yet.</li>
-            <li>No Winget or Chocolatey packages yet. (Homebrew, Scoop, and npm are available.)</li>
+            <li>No Winget, Scoop, AUR, Nix, or Chocolatey packages yet (Winget, Scoop, AUR, and Nix are pending; Homebrew, Cargo, and npm are available).</li>
             <li>Not a package manager: it does not install global CLIs or system libraries.</li>
             <li><code>--locked</code> costs seconds per run by design.</li>
           </ul>
