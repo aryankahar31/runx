@@ -178,7 +178,6 @@
         ["ok", "✓ sha-256 verified"],
         ["dim", "→ child PATH isolated · shell unchanged"],
         ["", "> npm run dev"],
-        ["dim", "  VITE v6.2.3  ready in 142 ms"],
         ["ok", "✓ http://localhost:3000"]
       ]
     },
@@ -216,7 +215,6 @@
         ["ok", "✓ sha-256 verified"],
         ["dim", "→ child PATH isolated · shell unchanged"],
         ["", "> bun run dev"],
-        ["ok", "✓ ready in 212 ms"],
         ["ok", "✓ http://localhost:3000"]
       ]
     },
