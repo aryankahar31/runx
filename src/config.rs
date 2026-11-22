@@ -1,7 +1,7 @@
 use crate::detect;
 use crate::error::UserError;
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
@@ -10,14 +10,14 @@ use std::{
 
 pub const CONFIG_FILE: &str = "runx.toml";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RunxConfig {
     #[serde(default)]
     pub runtimes: BTreeMap<String, String>,
     /// `[run]` is optional: a project may only need `runx install`/`runx lock`,
     /// which need runtimes but no commands. Dispatch rejects an empty map with
     /// a message that names the missing section.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub run: BTreeMap<String, String>,
 }
 
@@ -56,7 +56,13 @@ impl RunxConfig {
     /// Named `parse_toml` rather than `from_str` so it is not mistaken for
     /// `std::str::FromStr::from_str` (clippy::should_implement_trait).
     pub fn parse_toml(raw: &str) -> Result<Self> {
-        let config: Self = toml::from_str(raw)?;
+        let config: Self = toml::from_str(raw).map_err(|err| {
+            if let Some(hint) = unquoted_key_hint(raw, &err) {
+                UserError::new(format!("{err}\n{hint}")).into()
+            } else {
+                anyhow::Error::from(err)
+            }
+        })?;
         config.validate()?;
         Ok(config)
     }
@@ -332,22 +338,126 @@ pub fn starter_config_for(dir: &Path) -> String {
         runtimes.insert("node".to_string(), "20.11.0".to_string());
     }
 
+    let config = RunxConfig {
+        runtimes,
+        run: commands,
+    };
+    render_toml(&config)
+}
+
+/// Emit `runx.toml` with basic-string values (`"..."`) and keys quoted as
+/// basic strings whenever a key does not strictly match `^[A-Za-z0-9_-]+$`.
+///
+/// Using basic strings instead of `toml::to_string`'s automatic single-quote /
+/// multiline-triple-quote selection guarantees double-quoted `"..."` keys and
+/// values with `\"` and `\\` escaping.
+fn render_toml(config: &RunxConfig) -> String {
     let mut out = String::from("[runtimes]\n");
-    for (tool, requirement) in &runtimes {
-        out.push_str(&format!("{tool} = \"{}\"\n", toml_string(requirement)));
+    for (tool, requirement) in &config.runtimes {
+        out.push_str(&format!(
+            "{} = {}\n",
+            toml_key(tool),
+            toml_basic_string(requirement)
+        ));
     }
-    if !commands.is_empty() {
+    if !config.run.is_empty() {
         out.push_str("\n[run]\n");
-        for (key, command) in &commands {
-            out.push_str(&format!("{key} = \"{}\"\n", toml_string(command)));
+        for (key, command) in &config.run {
+            out.push_str(&format!(
+                "{} = {}\n",
+                toml_key(key),
+                toml_basic_string(command)
+            ));
         }
     }
     out
 }
 
-/// Quote a value for a TOML basic string.
-fn toml_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+/// Format a TOML key: bare if non-empty and composed only of `A-Za-z0-9_-`,
+/// otherwise a properly escaped basic string.
+fn toml_key(key: &str) -> String {
+    let is_bare = !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if is_bare {
+        key.to_string()
+    } else {
+        toml_basic_string(key)
+    }
+}
+
+/// Format a value as an escaped TOML basic string (`"..."`), escaping `\`, `"`,
+/// and control characters per the TOML 1.0 specification.
+fn toml_basic_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\u{0008}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{000C}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\u{:04X}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Detect when a TOML parse error was likely caused by an unquoted key
+/// containing `:` or `.` (or when a dotted key like `a.b = "..."` created a
+/// sub-table where `[run]` expects a string), and return an actionable hint.
+fn unquoted_key_hint(raw: &str, err: &toml::de::Error) -> Option<String> {
+    let msg = err.message();
+    // Dotted unquoted keys (`a.b = "npm run a.b"`) are valid TOML syntax for a
+    // nested table `{ a = { b = "..." } }`, which fails deserialization into
+    // `BTreeMap<String, String>` with "invalid type: map, expected a string".
+    let is_dotted_table_err =
+        msg.contains("invalid type: map") && msg.contains("expected a string");
+    let is_key_syntax_err = msg.contains("expected `.`, `=`") || msg.contains("invalid key");
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('[') {
+            continue;
+        }
+        if let Some((lhs, rhs)) = trimmed.split_once('=') {
+            let key = lhs.trim();
+            if !key.is_empty()
+                && !key.starts_with('"')
+                && !key.starts_with('\'')
+                && (key.contains(':') || key.contains('.'))
+            {
+                let value = rhs.trim();
+                let example_val = if value.starts_with('"') || value.starts_with('\'') {
+                    value
+                } else {
+                    "\"...\""
+                };
+                return Some(format!(
+                    "Hint: keys containing ':' or '.' must be quoted, e.g. {} = {example_val}",
+                    toml_basic_string(key)
+                ));
+            }
+        }
+    }
+
+    if is_dotted_table_err || is_key_syntax_err {
+        return Some(
+            "Hint: keys containing ':' or '.' must be quoted, e.g. \"test:rules\" = \"...\""
+                .to_string(),
+        );
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -356,6 +466,7 @@ mod tests {
         find_project_dir, load_or_detect, load_or_detect_runtimes_only, starter_config,
         starter_config_for, RunxConfig, CONFIG_FILE,
     };
+    use crate::detect;
     use std::fs;
     use tempfile::TempDir;
 
@@ -783,5 +894,104 @@ test = "npm test"
         let resolved = load_or_detect(dir.path()).expect("should load");
         assert_eq!(resolved.inner.runtimes["bun"], "1.3.14");
         assert!(resolved.detection_lines.is_empty());
+    }
+
+    /// Regression test for #73: script names with colons, dots, slashes, `@`,
+    /// spaces, quotes, backslashes, leading digits, or unicode must be quoted in
+    /// the generated `runx.toml` and round-trip cleanly through
+    /// `RunxConfig::parse_toml`.
+    #[test]
+    fn starter_config_quotes_special_script_keys_and_round_trips() {
+        let dir = tmp();
+        fs::write(dir.path().join(".nvmrc"), "20.11.0\n").unwrap();
+        let pkg = serde_json::json!({
+            "scripts": {
+                "dev": "vite",
+                "test:rules": "vitest rules",
+                "test:watch": "vitest --watch",
+                "worker:typecheck": "tsc -p tsconfig.worker.json",
+                "a.b": "echo dotted",
+                "pkg/build": "echo slash",
+                "@scope/check": "echo at-slash",
+                "has space": "echo spaced",
+                "we\"ird": "echo quoted",
+                "back\\slash": "echo backslash",
+                "123start": "echo digit",
+                "ünï": "echo unicode",
+                "": "echo empty-skipped"
+            }
+        });
+        fs::write(
+            dir.path().join("package.json"),
+            serde_json::to_string_pretty(&pkg).unwrap(),
+        )
+        .unwrap();
+
+        let expected = detect::detect_runtimes(dir.path()).inferred_commands;
+        assert!(
+            !expected.contains_key(""),
+            "empty script names must be skipped"
+        );
+        for key in [
+            "dev",
+            "test:rules",
+            "test:watch",
+            "worker:typecheck",
+            "a.b",
+            "pkg/build",
+            "@scope/check",
+            "has space",
+            "we\"ird",
+            "back\\slash",
+            "123start",
+            "ünï",
+        ] {
+            assert!(expected.contains_key(key), "missing inferred key {key:?}");
+        }
+
+        let generated = starter_config_for(dir.path());
+        for quoted in [
+            "\"test:rules\"",
+            "\"a.b\"",
+            "\"pkg/build\"",
+            "\"@scope/check\"",
+            "\"has space\"",
+            "\"we\\\"ird\"",
+            "\"back\\\\slash\"",
+        ] {
+            assert!(
+                generated.contains(quoted),
+                "expected quoted key {quoted} in generated TOML:\n{generated}"
+            );
+        }
+
+        let parsed = RunxConfig::parse_toml(&generated)
+            .unwrap_or_else(|err| panic!("generated config failed to parse: {err}\n{generated}"));
+
+        assert_eq!(parsed.runtimes["node"], "20.11.0");
+        assert_eq!(parsed.run, expected);
+    }
+
+    /// Hand-written `runx.toml` files with unquoted `:` or `.` keys get a clear
+    /// quoting hint in the parse error message.
+    #[test]
+    fn parse_toml_hints_when_special_keys_are_unquoted() {
+        let colon_raw =
+            "[runtimes]\nnode = \"20.11.0\"\n\n[run]\ntest:rules = \"npm run test:rules\"\n";
+        let err = RunxConfig::parse_toml(colon_raw).expect_err("unquoted colon key must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("keys containing ':' or '.' must be quoted")
+                && msg.contains("\"test:rules\""),
+            "expected colon key hint, got:\n{msg}"
+        );
+
+        let dot_raw = "[runtimes]\nnode = \"20.11.0\"\n\n[run]\na.b = \"npm run a.b\"\n";
+        let err = RunxConfig::parse_toml(dot_raw).expect_err("unquoted dotted key must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("keys containing ':' or '.' must be quoted") && msg.contains("\"a.b\""),
+            "expected dotted key hint, got:\n{msg}"
+        );
     }
 }

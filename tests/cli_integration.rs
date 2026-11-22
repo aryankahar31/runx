@@ -5988,3 +5988,145 @@ fn doctor_separates_cache_findings_from_project_readiness() {
         "the cache-wide finding must appear under the cache heading:\n{cache_section}"
     );
 }
+
+/// Issue #73: `runx init` on a project whose `package.json` has script names
+/// containing `:`, `.`, spaces, quotes, and unicode must generate valid TOML
+/// that `runx install`, `runx doctor`, `runx test:rules`, and
+/// `runx run test:rules` all accept and execute.
+#[cfg(unix)]
+#[test]
+fn init_and_run_work_end_to_end_with_colon_and_special_script_keys() {
+    let dir = tmp();
+    let home = dir.path().join("home");
+    plant_reporting_node(&home);
+    let spec = runx::runtime::resolve_runtime("node", "0.0.0").expect("offline spec");
+    let npm = home
+        .join("runtimes")
+        .join("node")
+        .join("0.0.0")
+        .join(&spec.bin_dirs[0])
+        .join("npm");
+    fs::write(
+        &npm,
+        "#!/bin/sh\nif [ \"$1\" = \"ci\" ]; then mkdir -p node_modules; echo \"NPM_CI_OK\"; exit 0; fi\necho \"NPM_RUN|$@\"\n",
+    )
+    .expect("write fake npm");
+    fs::set_permissions(&npm, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("make fake npm executable");
+
+    fs::write(dir.path().join(".nvmrc"), "0.0.0\n").unwrap();
+    fs::write(
+        dir.path().join("package-lock.json"),
+        r#"{"name":"t","lockfileVersion":3,"packages":{"":{}}}"#,
+    )
+    .unwrap();
+    let pkg = serde_json::json!({
+        "name": "t",
+        "scripts": {
+            "test:rules": "vitest rules",
+            "test:watch": "vitest --watch",
+            "worker:typecheck": "tsc -p tsconfig.worker.json",
+            "a.b": "echo dotted",
+            "pkg/build": "echo slash",
+            "@scope/check": "echo at-slash",
+            "has space": "echo spaced",
+            "we\"ird": "echo quoted",
+            "ünï": "echo unicode"
+        }
+    });
+    fs::write(
+        dir.path().join("package.json"),
+        serde_json::to_string_pretty(&pkg).unwrap(),
+    )
+    .unwrap();
+
+    // 1. Zero-config detection (before `runx init`) works for colon script keys.
+    let zero_cfg = runx_with_home(dir.path(), &home, &["test:rules"]);
+    assert_eq!(
+        zero_cfg.status.code(),
+        Some(0),
+        "zero-config `runx test:rules` failed:\n{}",
+        stderr_of(&zero_cfg)
+    );
+    assert!(
+        stdout_of(&zero_cfg).contains("NPM_RUN|run test:rules"),
+        "expected npm run test:rules, got:\n{}",
+        stdout_of(&zero_cfg)
+    );
+
+    // 2. `runx init` generates a valid `runx.toml` with quoted keys.
+    let init = runx_with_home(dir.path(), &home, &["init"]);
+    assert_eq!(
+        init.status.code(),
+        Some(0),
+        "runx init failed:\n{}",
+        stderr_of(&init)
+    );
+    let toml_text = fs::read_to_string(config_path(dir.path())).expect("read runx.toml");
+    assert!(
+        toml_text.contains("\"test:rules\""),
+        "expected quoted key in runx.toml:\n{toml_text}"
+    );
+
+    // 3. `runx install` parses the generated `runx.toml` and succeeds.
+    let install = runx_with_home(dir.path(), &home, &["install"]);
+    assert_eq!(
+        install.status.code(),
+        Some(0),
+        "runx install failed after init:\n{}",
+        stderr_of(&install)
+    );
+
+    // 4. `runx doctor` parses the generated `runx.toml` and exits 0.
+    let doctor = runx_with_home(dir.path(), &home, &["doctor"]);
+    assert_eq!(
+        doctor.status.code(),
+        Some(0),
+        "runx doctor failed after init:\n{}",
+        stderr_of(&doctor)
+    );
+
+    // 5. Both `runx test:rules` and `runx run test:rules` (and special keys) run.
+    for args in [
+        &["test:rules"][..],
+        &["run", "test:rules"][..],
+        &["a.b"][..],
+        &["pkg/build"][..],
+        &["@scope/check"][..],
+        &["run", "has space"][..],
+        &["run", "we\"ird"][..],
+        &["run", "ünï"][..],
+    ] {
+        let out = runx_with_home(dir.path(), &home, args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "runx {:?} failed:\n{}",
+            args,
+            stderr_of(&out)
+        );
+        assert!(
+            stdout_of(&out).contains("NPM_RUN|run "),
+            "expected fake npm to run for {:?}, got:\n{}",
+            args,
+            stdout_of(&out)
+        );
+    }
+}
+
+/// Issue #73: a hand-written `runx.toml` with an unquoted colon key produces a
+/// hint showing how to quote it.
+#[test]
+fn unquoted_colon_key_in_hand_written_toml_shows_quoting_hint() {
+    let dir = tmp();
+    write_config(dir.path(), "test:rules = \"echo hi\"\n");
+
+    let output = runx(dir.path(), &["test:rules"]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("keys containing ':' or '.' must be quoted")
+            && stderr.contains("\"test:rules\""),
+        "expected quoting hint in stderr, got:\n{stderr}"
+    );
+}

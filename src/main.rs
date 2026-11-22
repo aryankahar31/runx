@@ -376,8 +376,22 @@ fn init_config() -> Result<()> {
             path.display()
         );
     }
-    fs::write(&path, config::starter_config_for(&cwd))
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    let contents = config::starter_config_for(&cwd);
+    config::RunxConfig::parse_toml(&contents).with_context(|| {
+        format!(
+            "Internal error: generated starter config for {} is invalid TOML; refusing to write a broken {}",
+            cwd.display(),
+            config::CONFIG_FILE
+        )
+    })?;
+    fs::write(&path, &contents).with_context(|| format!("Failed to write {}", path.display()))?;
+    if let Err(err) = config::RunxConfig::load_from_dir(&cwd) {
+        let _ = fs::remove_file(&path);
+        return Err(err.context(format!(
+            "Generated {} failed validation after writing; removed broken file",
+            path.display()
+        )));
+    }
     println!("Created {}", path.display());
 
     // RX-UX-08: `Created <path>` alone left a beginner with no idea what was
