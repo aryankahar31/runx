@@ -342,11 +342,15 @@ pub fn starter_config_for(dir: &Path) -> String {
         runtimes,
         run: commands,
     };
-    toml::to_string(&config).unwrap_or_else(|_| render_toml(&config))
+    render_toml(&config)
 }
 
-/// Fallback TOML emitter that quotes any key not strictly matching TOML bare
-/// keys (`A-Za-z0-9_-`) and escapes basic strings with [`toml::Value::String`].
+/// Emit `runx.toml` with basic-string values (`"..."`) and keys quoted as
+/// basic strings whenever a key does not strictly match `^[A-Za-z0-9_-]+$`.
+///
+/// Using basic strings instead of `toml::to_string`'s automatic single-quote /
+/// multiline-triple-quote selection guarantees double-quoted `"..."` keys and
+/// values with `\"` and `\\` escaping.
 fn render_toml(config: &RunxConfig) -> String {
     let mut out = String::from("[runtimes]\n");
     for (tool, requirement) in &config.runtimes {
@@ -383,9 +387,29 @@ fn toml_key(key: &str) -> String {
     }
 }
 
-/// Format a value as an escaped TOML basic string.
+/// Format a value as an escaped TOML basic string (`"..."`), escaping `\`, `"`,
+/// and control characters per the TOML 1.0 specification.
 fn toml_basic_string(value: &str) -> String {
-    toml::Value::String(value.to_string()).to_string()
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\u{0008}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{000C}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\u{:04X}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Detect when a TOML parse error was likely caused by an unquoted key
