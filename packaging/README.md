@@ -12,7 +12,7 @@ own submission. These are manual steps, tracked in
 | Channel | v0.7.1 status | Template / publish target |
 | --- | --- | --- |
 | Cargo / cargo-binstall | Available now | Published package `runx-launcher`; binary and library `runx` |
-| Homebrew | Planned / pending submission | `homebrew/runx-launcher.rb`; `homebrew-runx` tap |
+| Homebrew | Available now | `homebrew/runx-launcher.rb`; published in `aryankahar31/homebrew-tap` (`aryankahar31/tap/runx-launcher`) |
 | Winget | Planned / pending submission | Three `aryankahar31.runx-launcher` manifests; `microsoft/winget-pkgs` PR |
 | Scoop | Available now | `scoop/runx-launcher.json`; published in `aryankahar31/scoop-bucket` |
 | AUR | Planned / pending submission | `aur/PKGBUILD`; AUR `runx-launcher-bin` (blocked: Arch registration temporarily closed) |
@@ -24,6 +24,39 @@ own submission. These are manual steps, tracked in
 ```bash
 packaging/validate.sh                       # structure, placeholders, npm syntax, renderer regression test
 packaging/render.sh 0.7.1 dist /tmp/runx-pkg # substitute version + digests
+```
+
+## Updating the Homebrew tap on each release
+
+After a new GitHub release `v<VERSION>` finishes building its archives, re-render the formula and update [`aryankahar31/homebrew-tap`](https://github.com/aryankahar31/homebrew-tap):
+
+```bash
+VERSION=0.7.1 # replace with the new version (without leading "v")
+rm -rf "/tmp/runx-v${VERSION}-dist" "/tmp/runx-v${VERSION}-rendered"
+mkdir -p "/tmp/runx-v${VERSION}-dist"
+
+# 1. Download the release archives and re-render all manifests (version + SHA-256 digests)
+gh release download "v${VERSION}" \
+  --repo aryankahar31/runx \
+  --pattern 'runx-*.tar.gz' \
+  --pattern 'runx-windows-x64.zip' \
+  --clobber \
+  --dir "/tmp/runx-v${VERSION}-dist"
+packaging/render.sh "${VERSION}" "/tmp/runx-v${VERSION}-dist" "/tmp/runx-v${VERSION}-rendered"
+
+# 2. Copy the rendered formula into aryankahar31/homebrew-tap, audit, and push
+git clone https://github.com/aryankahar31/homebrew-tap.git /tmp/homebrew-tap
+cp "/tmp/runx-v${VERSION}-rendered/homebrew/runx-launcher.rb" /tmp/homebrew-tap/Formula/runx-launcher.rb
+cd /tmp/homebrew-tap
+git add Formula/runx-launcher.rb
+git commit -m "chore(formula): bump runx-launcher to v${VERSION}"
+git push origin main
+
+# 3. Verify on macOS
+brew update
+brew reinstall aryankahar31/tap/runx-launcher
+brew test runx-launcher
+brew audit --strict --new aryankahar31/tap/runx-launcher
 ```
 
 The validator tests renderer failure handling but does not validate Winget

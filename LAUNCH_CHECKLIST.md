@@ -43,6 +43,8 @@ Published as `runx-launcher@0.7.1`; the commands above are the record of how.
 
 ## 3. Submit the Homebrew formula (done)
 
+Published in [`aryankahar31/homebrew-tap`](https://github.com/aryankahar31/homebrew-tap) (`brew install aryankahar31/tap/runx-launcher`).
+
 Create the `homebrew-tap` repository at
 [github.com/new](https://github.com/new), then run:
 
@@ -51,13 +53,14 @@ git clone https://github.com/aryankahar31/homebrew-tap.git
 cd homebrew-tap
 mkdir -p Formula
 cp /tmp/runx-v0.7.1-rendered/homebrew/runx-launcher.rb Formula/runx-launcher.rb
-brew audit --new --formula Formula/runx-launcher.rb
 git add Formula/runx-launcher.rb
 git commit -m "Add runx-launcher 0.7.1"
 git push origin main
 brew tap aryankahar31/tap
 brew install aryankahar31/tap/runx-launcher
 runx --version
+brew test runx-launcher
+brew audit --strict --new aryankahar31/tap/runx-launcher
 ```
 
 ## 4. Submit the Winget manifests
