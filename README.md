@@ -20,6 +20,12 @@ An unrelated crates.io project named `runx` exists; this tool's package is
 `runx-launcher`, while its installed binary and Rust library crate are both
 named `runx`.
 
+<div align="center">
+
+![runx demo: zero-config Node 20.11.0 detection from .nvmrc, SHA-256 verification, isolated execution, and warm-cache run with no global Node installed](demo/runx.gif)
+
+</div>
+
 ```text
 $ runx dev
 No runx.toml found — detected from project files:
