@@ -342,11 +342,15 @@ pub fn starter_config_for(dir: &Path) -> String {
         runtimes,
         run: commands,
     };
-    toml::to_string(&config).unwrap_or_else(|_| render_toml(&config))
+    render_toml(&config)
 }
 
-/// Fallback TOML emitter that quotes any key not strictly matching TOML bare
-/// keys (`A-Za-z0-9_-`) and escapes basic strings with [`toml::Value::String`].
+/// Emit `runx.toml` with basic-string values (`"..."`) and keys quoted as
+/// basic strings whenever a key does not strictly match `^[A-Za-z0-9_-]+$`.
+///
+/// Using basic strings instead of `toml::to_string`'s automatic single-quote /
+/// multiline-triple-quote selection guarantees double-quoted `"..."` keys and
+/// values with `\"` and `\\` escaping.
 fn render_toml(config: &RunxConfig) -> String {
     let mut out = String::from("[runtimes]\n");
     for (tool, requirement) in &config.runtimes {
@@ -383,9 +387,29 @@ fn toml_key(key: &str) -> String {
     }
 }
 
-/// Format a value as an escaped TOML basic string.
+/// Format a value as an escaped TOML basic string (`"..."`), escaping `\`, `"`,
+/// and control characters per the TOML 1.0 specification.
 fn toml_basic_string(value: &str) -> String {
-    toml::Value::String(value.to_string()).to_string()
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\u{0008}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{000C}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\u{:04X}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Detect when a TOML parse error was likely caused by an unquoted key
@@ -872,9 +896,10 @@ test = "npm test"
         assert!(resolved.detection_lines.is_empty());
     }
 
-    /// Regression test for #73: script names with colons, dots, spaces, quotes,
-    /// backslashes, leading digits, or unicode must be quoted in the generated
-    /// `runx.toml` and round-trip cleanly through `RunxConfig::parse_toml`.
+    /// Regression test for #73: script names with colons, dots, slashes, `@`,
+    /// spaces, quotes, backslashes, leading digits, or unicode must be quoted in
+    /// the generated `runx.toml` and round-trip cleanly through
+    /// `RunxConfig::parse_toml`.
     #[test]
     fn starter_config_quotes_special_script_keys_and_round_trips() {
         let dir = tmp();
@@ -886,6 +911,8 @@ test = "npm test"
                 "test:watch": "vitest --watch",
                 "worker:typecheck": "tsc -p tsconfig.worker.json",
                 "a.b": "echo dotted",
+                "pkg/build": "echo slash",
+                "@scope/check": "echo at-slash",
                 "has space": "echo spaced",
                 "we\"ird": "echo quoted",
                 "back\\slash": "echo backslash",
@@ -911,6 +938,8 @@ test = "npm test"
             "test:watch",
             "worker:typecheck",
             "a.b",
+            "pkg/build",
+            "@scope/check",
             "has space",
             "we\"ird",
             "back\\slash",
@@ -921,6 +950,21 @@ test = "npm test"
         }
 
         let generated = starter_config_for(dir.path());
+        for quoted in [
+            "\"test:rules\"",
+            "\"a.b\"",
+            "\"pkg/build\"",
+            "\"@scope/check\"",
+            "\"has space\"",
+            "\"we\\\"ird\"",
+            "\"back\\\\slash\"",
+        ] {
+            assert!(
+                generated.contains(quoted),
+                "expected quoted key {quoted} in generated TOML:\n{generated}"
+            );
+        }
+
         let parsed = RunxConfig::parse_toml(&generated)
             .unwrap_or_else(|err| panic!("generated config failed to parse: {err}\n{generated}"));
 

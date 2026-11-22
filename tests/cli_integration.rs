@@ -6027,6 +6027,8 @@ fn init_and_run_work_end_to_end_with_colon_and_special_script_keys() {
             "test:watch": "vitest --watch",
             "worker:typecheck": "tsc -p tsconfig.worker.json",
             "a.b": "echo dotted",
+            "pkg/build": "echo slash",
+            "@scope/check": "echo at-slash",
             "has space": "echo spaced",
             "we\"ird": "echo quoted",
             "ünï": "echo unicode"
@@ -6089,7 +6091,10 @@ fn init_and_run_work_end_to_end_with_colon_and_special_script_keys() {
         &["test:rules"][..],
         &["run", "test:rules"][..],
         &["a.b"][..],
+        &["pkg/build"][..],
+        &["@scope/check"][..],
         &["run", "has space"][..],
+        &["run", "we\"ird"][..],
         &["run", "ünï"][..],
     ] {
         let out = runx_with_home(dir.path(), &home, args);
