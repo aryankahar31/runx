@@ -94,7 +94,7 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 | Cargo | Available now | `cargo install runx-launcher` (installs `runx`) |
 | cargo-binstall | Available now | `cargo binstall runx-launcher` (installs `runx`) |
 | npm | Planned / pending submission | `npx --package runx-launcher -- runx dev` |
-| Homebrew | Planned / pending submission | `brew install aryankahar31/runx/runx-launcher` |
+| Homebrew | Available now | `brew install aryankahar31/tap/runx-launcher` (installs `runx`) |
 | Winget | Planned / pending submission | `winget install aryankahar31.runx-launcher` |
 | Scoop | Available now | `scoop bucket add aryankahar31 https://github.com/aryankahar31/scoop-bucket; scoop install runx-launcher` |
 | AUR | Planned / pending submission | `yay -S runx-launcher-bin` (Waiting for Arch AUR registration to reopen) |
@@ -103,10 +103,11 @@ If your workflow needs full IDE tooling, build orchestration, or platform-specif
 > Behind a network that blocks Fastly (`raw.githubusercontent.com`)? Use the jsDelivr mirror:
 > `curl -fsSL https://cdn.jsdelivr.net/gh/aryankahar31/runx@main/install.sh | sh`
 
-The v0.7.1 install scripts and release binaries are available, and the
-`runx-launcher` crate is published on crates.io and Scoop is available via
+The v0.7.1 install scripts and release binaries are available, the
+`runx-launcher` crate is published on crates.io, Homebrew is available via
+[`aryankahar31/homebrew-tap`](https://github.com/aryankahar31/homebrew-tap) (`brew install aryankahar31/tap/runx-launcher`), and Scoop is available via
 [`aryankahar31/scoop-bucket`](https://github.com/aryankahar31/scoop-bucket). npm,
-Homebrew, Winget, AUR, and Nix remain planned / pending their separate
+Winget, AUR, and Nix remain planned / pending their separate
 submissions; the AUR `runx-launcher-bin` package waits for Arch to reopen
 registration. The release
 workflow renders package versions and archive digests; downstream packages
