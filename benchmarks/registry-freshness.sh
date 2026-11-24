@@ -5,7 +5,7 @@
 # falsifiable:
 #
 #   1. fetch the latest version from the vendor's canonical source (curl,
-#      parsed independently with python3)
+#      parsed independently with python3, filtered to stable three-part X.Y.Z)
 #   2. let runx resolve a fresh "*" range in an isolated RUNX_HOME, with a
 #      fake runtime planted at the expected version — resolution is
 #      exercised end-to-end (index fetch -> best_match -> lockfile) with no
@@ -15,9 +15,19 @@
 # A mismatch fails the script (exit 1). Runtimes whose vendor source cannot
 # be scripted on this platform are skipped with a message, never faked.
 #
-# Usage: benchmarks/registry-freshness.sh [path-to-runx-binary]
+# Usage: benchmarks/registry-freshness.sh [path-to-runx-binary | --test]
 # Writes benchmarks/registry-results.json (also uploaded as a CI artifact).
 set -eu
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Fast-path for self-test against fixtures
+if [ "${1:-}" = "--test" ]; then
+    exec "$SCRIPT_DIR/test-registry-freshness.sh"
+fi
+
+# Run fixture validation before live vendor index checks
+"$SCRIPT_DIR/test-registry-freshness.sh"
 
 # Anchored to the invocation cwd (repo root in CI), because cd below would
 # otherwise make the relative target/release/runx unresolvable.
@@ -27,7 +37,7 @@ case "$RUNX_BIN" in
     */*) RUNX_BIN="$(pwd)/$RUNX_BIN" ;;
 esac
 
-cd "$(dirname "$0")"
+cd "$SCRIPT_DIR"
 
 # ponytail: keeping this file's table in sync with the README is manual.
 # When the results change, update the "Latest verified run" table in
@@ -55,31 +65,67 @@ python_platform() {
     esac
 }
 
-# Ground truth: the newest release the vendor's canonical index advertises.
+# Ground truth: newest release the vendor advertises (both raw latest and stable X.Y.Z).
+# Output is tab-separated: <raw_latest>\t<stable_latest>
 latest_node() {
     curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 --max-time 60 https://nodejs.org/dist/index.json | python3 -c '
-import json, sys
-print(json.load(sys.stdin)[0]["version"].lstrip("v"))'
+import json, re, sys
+data = json.load(sys.stdin)
+if not data:
+    raise SystemExit("empty node index")
+raw = data[0].get("version", "").lstrip("vV")
+best = None
+for r in data:
+    v = r.get("version", "").lstrip("vV")
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", v)
+    if m:
+        t = tuple(int(m.group(i)) for i in (1, 2, 3))
+        best = max(best or t, t)
+if best is None:
+    raise SystemExit("no stable node X.Y.Z version found")
+stable = ".".join(str(p) for p in best)
+print(f"{raw}\t{stable}")'
 }
 
 latest_go() {
     curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 --max-time 60 "https://go.dev/dl/?mode=json&include=all" | python3 -c '
-import json, sys
-print(next(r for r in json.load(sys.stdin) if r["stable"])["version"].lstrip("go"))'
+import json, re, sys
+data = json.load(sys.stdin)
+if not data:
+    raise SystemExit("empty go index")
+raw = data[0].get("version", "").lstrip("go")
+best = None
+for r in data:
+    if not r.get("stable"):
+        continue
+    v = r.get("version", "").lstrip("go")
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", v)
+    if m:
+        t = tuple(int(m.group(i)) for i in (1, 2, 3))
+        best = max(best or t, t)
+if best is None:
+    raise SystemExit("no stable go X.Y.Z version found")
+stable = ".".join(str(p) for p in best)
+print(f"{raw}\t{stable}")'
 }
 
 latest_bun() {
     curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 --max-time 60 "https://api.github.com/repos/oven-sh/bun/releases?per_page=100" | python3 -c '
 import json, re, sys
+data = json.load(sys.stdin)
+if not data:
+    raise SystemExit("empty bun releases")
+raw = data[0].get("tag_name", "").replace("bun-v", "").lstrip("v")
 best = None
-for r in json.load(sys.stdin):
-    m = re.match(r"bun-v(\d+)\.(\d+)\.(\d+)$", r["tag_name"])
+for r in data:
+    m = re.match(r"^bun-v(\d+)\.(\d+)\.(\d+)$", r.get("tag_name", ""))
     if m:
         t = tuple(int(m.group(i)) for i in (1, 2, 3))
         best = max(best or t, t)
 if best is None:
     raise SystemExit("no stable bun-vX.Y.Z tag found")
-print(".".join(str(p) for p in best))'
+stable = ".".join(str(p) for p in best)
+print(f"{raw}\t{stable}")'
 }
 
 latest_python() {
@@ -92,23 +138,32 @@ latest_python() {
     curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 --max-time 60 "https://api.github.com/repos/astral-sh/python-build-standalone/releases?per_page=10" | python3 -c '
 import json, re, sys
 plat = sys.argv[1]
-pat = re.compile(r"cpython-(\d+)\.(\d+)\.(\d+)\+.*" + re.escape(plat) + r".*install_only\.tar\.gz$")
+data = json.load(sys.stdin)
+pat = re.compile(r"^cpython-(\d+)\.(\d+)\.(\d+)\+.*" + re.escape(plat) + r".*install_only\.tar\.gz$")
+raw_pat = re.compile(r"^cpython-([^+]+)\+.*" + re.escape(plat) + r".*install_only\.tar\.gz$")
+raw = None
 best = None
-for r in json.load(sys.stdin):
-    for a in r["assets"]:
-        m = pat.match(a["name"])
+for r in data:
+    for a in r.get("assets", []):
+        name = a.get("name", "")
+        if raw is None:
+            rm = raw_pat.match(name)
+            if rm:
+                raw = rm.group(1)
+        m = pat.match(name)
         if m:
             t = tuple(int(m.group(i)) for i in (1, 2, 3))
             best = max(best or t, t)
 if best is None:
     raise SystemExit(f"no install_only cpython asset for {plat}")
-print(".".join(str(p) for p in best))' "$plat"
+stable = ".".join(str(p) for p in best)
+print(f"{raw or stable}\t{stable}")' "$plat"
 }
 
 # One runtime: ground truth vs runx resolution. Records JSON line to $res.
 check() {
     local tool="$1" ground="" resolved="" status="fail" source=""
-    local ground_out
+    local ground_out raw_vendor="" stable_vendor=""
     ground_out="$(latest_$tool 2>&1)" || {
         if [ "$?" -eq 2 ]; then status="skip"; ground=""; else
             echo "  $tool: FAILED to fetch ground truth: $(printf '%s' "$ground_out" | head -1)" >&2
@@ -117,7 +172,10 @@ check() {
         echo "$tool: $status"
         return 0
     }
-    ground="$ground_out"
+    raw_vendor="$(printf '%s' "$ground_out" | cut -f1)"
+    stable_vendor="$(printf '%s' "$ground_out" | cut -f2)"
+    [ -n "$stable_vendor" ] || stable_vendor="$raw_vendor"
+    ground="$stable_vendor"
 
     # Vendor index fetches can hit transient network failures (runx's fetch
     # itself has no retry); retry the resolution a few times before failing.
@@ -149,9 +207,18 @@ check() {
         resolved=""
     done
 
-    if [ "$resolved" = "$ground" ]; then status="pass"; else status="fail"; fi
+    if [ "$resolved" = "$ground" ]; then
+        status="pass"
+        if [ -n "$raw_vendor" ] && [ "$raw_vendor" != "$ground" ]; then
+            echo "$tool: pass (vendor stable: ${ground:-n/a}, raw: ${raw_vendor}, runx resolved: ${resolved:-n/a})"
+        else
+            echo "$tool: pass (vendor latest: ${ground:-n/a}, runx resolved: ${resolved:-n/a})"
+        fi
+    else
+        status="fail"
+        echo "$tool: fail (vendor raw: ${raw_vendor:-n/a}, vendor stable: ${ground:-n/a}, runx resolved: ${resolved:-n/a})"
+    fi
     printf '%s\t%s\t%s\t%s\n' "$tool" "$status" "$ground" "$resolved" >> "$res"
-    echo "$tool: $status (vendor latest: ${ground:-n/a}, runx resolved: ${resolved:-n/a})"
 }
 
 res="$work/results"
